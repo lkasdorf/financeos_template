@@ -1,0 +1,28 @@
+{
+  "server": {
+    "default_port": 8080,
+    "default_bind": "127.0.0.1",
+    "dashboard_path": "/dashboard/"
+  },
+  "backup": {
+    "max_per_file": 30
+  },
+  "currency": {
+    "primary": "USD",
+    "fx_api_url": "https://open.er-api.com/v6/latest/USD",
+    "metals_spot_api_url": "https://data-asg.goldprice.org/dbXRates/EUR"
+  },
+  "auto_tag": {
+    "by_account": {},
+    "by_payee": {}
+  },
+  "pass_through": {
+    "reimbursement_categories": {}
+  },
+  "host": {
+    "pi_hostnames": []
+  },
+  "dev": {
+    "peer_health_url": ""
+  }
+}

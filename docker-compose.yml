@@ -1,0 +1,20 @@
+# FinanceOS — single-service compose file.
+# `docker compose up -d` builds the image, mounts your data and config
+# directories, and exposes the dashboard on the host port from .env
+# (default 8080).
+services:
+  financeos:
+    build: .
+    image: financeos:latest
+    container_name: financeos
+    restart: unless-stopped
+    ports:
+      - "${FINANCEOS_PORT:-8080}:8080"
+    volumes:
+      # Persist user state outside the image so rebuilds keep your data.
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./memory:/app/memory
+    environment:
+      # Optional: see .env.example for the full list.
+      - FINANCEOS_HOST_TYPE=${FINANCEOS_HOST_TYPE:-}

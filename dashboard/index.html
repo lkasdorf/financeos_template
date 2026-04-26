@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FinanceOS</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0d0a'/%3E%3Ctext x='5' y='23' font-family='system-ui,sans-serif' font-size='20' font-weight='700' fill='%23c8f060'%3ELP%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<script>
+// Setup-wizard auto-redirect: fresh installs (no .setup_state.json AND no
+// transactions.csv data rows) get bounced to setup.html. Async, non-blocking;
+// a returning user with initialized=true never sees a flash.
+(function() {
+  fetch('/api/setup/status', { method: 'POST' })
+    .then(r => r.json())
+    .then(s => {
+      if (s && !s.initialized && !s.has_data) {
+        window.location.replace('setup.html');
+      }
+    })
+    .catch(() => { /* no /api/setup yet on old deployments — stay put */ });
+})();
+</script>
+</head>
+<body>
+
+<!-- Lucide icon sprite (SVG, no external dependency) -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-dashboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol>
+  <symbol id="i-bar-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-arrows-lr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></symbol>
+  <symbol id="i-check-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></symbol>
+  <symbol id="i-gem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l4 6-10 13L2 9Z"/><path d="M11 3 8 9l4 13 4-13-3-6"/><path d="M2 9h20"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></symbol>
+  <symbol id="i-funnel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></symbol>
+</svg>
+
+<!-- Mobile top bar (visible only on mobile) -->
+<header class="mobile-topbar" id="mobile-topbar">
+  <button class="mobile-topbar-burger" id="mobile-burger" aria-label="Open navigation" data-i18n-aria-label="aria.burger_open">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="mobile-topbar-brand" data-brand-html>Leon<em>Pesa</em></div>
+  <span id="alerts-badge-topbar" class="mobile-topbar-dot" style="display:none;"></span>
+</header>
+
+<!-- Drawer backdrop (mobile only, shows when drawer open) -->
+<div class="drawer-backdrop" id="drawer-backdrop"></div>
+
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-logo"><span data-brand-html>Leon<em>Pesa</em></span>
+    <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode" data-i18n-title="header.theme_toggle_title">
+      <svg class="icon-sun"><use href="#i-sun"/></svg>
+      <svg class="icon-moon"><use href="#i-moon"/></svg>
+    </button>
+  </div>
+  <div style="padding:8px 14px 12px;">
+    <input type="text" id="global-search" placeholder="Search..." data-i18n-placeholder="search.placeholder" autocomplete="off"
+      style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;">
+  </div>
+  <ul class="sidebar-nav">
+    <li><a href="#add-tx" data-page="add-tx" class="nav-add-tx"><span class="nav-icon"><svg><use href="#i-plus"/></svg></span><span data-i18n="nav.add_tx">Add TX</span></a></li>
+    <li><a href="#dashboard" class="active" data-page="dashboard"><span class="nav-icon"><svg><use href="#i-dashboard"/></svg></span><span data-i18n="nav.dashboard">Dashboard</span></a></li>
+    <li><a href="#reports" data-page="reports"><span class="nav-icon"><svg><use href="#i-bar-chart"/></svg></span><span data-i18n="nav.reports">Reports</span></a></li>
+    <li><a href="#accounts" data-page="accounts"><span class="nav-icon"><svg><use href="#i-wallet"/></svg></span><span data-i18n="nav.accounts">Accounts</span></a></li>
+    <li><a href="#transactions" data-page="transactions"><span class="nav-icon"><svg><use href="#i-list"/></svg></span><span data-i18n="nav.transactions">Transactions</span></a></li>
+    <li data-feature="custom_reports"><a href="#custom-reports" data-page="custom-reports"><span class="nav-icon"><svg><use href="#i-funnel"/></svg></span><span data-i18n="nav.custom_reports">Custom Reports</span></a></li>
+    <li><a href="#alerts" data-page="alerts"><span class="nav-icon"><svg><use href="#i-bell"/></svg></span><span data-i18n="nav.alerts">Alerts</span><span id="alerts-badge" style="background:var(--negative);color:#fff;border-radius:50%;font-size:9px;min-width:16px;height:16px;display:none;align-items:center;justify-content:center;margin-left:6px;"></span></a></li>
+    <li data-feature="debt_tracking"><a href="#debts" data-page="debts"><span class="nav-icon"><svg><use href="#i-arrows-lr"/></svg></span><span data-i18n="nav.debts">Debts</span></a></li>
+    <li data-feature="crdb_recon"><a href="#reconciliation" data-page="reconciliation"><span class="nav-icon"><svg><use href="#i-check-square"/></svg></span><span data-i18n="nav.reconciliation">Reconciliation</span></a></li>
+    <li data-feature="metals"><a href="#metals" data-page="metals"><span class="nav-icon"><svg><use href="#i-gem"/></svg></span><span data-i18n="nav.metals">Metals</span></a></li>
+    <li><a href="#settings" data-page="settings"><span class="nav-icon"><svg><use href="#i-settings"/></svg></span><span data-i18n="nav.settings">Settings</span></a></li>
+    <li><a href="#faq" data-page="faq"><span class="nav-icon"><svg><use href="#i-help"/></svg></span><span data-i18n="nav.faq">FAQ</span></a></li>
+  </ul>
+</nav>
+
+<div class="content-area">
+
+  <!-- ═══ Dashboard Page ═══ -->
+  <div id="page-dashboard" class="page active">
+    <header>
+      <span class="tag" id="source-tag">Preview</span>
+      <h1 data-brand-html>Leon<em>Pesa</em></h1>
+      <div class="subtitle">
+        <span id="date-range">Loading data...</span>
+        &nbsp;·&nbsp;
+        <span id="tx-count">—</span>
+        &nbsp;·&nbsp;
+        <span class="src" id="source-label">data/transactions.csv</span>
+      <span class="currency-switcher" id="currency-switcher">
+        <button class="active" data-cur="TZS">TZS</button>
+        <button data-cur="EUR">EUR</button>
+        <button data-cur="USD">USD</button>
+      </span>
+      </div>
+      <div class="fx-info" id="fx-info"></div>
+    </header>
+    <main id="dashboard">
+      <div id="loading">
+        <div class="skel-section"><div class="skel-title"></div><div class="skel-cards"><div class="skel-card"></div><div class="skel-card"></div><div class="skel-card"></div></div></div>
+        <div class="skel-section"><div class="skel-title"></div><div class="skel-cards"><div class="skel-card skel-card-wide"></div><div class="skel-card skel-card-wide"></div></div></div>
+        <div class="skel-section"><div class="skel-title"></div><div class="skel-line"></div><div class="skel-line skel-short"></div><div class="skel-line"></div><div class="skel-line skel-short"></div></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ═══ Reports Page ═══ -->
+  <div id="page-reports" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.reports.title">Re<span class="accent">ports</span></h2>
+      <div class="page-subtitle"><span id="reports-meta">Select a report</span></div>
+    </div>
+    <div class="page-content">
+      <div id="reports-list-view"></div>
+      <div id="reports-detail-view" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- ═══ Accounts Overview ═══ -->
+  <div id="page-accounts" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.accounts.title">Acc<span class="accent">ounts</span></h2>
+    </div>
+    <div class="page-content" id="accounts-overview-content"></div>
+  </div>
+
+  <!-- ═══ Account Detail ═══ -->
+  <div id="page-account" class="page">
+    <div class="page-header" id="account-header"></div>
+    <div class="page-content" id="account-content"></div>
+  </div>
+
+  <!-- ═══ Transactions Page ═══ -->
+  <div id="page-transactions" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.transactions.title">Trans<span class="accent">actions</span></h2>
+      <div class="page-meta" id="tx-page-meta"></div>
+    </div>
+    <div class="page-content" id="tx-page-content"></div>
+  </div>
+
+  <!-- ═══ Custom Reports Page ═══ -->
+  <div id="page-custom-reports" class="page" data-feature="custom_reports">
+    <div class="page-header">
+      <h2 data-i18n-html="page.custom_reports.title">Custom <span class="accent">Reports</span></h2>
+      <div class="page-subtitle" id="custom-reports-meta">User-defined reports with custom filters</div>
+    </div>
+    <div class="page-content" id="custom-reports-content"></div>
+  </div>
+
+  <!-- ═══ Search Page ═══ -->
+  <div id="page-search" class="page">
+    <div class="page-content" id="search-content" style="padding-top:24px;"></div>
+  </div>
+
+  <!-- ═══ Alerts Page ═══ -->
+  <div id="page-alerts" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.alerts.title">Al<span class="accent">erts</span></h2>
+      <div class="page-subtitle" id="alerts-meta">Notifications and warnings</div>
+    </div>
+    <div class="page-content" id="alerts-content"></div>
+  </div>
+
+  <!-- ═══ Reconciliation Page ═══ -->
+  <div id="page-debts" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.debts.title">Debts <span class="accent">&amp; Receivables</span></h2>
+      <div class="page-subtitle" id="debts-meta">Open balances with third parties</div>
+    </div>
+    <div class="page-content" id="debts-content"></div>
+  </div>
+
+  <div id="page-reconciliation" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.reconciliation.title">Recon<span class="accent">ciliation</span></h2>
+      <div class="page-subtitle" id="recon-meta" data-i18n="page.reconciliation.subtitle">Bank statement reconciliation</div>
+    </div>
+    <div class="page-content" id="recon-content"></div>
+  </div>
+
+  <!-- ═══ Precious Metals Page ═══ -->
+  <div id="page-metals" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.metals.title">Precious <span class="accent">Metals</span></h2>
+      <div class="page-subtitle" id="metals-meta">Gold &amp; Silver portfolio</div>
+    </div>
+    <div class="page-content" id="metals-content"></div>
+  </div>
+
+  <!-- ═══ Add TX Page ═══ -->
+  <div id="page-add-tx" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.add_tx.title">Add <span class="accent">Transaction</span></h2>
+      <div class="page-subtitle" data-i18n="page.add_tx.subtitle">Free-text or manual entry</div>
+    </div>
+    <div class="page-content" id="add-tx-content"></div>
+  </div>
+
+  <!-- ═══ Payees Page ═══ -->
+  <div id="page-payees" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.payees.title">Pay<span class="accent">ees</span></h2>
+      <div class="page-subtitle" id="payees-meta">Payee defaults for transaction parsing</div>
+    </div>
+    <div class="page-content" id="payees-content"></div>
+  </div>
+
+  <!-- ═══ Settings Page ═══ -->
+  <div id="page-settings" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.settings.title">Set<span class="accent">tings</span></h2>
+      <div class="page-subtitle" data-i18n="page.settings.subtitle">Categories &amp; Tags</div>
+    </div>
+    <div class="page-content" id="settings-content"></div>
+  </div>
+
+  <div id="page-faq" class="page">
+    <div class="page-header">
+      <h2 data-i18n-html="page.faq.title">F<span class="accent">AQ</span></h2>
+      <div class="page-subtitle" data-i18n="page.faq.subtitle">Feature reference &amp; conventions</div>
+    </div>
+    <div class="page-content" id="faq-content"></div>
+  </div>
+
+  <footer>
+    <span><span data-brand>FinanceOS</span> <span style="color:var(--muted);">v2026-04-26.12</span></span>
+    <span id="footer-status"></span>
+    <span id="footer-updated">—</span>
+    <button id="refresh-btn" title="Refresh data (Shift+R)" data-i18n-title="footer.refresh_title" style="background:none;border:1px solid var(--border);border-radius:var(--radius-xs);padding:3px 8px;cursor:pointer;color:var(--muted);display:inline-flex;align-items:center;gap:4px;font-size:11px;font-family:inherit;margin-left:6px;transition:color 0.15s,border-color 0.15s;">
+      <svg style="width:13px;height:13px;"><use href="#i-refresh"/></svg> <span data-i18n="footer.refresh_label">Refresh</span>
+    </button>
+  </footer>
+</div>
+
+<!-- Mobile FAB (Add TX) — hidden on desktop -->
+<button class="fab-add-tx" id="fab-add-tx" aria-label="Add Transaction" data-i18n-aria-label="aria.fab_add_tx">
+  <svg><use href="#i-plus"/></svg>
+</button>
+
+
+<script defer src="lib/papaparse.min.js"></script>
+<script defer src="lib/chart.umd.min.js"></script>
+<script defer src="lib/xlsx.mini.min.js"></script>
+<script defer src="i18n.js"></script>
+<script defer src="core.js"></script>
+<script defer src="dashboard.js"></script>
+<script defer src="pages.js"></script>
+<script defer src="custom-reports.js"></script>
+<script defer src="reports.js"></script>
+<script defer src="forms.js"></script>
+<script defer src="faq.js"></script>
+
+</body>
+</html>
