@@ -1,0 +1,313 @@
+"""HTTP Basic-Auth middleware + admin CLI for the FinanceOS server.
+
+Block F of the OSS-template roadmap. The persistence layer ships with
+Block C: ``setup_core.write_auth`` produces ``config/auth.json`` in
+one of two shapes::
+
+    {"mode": "none"}
+    {"mode": "basic", "user": "admin", "password_bcrypt": "$2b$12$..."}
+
+This module adds the runtime guard. :func:`check_request` is called
+at the top of every request handler in :mod:`serve`. It returns
+``True`` when the request may proceed (no auth configured, exempt
+path, or valid credentials) and ``False`` after sending a ``401``
+challenge so the handler can return early.
+
+Default behaviour:
+    * No ``config/auth.json`` ........ middleware no-ops
+    * ``mode == "none"`` ............. middleware no-ops
+    * ``mode == "basic"`` ............ HTTP Basic Auth enforced
+
+Exempt paths (always reachable):
+    * ``/api/health`` — monitoring / Pi cron pings
+
+Exempt paths (only while ``data/.setup_state.json`` reports the repo
+as not yet initialized — chicken-and-egg for first-time setup):
+    * ``/dashboard/setup.html``, ``/dashboard/setup.js``,
+      ``/dashboard/setup.css``
+    * ``/api/setup/status``, ``/api/setup/mmex-upload``,
+      ``/api/setup/finalize``
+
+Admin CLI::
+
+    python scripts/auth.py --set-password           # interactive
+    python scripts/auth.py --set-password --user X  # non-interactive user
+    python scripts/auth.py --disable                # switch to mode=none
+    python scripts/auth.py --status                 # show current mode
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import getpass
+import json
+import sys
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+# Repo root = two levels above this file (``scripts/auth.py`` → repo root).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_AUTH_PATH = _REPO_ROOT / "config" / "auth.json"
+_SETUP_STATE_PATH = _REPO_ROOT / "data" / ".setup_state.json"
+
+# Paths that are reachable even when authentication is enabled.
+_ALWAYS_EXEMPT: frozenset[str] = frozenset({
+    "/api/health",
+})
+
+# Paths reachable only while the repo is still in the "fresh install"
+# state. Once setup is finalized, these require auth like everything else.
+_PRE_INIT_EXEMPT: frozenset[str] = frozenset({
+    "/dashboard/setup.html",
+    "/dashboard/setup.js",
+    "/dashboard/setup.css",
+    "/api/setup/status",
+    "/api/setup/mmex-upload",
+    "/api/setup/finalize",
+})
+
+# Realm string sent in the WWW-Authenticate challenge header.
+_REALM = "FinanceOS"
+
+
+# ── Config loaders ────────────────────────────────────────────────────────
+
+@lru_cache(maxsize=1)
+def load_auth_config() -> dict[str, Any]:
+    """Read ``config/auth.json`` once and cache it.
+
+    Missing file or unreadable JSON is treated as ``mode=none`` so the
+    private repo keeps running with auth disabled by default. Restart
+    the server after editing the file (``lru_cache`` keeps the value).
+    """
+    try:
+        with _AUTH_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return {"mode": "none"}
+
+
+def reload_auth_config() -> dict[str, Any]:
+    """Drop the cached config and re-read it (for the admin CLI)."""
+    load_auth_config.cache_clear()
+    return load_auth_config()
+
+
+def is_auth_required() -> bool:
+    """``True`` if and only if ``auth.json`` selects basic auth."""
+    cfg = load_auth_config()
+    return cfg.get("mode") == "basic"
+
+
+def is_initialized() -> bool:
+    """Mirror of ``serve._setup_refuse_if_initialized`` for auth purposes."""
+    try:
+        if not _SETUP_STATE_PATH.exists():
+            return False
+        state = json.loads(_SETUP_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return state.get("initialized") is True
+
+
+# ── Path classification ───────────────────────────────────────────────────
+
+def is_exempt(path: str) -> bool:
+    """``True`` if ``path`` should bypass the auth middleware.
+
+    Strips the query string before matching so ``/api/health?ping=1``
+    still hits the always-exempt set.
+    """
+    bare = path.split("?", 1)[0]
+    if bare in _ALWAYS_EXEMPT:
+        return True
+    if not is_initialized() and bare in _PRE_INIT_EXEMPT:
+        return True
+    return False
+
+
+# ── Credential verification ───────────────────────────────────────────────
+
+def _decode_basic(header_value: str) -> tuple[str, str] | None:
+    """Decode a ``Authorization: Basic <b64>`` header into ``(user, pass)``.
+
+    Returns ``None`` for any malformed input — caller treats that as a
+    failed authentication.
+    """
+    if not header_value or not header_value.lower().startswith("basic "):
+        return None
+    try:
+        raw = base64.b64decode(header_value[6:].strip(), validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if ":" not in raw:
+        return None
+    user, _, password = raw.partition(":")
+    return user, password
+
+
+def verify_credentials(user: str, password: str) -> bool:
+    """Constant-time-ish bcrypt verify against ``config/auth.json``."""
+    cfg = load_auth_config()
+    if cfg.get("mode") != "basic":
+        return False
+    if user != cfg.get("user", ""):
+        return False
+    expected = cfg.get("password_bcrypt", "")
+    if not expected:
+        return False
+    try:
+        import bcrypt
+    except ImportError:
+        # Mode=basic was configured but bcrypt isn't available — treat
+        # as mis-configured and refuse access rather than silently
+        # letting requests through.
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), expected.encode("ascii"))
+    except (ValueError, TypeError):
+        return False
+
+
+# ── Middleware ────────────────────────────────────────────────────────────
+
+def check_request(handler) -> bool:
+    """Gate a single HTTP request.
+
+    Returns ``True`` when the handler may proceed. Returns ``False``
+    after sending a ``401`` response (so the caller must ``return``).
+    """
+    if not is_auth_required():
+        return True
+    if is_exempt(handler.path):
+        return True
+
+    auth_header = handler.headers.get("Authorization", "")
+    creds = _decode_basic(auth_header)
+    if creds is not None and verify_credentials(*creds):
+        return True
+
+    _send_challenge(handler)
+    return False
+
+
+def _send_challenge(handler) -> None:
+    """Reply with ``401 Unauthorized`` + ``WWW-Authenticate`` header."""
+    body = b'{"error":"authentication required"}'
+    handler.send_response(401)
+    handler.send_header("WWW-Authenticate", f'Basic realm="{_REALM}"')
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+# ── Admin CLI ─────────────────────────────────────────────────────────────
+
+def _hash_password(password: str) -> str:
+    """Bcrypt-hash a password (mirrors ``setup_core._hash_password``)."""
+    try:
+        import bcrypt
+    except ImportError:
+        sys.exit("bcrypt is required for basic auth. Install with: pip install bcrypt")
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+
+
+def _write_config(payload: dict[str, Any]) -> None:
+    _AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _AUTH_PATH.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    reload_auth_config()
+
+
+def _cli_set_password(user: str | None) -> None:
+    """Interactive: ask for username + password, write basic-auth config."""
+    cfg = load_auth_config()
+    default_user = user or cfg.get("user") or "admin"
+    chosen_user = input(f"Username [{default_user}]: ").strip() or default_user
+
+    while True:
+        p1 = getpass.getpass("Password (min 8 chars): ")
+        if len(p1) < 8:
+            print("  Password must be at least 8 characters.")
+            continue
+        p2 = getpass.getpass("Repeat: ")
+        if p1 != p2:
+            print("  Passwords do not match.")
+            continue
+        break
+
+    _write_config({
+        "mode": "basic",
+        "user": chosen_user,
+        "password_bcrypt": _hash_password(p1),
+    })
+    print(f"✓ Basic auth enabled for user '{chosen_user}'.")
+    print(f"  Wrote {_AUTH_PATH.relative_to(_REPO_ROOT)}.")
+    print("  Restart the server (scripts/serve.py) to pick up the new config.")
+
+
+def _cli_disable() -> None:
+    """Switch to ``mode=none`` (still leaves the file in place)."""
+    _write_config({"mode": "none"})
+    print("✓ Authentication disabled (mode=none).")
+    print(f"  Wrote {_AUTH_PATH.relative_to(_REPO_ROOT)}.")
+    print("  Restart the server (scripts/serve.py) to pick up the new config.")
+
+
+def _cli_status() -> None:
+    """Print the active mode without leaking the password hash."""
+    cfg = load_auth_config()
+    mode = cfg.get("mode", "none")
+    if mode == "basic":
+        print(f"mode: basic\nuser: {cfg.get('user', '?')}\nfile: {_AUTH_PATH}")
+    else:
+        print(f"mode: {mode}\nfile: {_AUTH_PATH}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="auth.py",
+        description="FinanceOS authentication admin (Block F).",
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--set-password",
+        action="store_true",
+        help="Enable basic auth: prompt for username + password and write config/auth.json.",
+    )
+    group.add_argument(
+        "--disable",
+        action="store_true",
+        help="Switch auth.json to mode=none (no authentication).",
+    )
+    group.add_argument(
+        "--status",
+        action="store_true",
+        help="Print the current auth mode without leaking the hash.",
+    )
+    parser.add_argument(
+        "--user",
+        help="Username default for --set-password (skips the prompt's existing value).",
+    )
+    args = parser.parse_args(argv)
+
+    if args.set_password:
+        _cli_set_password(args.user)
+    elif args.disable:
+        _cli_disable()
+    elif args.status:
+        _cli_status()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,2 @@
+sched_id,name,account,amount,currency,payee,category,note,manual_tags,frequency,next_run,last_run,active
+sched-001,Example Monthly Rent,checking,1000,USD,Landlord,Bills:Rent,,,monthly:1,2026-05-01,,true

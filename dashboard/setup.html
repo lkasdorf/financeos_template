@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FinanceOS — Setup Wizard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0d0a'/%3E%3Ctext x='5' y='23' font-family='system-ui,sans-serif' font-size='20' font-weight='700' fill='%23c8f060'%3ELP%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="setup.css">
+</head>
+<body class="setup-body">
+
+<div class="setup-shell">
+  <header class="setup-header">
+    <div class="setup-brand">
+      <span class="setup-logo">LP</span>
+      <span>FinanceOS Setup</span>
+    </div>
+    <span class="setup-version" id="setup-version">v—</span>
+  </header>
+
+  <ol class="setup-stepper" id="stepper">
+    <li data-step="1"><span class="dot">1</span><span class="label">Brand</span></li>
+    <li data-step="2"><span class="dot">2</span><span class="label">Currency</span></li>
+    <li data-step="3"><span class="dot">3</span><span class="label">Auth</span></li>
+    <li data-step="4"><span class="dot">4</span><span class="label">Data</span></li>
+    <li data-step="5"><span class="dot">5</span><span class="label">Features</span></li>
+    <li data-step="6"><span class="dot">6</span><span class="label">Review</span></li>
+  </ol>
+
+  <main class="setup-card">
+
+    <!-- Banner shown if the repo is already initialized -->
+    <section class="setup-block setup-blocked" id="blocked-card" hidden>
+      <h2>Setup already complete</h2>
+      <p id="blocked-reason">FinanceOS is already initialized on this server.</p>
+      <p><a href="index.html" class="setup-link">→ Open Dashboard</a></p>
+    </section>
+
+    <!-- Step 1: Branding -->
+    <section class="setup-step" data-step="1">
+      <h2>Brand your instance</h2>
+      <p class="setup-hint">A display name shown in the header. The accent color tints buttons and links.</p>
+      <label class="setup-field">
+        <span>Display name</span>
+        <input type="text" id="brand-name" placeholder="My FinanceOS" maxlength="60" required>
+      </label>
+      <label class="setup-field">
+        <span>Accent color</span>
+        <div class="setup-color-row">
+          <input type="color" id="brand-color" value="#1e40af">
+          <input type="text" id="brand-color-hex" value="#1e40af" pattern="^#[0-9a-fA-F]{6}$" maxlength="7">
+        </div>
+      </label>
+    </section>
+
+    <!-- Step 2: Currency -->
+    <section class="setup-step" data-step="2" hidden>
+      <h2>Default currency</h2>
+      <p class="setup-hint">Used for the empty-start seed and as the dashboard fallback. Three-letter ISO code.</p>
+      <div class="setup-quickpicks" id="currency-picks">
+        <button type="button" data-cur="EUR">EUR</button>
+        <button type="button" data-cur="USD">USD</button>
+        <button type="button" data-cur="GBP">GBP</button>
+        <button type="button" data-cur="TZS">TZS</button>
+        <button type="button" data-cur="PLN">PLN</button>
+      </div>
+      <label class="setup-field">
+        <span>ISO code</span>
+        <input type="text" id="currency-input" maxlength="3" pattern="[A-Za-z]{3}" placeholder="EUR" required>
+      </label>
+    </section>
+
+    <!-- Step 3: Auth -->
+    <section class="setup-step" data-step="3" hidden>
+      <h2>Authentication</h2>
+      <p class="setup-hint">FinanceOS does not enforce auth itself — the chosen mode is honoured by reverse-proxies and the optional Basic-Auth middleware.</p>
+      <div class="setup-radio-group">
+        <label class="setup-radio">
+          <input type="radio" name="auth-mode" value="basic" checked>
+          <span><strong>Basic</strong> — username + bcrypt-hashed password stored in <code>config/auth.json</code></span>
+        </label>
+        <label class="setup-radio">
+          <input type="radio" name="auth-mode" value="none">
+          <span><strong>None</strong> — no auth (only safe on a private LAN or behind your own VPN)</span>
+        </label>
+      </div>
+
+      <div id="auth-basic-fields">
+        <label class="setup-field">
+          <span>Username</span>
+          <input type="text" id="auth-user" autocomplete="off" maxlength="60">
+        </label>
+        <label class="setup-field">
+          <span>Password</span>
+          <input type="password" id="auth-pass" autocomplete="new-password" minlength="8">
+        </label>
+        <label class="setup-field">
+          <span>Repeat password</span>
+          <input type="password" id="auth-pass2" autocomplete="new-password" minlength="8">
+        </label>
+        <p class="setup-hint" id="auth-pass-hint">Min. 8 characters. Stored as bcrypt hash, never plaintext.</p>
+      </div>
+
+      <div id="auth-none-warning" class="setup-warning" hidden>
+        <strong>Warning:</strong> running with <code>auth_mode=none</code> means anyone who reaches the dashboard URL can view and edit your data. Make sure the server is on a private network.
+        <label class="setup-field" style="margin-top:8px;">
+          <input type="checkbox" id="auth-none-confirm">
+          <span>I understand the risk and want to proceed without authentication.</span>
+        </label>
+      </div>
+    </section>
+
+    <!-- Step 4: Datasource -->
+    <section class="setup-step" data-step="4" hidden>
+      <h2>Starting data</h2>
+      <p class="setup-hint">Choose how the data folder gets seeded.</p>
+      <div class="setup-radio-group">
+        <label class="setup-radio">
+          <input type="radio" name="datasource" value="empty" checked>
+          <span><strong>Empty start</strong> — 4 generic accounts (cash / checking / savings / credit) + 34 neutral categories</span>
+        </label>
+        <label class="setup-radio">
+          <input type="radio" name="datasource" value="mmex">
+          <span><strong>Import from Money Manager Ex</strong> — upload an <code>.mmb</code> file</span>
+        </label>
+      </div>
+
+      <div id="mmex-zone" hidden>
+        <label class="setup-field">
+          <span>Choose .mmb file</span>
+          <input type="file" id="mmex-file" accept=".mmb">
+        </label>
+        <button type="button" id="mmex-upload-btn" class="setup-btn-primary" disabled>Upload &amp; preview</button>
+        <p class="setup-hint" id="mmex-status"></p>
+        <div id="mmex-summary" hidden>
+          <h3 class="setup-subhead">Imported records</h3>
+          <ul class="setup-summary-list" id="mmex-summary-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 5: Optional features -->
+    <section class="setup-step" data-step="5" hidden>
+      <h2>Optional features</h2>
+      <p class="setup-hint">Turn on extras that aren't core. Can be changed later in <code>config/features.json</code>.</p>
+      <div class="setup-toggle-list" id="features-list">
+        <label><input type="checkbox" data-feature="debt_tracking"><span><strong>Debt tracking</strong> — money lent to or owed by third parties with payment history</span></label>
+        <label><input type="checkbox" data-feature="metals"><span><strong>Precious metals</strong> — gold/silver portfolio with daily spot prices</span></label>
+        <label><input type="checkbox" data-feature="pwa"><span><strong>Mobile PWA</strong> — offline-capable expense logging on phones</span></label>
+        <label><input type="checkbox" data-feature="crdb_recon"><span><strong>Bank reconciliation (CRDB)</strong> — monthly bank statement matching (specific to CRDB Bank)</span></label>
+        <label><input type="checkbox" data-feature="quick_expenses" checked><span><strong>Quick expenses</strong> — chip shortcuts under Add TX for repeating cash purchases</span></label>
+        <label><input type="checkbox" data-feature="custom_reports" checked><span><strong>Custom reports</strong> — user-defined reports with filter builder</span></label>
+        <label><input type="checkbox" data-feature="scheduled_tx" checked><span><strong>Scheduled transactions</strong> — recurring TX templates (rent, salary, subscriptions)</span></label>
+      </div>
+    </section>
+
+    <!-- Step 6: Review -->
+    <section class="setup-step" data-step="6" hidden>
+      <h2>Review &amp; confirm</h2>
+      <p class="setup-hint">Last check. Below is what will be written. Click <strong>Confirm</strong> to finalize.</p>
+
+      <dl class="setup-review">
+        <dt>Brand</dt><dd id="rv-brand"></dd>
+        <dt>Currency</dt><dd id="rv-currency"></dd>
+        <dt>Auth</dt><dd id="rv-auth"></dd>
+        <dt>Datasource</dt><dd id="rv-datasource"></dd>
+        <dt>Features</dt><dd id="rv-features"></dd>
+      </dl>
+
+      <div id="alias-override-zone" hidden>
+        <h3 class="setup-subhead">Account aliases</h3>
+        <p class="setup-hint">Imported account names get auto-slugged into short aliases used everywhere in the system. Override any below if you want shorter or different names. Lowercase letters, digits, and underscores only.</p>
+        <table class="setup-alias-table" id="alias-table">
+          <thead>
+            <tr><th>Imported account</th><th>Currency</th><th>Alias</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="finalize-status" class="setup-status" hidden></div>
+    </section>
+
+  </main>
+
+  <footer class="setup-actions">
+    <button type="button" id="btn-back" disabled>Back</button>
+    <button type="button" id="btn-next" class="setup-btn-primary">Next →</button>
+    <button type="button" id="btn-finish" class="setup-btn-primary" hidden>Confirm &amp; finalize</button>
+  </footer>
+
+</div>
+
+<script defer src="setup.js"></script>
+</body>
+</html>

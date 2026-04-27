@@ -1,0 +1,2 @@
+id,bank,amount,currency,fee_net,levy,vat_rate,note,active
+atm-001,Example Bank,200,USD,2.50,0,0.0,Example ATM withdrawal fee preset,true

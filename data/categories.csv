@@ -1,0 +1,35 @@
+path,type,active,note,pnl,essential
+Income,income,true,,true,true
+Income:Salary,income,true,Regular employment income,true,true
+Income:Bonus,income,true,,true,false
+Income:Investments,income,true,"Dividends, interest, capital gains",true,false
+Income:Other,income,true,Catch-all for one-off income,true,false
+Bills,expense,true,,true,true
+Bills:Electricity,expense,true,,true,true
+Bills:Internet,expense,true,,true,true
+Bills:Phone,expense,true,,true,true
+Bills:Rent,expense,true,,true,true
+Bills:Water,expense,true,,true,true
+Food,expense,true,,true,true
+Food:Groceries,expense,true,,true,true
+Food:Dining out,expense,true,,true,false
+Transport,expense,true,,true,true
+Transport:Fuel,expense,true,,true,true
+Transport:Public transit,expense,true,,true,true
+Transport:Taxi,expense,true,Taxi / rideshare / on-demand,true,false
+Healthcare,expense,true,,true,true
+Healthcare:Doctor,expense,true,,true,true
+Healthcare:Pharmacy,expense,true,,true,true
+Leisure,expense,true,,true,false
+Leisure:Entertainment,expense,true,"Movies, events, hobbies",true,false
+Leisure:Sports,expense,true,,true,false
+Subscriptions,expense,true,,true,false
+Subscriptions:Streaming,expense,true,,true,false
+Subscriptions:Software,expense,true,,true,false
+Travel,expense,true,,true,false
+Travel:Flights,expense,true,,true,false
+Travel:Accommodation,expense,true,,true,false
+Fees,expense,true,,true,true
+Fees:Bank Fees,expense,true,,true,true
+Fees:ATM,expense,true,,true,true
+Other Expenses,expense,true,Catch-all,true,false

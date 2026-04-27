@@ -1,0 +1,4 @@
+{
+  "_comment": "Business entity definitions for tag-based reporting. Reports iterate over entities[] to render per-business breakdowns (Reimbursements, Dining split, Income source classification). Empty entities[] hides all business-specific reports gracefully — that is the public-template default.",
+  "entities": []
+}

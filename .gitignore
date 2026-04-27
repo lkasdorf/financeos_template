@@ -1,0 +1,31 @@
+# Python
+*.pyc
+__pycache__/
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data — never commit user data.
+data/backups/
+data/.transactions.lock
+data/.setup_state.json
+data/imports/*
+!data/imports/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code (optional — only relevant if you use Claude Code locally)
+.claude/settings.local.json
+.claude/worktrees/

@@ -1,0 +1,18 @@
+{
+  "default_adapter": "csv_generic",
+  "account_adapters": {
+    "crdb": "crdb_tz"
+  },
+  "adapters": {
+    "csv_generic": {
+      "date_column": "Date",
+      "details_column": "Description",
+      "amount_column": "Amount",
+      "debit_column": null,
+      "credit_column": null,
+      "date_format": "%Y-%m-%d",
+      "decimal_separator": ".",
+      "thousands_separator": ","
+    }
+  }
+}

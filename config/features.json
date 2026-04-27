@@ -1,0 +1,9 @@
+{
+  "metals": false,
+  "pwa": false,
+  "crdb_recon": true,
+  "debt_tracking": true,
+  "quick_expenses": true,
+  "custom_reports": true,
+  "scheduled_tx": true
+}
