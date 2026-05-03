@@ -1059,21 +1059,6 @@
   }
   .atx-field input::placeholder { color: var(--muted); }
 
-  input.atx-freetext-input {
-    width: 100%;
-    font-size: 15px;
-    padding: 14px 18px;
-    background: var(--surface);
-    border: 1.5px solid var(--border);
-    letter-spacing: 0.01em;
-    border-radius: var(--radius);
-    transition: all 0.2s ease;
-  }
-  input.atx-freetext-input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(67,97,238,0.1);
-  }
-
   .atx-hint {
     font-size: 10px;
     color: var(--muted);

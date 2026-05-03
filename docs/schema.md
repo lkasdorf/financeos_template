@@ -125,7 +125,7 @@ Third-party-money tracking: open receivables and payables.
 
 ## `data/prompt_log.csv`
 
-Offline queue: every entry is stored **here first** before the Claude API / a script processes it. Protects against data loss on API errors.
+Offline queue: every entry is stored **here first** before a script processes it. Protects against data loss on write errors.
 
 | Column | Type | Required | Description |
 |---|---|---|---|

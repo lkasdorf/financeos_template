@@ -16,11 +16,11 @@ const REPORTS = [
     render: renderIncExpReport,
   },
   {
-    id: 'house4c',
+    id: 'household',
     category: 'Expenses',
-    title: 'House 4C Costs',
-    desc: 'All expenses tagged House_A_costs — monthly and yearly',
-    render: renderHouse4CReport,
+    title: 'Household Costs',
+    desc: 'All expenses tagged Household_costs — monthly and yearly',
+    render: renderHouseholdReport,
   },
   {
     id: 'bills',

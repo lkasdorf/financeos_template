@@ -103,7 +103,7 @@ See `docs/contributing.md` for the full guide (PR format, commit conventions, lo
 
 - **Multi-tenant SaaS hosting.** FinanceOS is single-instance. If you want to host it for multiple unrelated users, run multiple instances behind a reverse proxy.
 - **Realtime sync between devices.** The intended pattern is one always-on host (NAS, Pi, VPS) reachable from your devices over LAN / VPN / Tailscale. No vendor-specific sync layer.
-- **Auto-categorisation via ML.** Rule-based smart-defaults are config-driven; everything beyond that is left to your own pipeline (or the optional Claude-API integration in the upstream).
+- **Auto-categorisation via ML.** Rule-based smart-defaults are config-driven; everything beyond that is left to your own pipeline.
 - **Mobile native apps.** The dashboard is mobile-responsive; a PWA flavour is on the roadmap. Native iOS/Android is not.
 
 ---

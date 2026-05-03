@@ -18,6 +18,25 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.2.0] - 2026-05-04
+
+Removes the optional Claude-API-backed free-text TX entry mode. Manual entry is now the sole in-dashboard booking path; Claude Code terminal TX (a CLAUDE.md convention, no server endpoint) and `TX fuel` (a local regex parser in `scripts/fuel.py`) are unaffected. No data-format or migration impact.
+
+### Removed
+
+- **Dashboard Free-text TX mode and the Claude API path that powered it.** The tab bar (`Free-text` / `Manual`) is gone; the Add-TX page is now a single manual form.
+- **`POST /api/tx/parse` endpoint** and the `handle_tx_parse` handler in `scripts/serve.py`.
+- **`tx_engine.parse_with_claude`, `build_parse_prompt`, `_render_smart_default_rule`** and the entire Claude-API-parsing section in `scripts/tx_engine.py`. The `anthropic` Python package is no longer imported anywhere in the project.
+- **`ANTHROPIC_API_KEY` requirement.** No feature in this release reads the key; the startup banner no longer mentions it, `.env.example` no longer lists it, and `docs/local-setup.md` no longer documents a setup path for it.
+- **`config/smart_defaults.json:prompt_rules`** field and the sanitizer step that emptied it during template export. The field only existed to be rendered into the Claude API system prompt.
+- **i18n keys** `atx.tab_freetext`, `atx.tab_manual`, `atx.free.*`, `txflow.free.*` in `config/i18n/en.json`. `page.add_tx.subtitle` is now `"Manual entry"`.
+- **CSS:** `input.atx-freetext-input` rule removed from `dashboard/styles.css`.
+- **Frontend:** `submitFreeText()` and `switchTxMode()` removed from `dashboard/forms-add-tx.js`; the `addTxState.mode` field is gone.
+
+### Migration
+
+No action required. Forks that referenced `prompt_rules` in their `config/smart_defaults.json` can safely delete the field; the parser that consumed it no longer exists. If you depended on the dashboard's free-text mode in your own deployment, switch to the Manual form (same data, structured input) or drive bookings from a Claude Code terminal session against the repo.
+
 ## [1.1.0] - 2026-05-03
 
 Promotes `1.1.0-rc.1` to stable. No functional changes from the release candidate; the upstream code spent the rc.1 day under live load on the maintainer's deployment plus a multi-agent design/UX review pass with 7 follow-up fixes folded in. See the `[1.1.0-rc.1]` entry below for the full feature inventory.
@@ -63,7 +82,7 @@ Release candidate for `1.1.0`. Six weeks of upstream work bundled into one previ
 
 ### Tooling
 
-- **`scripts/template_export.py`** sanitize pipeline grew from 11 to 18 surgical edits to cover new hardcoded references that crept in post-v1.0.0 (FinanceOS brand in `<title>` + footer, hardcoded Pi LAN/Tailscale IPs, Pi hostname, person-name placeholders, House_4C / SBR commentary). Pre-public-push privacy scan codified as a hard gate before each release.
+- **`scripts/template_export.py`** sanitize pipeline grew from 11 to 18 surgical edits to cover new hardcoded upstream references that crept in post-v1.0.0 (brand strings in `<title>` and footer, hardcoded LAN/VPN IPs, host aliases, person-name placeholders, household/property tag commentary). Pre-public-push privacy scan codified as a hard gate before each release.
 
 ## [1.0.0] - 2026-04-27
 

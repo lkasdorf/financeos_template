@@ -77,7 +77,7 @@ FUEL_LOG_COLUMNS = [
 #   * Any other token          → positional candidate for cost / station / odometer
 #
 # Among the positional candidates, the LAST integer-looking token wins as
-# the odometer (Vehicle-style 6-digit km readings are always last in the
+# the odometer (6-digit km readings are always last in the
 # user's natural phrasing) and the FIRST numeric token (with optional
 # k/m suffix) wins as cost. Whatever remains is joined to a station name.
 _LITERS_RE = re.compile(r"^([\d.]+)\s*l$", re.IGNORECASE)
@@ -415,7 +415,7 @@ def load_dismissed_recon() -> dict[str, dict]:
 def add_dismissed_recon(import_id: str, reason: str = "") -> None:
     """Mark an unlinked TX as 'not vehicle fuel' so reconcile() ignores it.
 
-    Used for non-Vehicle fuel expenses (lawn-mower, generator, jerry-cans
+    Used for off-vehicle fuel expenses (lawn-mower, generator, jerry-cans
     for someone else) that share the Automobile:Petrol category but have
     no business living in the fuel log.
     """

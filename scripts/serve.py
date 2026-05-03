@@ -98,7 +98,7 @@ FEATURE_GATED_ROUTES = {
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ── Environment Setup ───────────────────────────────────────────────────────
-# Load .env file for ANTHROPIC_API_KEY (needed for free-text TX parsing).
+# Load `.env` for any FINANCEOS_* overrides shipped alongside the repo.
 # Uses setdefault so real env vars take precedence over .env values.
 
 _env_path = REPO_ROOT / ".env"
@@ -331,7 +331,6 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         self._raw_body = self.rfile.read(content_length) if content_length > 0 else b""
         routes = {
             "/api/tx/context": self.handle_tx_context,
-            "/api/tx/parse": self.handle_tx_parse,
             "/api/tx/manual": self.handle_tx_manual,
             "/api/tx/confirm": self.handle_tx_confirm,
             "/api/tx/update": self.handle_tx_update,
@@ -478,41 +477,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         self._respond_json(200, {"accounts": acc_list, "categories": cat_list, "tags": tag_list, "payees": payee_list})
 
-    # ── API: /api/tx/parse ───────────────────────────────────────────────
-
-    def handle_tx_parse(self):
-        """Parse free-text transaction input via Claude API.
-
-        Requires ANTHROPIC_API_KEY in environment. Falls back to 503 if
-        the key is missing, or 422 if parsing fails. The dashboard offers
-        manual mode as a fallback when the API is unavailable.
-        """
-        body = self._read_json_body()
-        raw_input = body.get("raw_input", "").strip()
-        tx_date = body.get("date", "")
-
-        if not raw_input:
-            self._respond_json(400, {"error": "raw_input is required"})
-            return
-
-        from datetime import date as d
-        if not tx_date:
-            tx_date = d.today().isoformat()
-
-        result = tx_engine.parse_with_claude(raw_input, tx_date)
-        if "error" in result:
-            code = result.get("code", "ERROR")
-            status = 503 if code == "NO_API_KEY" else 422
-            self._respond_json(status, result)
-        else:
-            self._respond_json(200, result)
-
     # ── API: /api/tx/manual ──────────────────────────────────────────────
 
     def handle_tx_manual(self):
-        """Build TX preview from structured form data (no Claude API needed).
+        """Build TX preview from structured form data.
 
-        Used by the Manual tab in the dashboard. Handles single lines,
+        Used by the Add-TX page in the dashboard. Handles single lines,
         receipt splits, and pass-through counter-entries automatically.
         """
         body = self._read_json_body()
@@ -2175,10 +2145,6 @@ def main() -> int:
 
     url = f"http://localhost:{args.port}{DASHBOARD_PATH}?source={args.source}"
 
-    # Check API key
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("[warn] ANTHROPIC_API_KEY nicht gesetzt — Free-text-Parsing deaktiviert (Manual Mode funktioniert).")
-
     if is_port_in_use(args.port):
         print(f"[info] Port {args.port} ist schon belegt — vermutlich läuft bereits ein Server.")
         print(f"[info] Öffne Dashboard im Browser: {url}")
@@ -2189,12 +2155,10 @@ def main() -> int:
 
     os.chdir(REPO_ROOT)
 
-    api_status = "Claude API ready" if os.environ.get("ANTHROPIC_API_KEY") else "Manual mode only"
     print()
     print(f"  FinanceOS Dashboard Server")
     print(f"  URL:   {url}")
     print(f"  Root:  {REPO_ROOT}")
-    print(f"  API:   {api_status}")
     print(f"  Stop:  Ctrl+C")
     print()
 

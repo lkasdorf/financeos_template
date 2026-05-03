@@ -168,7 +168,7 @@ The engine asks back: "Amount X is not in `atm_fees.csv` — provide the fees ma
 Each account detail page shows a large primary **"+ Add TX"** button below the balance + meta row. Click it →
 
 1. The Add TX page opens with the **account pre-filled** and a **`← Back` button** at the top.
-2. Book as usual (free-text or manual).
+2. Book as usual.
 3. After a successful commit → **automatic jump back to the same account detail page**, with the refreshed balance and the new transaction in the list.
 
 The smaller "+ Add TX" button at the top right (next to Export XLSX) stays around as a quick-access shortcut for when you've scrolled far down.
@@ -419,9 +419,6 @@ Every TX entry lands **first** in `data/prompt_log.csv` (`booked=False`), then i
 ### Schema fidelity
 `docs/schema.md` is binding. Scripts read accounts/categories only from `accounts.csv` and `categories.csv`.
 
-### API key
-`ANTHROPIC_API_KEY` as an environment variable (only relevant when using the optional Claude API for free-text TX parsing).
-
 ### Versioning scheme
 Semantic Versioning. Bump only on user-relevant changes; data-only commits do not bump the version.
 
@@ -520,31 +517,16 @@ If the file or a sub-key is missing, the hardcoded fallbacks take over. No crash
 ## Smart Defaults (config/smart_defaults.json)
 
 ### Purpose
-UX layer for user-centric defaults: which display currency to start in, which TX free-text patterns map to specific accounts/categories.
+UX layer for user-centric defaults: which display currency to start in.
 
 ```json
 {
-  "ui": { "default_display_currency": "USD" },
-  "prompt_rules": []
+  "ui": { "default_display_currency": "USD" }
 }
 ```
 
 ### `ui.default_display_currency`
 The display currency on the **first** dashboard load (when `localStorage['lp-default-currency']` is still empty). As soon as the user toggles the currency switcher, `localStorage` wins.
-
-### `prompt_rules`
-List of structured smart-default rules rendered into the Claude API prompt for free-text TX recognition. Each entry produces one bullet in the system prompt's "Smart Defaults" section.
-
-Accepted shapes:
-
-| Shape | Example | Result in the prompt |
-|---|---|---|
-| Structured | `{"trigger": "Coffee Cart", "account": "cash", "category": "Food:Coffee"}` | `- "Coffee Cart" without account -> account=cash, category=Food:Coffee` |
-| Free-text override | `{"trigger": "Coffee Cart", "description": "Coffee Cart vendors only take cash"}` | `- Coffee Cart vendors only take cash` |
-
-Malformed entries (empty `trigger`, neither `description` nor `account`/`category`) are silently dropped — a broken config drop-in doesn't break the server.
-
-The empty-start template ships with `prompt_rules: []` — add rules as you spot recurring patterns.
 
 ### Graceful default
 Like `defaults.json`: if the file is missing → hardcoded fallbacks kick in, the app keeps running.

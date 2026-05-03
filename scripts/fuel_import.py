@@ -142,7 +142,7 @@ def payee_similarity(excel_station: str, tx_payee: str) -> int:
     """Lightweight fuzzy score in the 0–10 range.
 
     Pure substring/word overlap is enough — Excel stations are short
-    canonical names ('PUMA FuelStation'), TX payees are user-entered.
+    canonical names ('Shell Downtown'), TX payees are user-entered.
     """
     a = excel_station.lower().strip()
     b = tx_payee.lower().strip()

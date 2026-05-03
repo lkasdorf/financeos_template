@@ -312,13 +312,13 @@ function renderIncomeYearly(currency) {
     reportCharts.push(chart);
   }
 }
-// ─── House 4C Report ─────────────────────────────────────────────────────
+// ─── Household Report ─────────────────────────────────────────────────────
 
-function renderHouse4CReport() {
+function renderHouseholdReport() {
   renderExpenseReport({
-    filterId: 'house4c',
-    filterLabel: t('reports.filter_label.house4c', {}, 'House 4C Costs'),
-    filterFn: (tx) => tx.type === 'expense' && tx.tags && tx.tags.split(';').includes('House_A_costs'),
+    filterId: 'household',
+    filterLabel: t('reports.filter_label.household', {}, 'Household Costs'),
+    filterFn: (tx) => tx.type === 'expense' && tx.tags && tx.tags.split(';').includes('Household_costs'),
     colorMain: '#f0a060',
     showTransactions: true,
     showCategoryBreakdown: true,

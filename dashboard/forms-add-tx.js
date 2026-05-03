@@ -2,16 +2,16 @@
 //
 // Extracted from forms.js (Code-Review HIGH 1, forms.js God-Module split,
 // step 3/3). Companion file: forms-edit-tx.js. Hosts the Add TX page,
-// free-text + manual modes, split lines, preview & confirm, plus the
-// shared loadTxContext() helper. Boot trigger (boot() call) lives at
-// the bottom — this is the last defer script in the dashboard chain.
+// split lines, preview & confirm, plus the shared loadTxContext() helper.
+// Boot trigger (boot() call) lives at the bottom — this is the last defer
+// script in the dashboard chain.
 
 
 // returnRoute: optional hash (e.g. '#account:crdb') to navigate back to after
 // a successful booking. Set by navigateToAddTxWithAccount(), cleared by
 // returnFromAddTx() and by any "fresh" entry to the Add-TX page (FAB, sidebar
 // nav, keyboard "n").
-let addTxState = { mode: 'freetext', preview: null, context: null, loading: false, prefillAccount: null, prefillTx: null, returnRoute: null };
+let addTxState = { preview: null, context: null, loading: false, prefillAccount: null, prefillTx: null, returnRoute: null };
 
 async function loadTxContext() {
   if (addTxState.context) return addTxState.context;
@@ -25,7 +25,6 @@ async function loadTxContext() {
 }
 
 function navigateToAddTxWithAccount(alias) {
-  addTxState.mode = 'manual';
   addTxState.preview = null;
   addTxState.prefillAccount = alias;
   addTxState.returnRoute = '#account:' + alias;
@@ -52,7 +51,6 @@ function duplicateTx(tx) {
   if (!tx) return;
   closeModal();
   const today = new Date().toISOString().slice(0, 10);
-  addTxState.mode = 'manual';
   addTxState.preview = null;
   addTxState.prefillTx = {
     date: today,
@@ -106,33 +104,8 @@ async function renderAddTxPage() {
     ${backBar}
     <div class="atx-section">
       ${qeChipsHtml}
-      <div class="atx-tabs">
-        <button class="${addTxState.mode === 'freetext' ? 'active' : ''}" data-action="switchTxMode" data-arg1="freetext">${t('atx.tab_freetext', {}, 'Free-text')}</button>
-        <button class="${addTxState.mode === 'manual' ? 'active' : ''}" data-action="switchTxMode" data-arg1="manual">${t('atx.tab_manual', {}, 'Manual')}</button>
-      </div>
 
-      <!-- Free-text mode -->
-      <div id="atx-freetext" style="display:${addTxState.mode === 'freetext' ? 'block' : 'none'}">
-        <div class="atx-row">
-          <div class="atx-field" style="flex:4">
-            <label>${t('atx.free.label_transaction', {}, 'Transaction')}</label>
-            <input type="text" id="atx-raw-input" class="atx-freetext-input"
-              placeholder="${t('atx.free.placeholder', {}, '45k Jumbo cash')}" autocomplete="off"
-              onkeydown="if(event.key==='Enter')submitFreeText()">
-          </div>
-          <div class="atx-field fx1">
-            <label>${t('common.label.date', {}, 'Date')}</label>
-            <input type="date" id="atx-freetext-date" value="${today}">
-          </div>
-        </div>
-        <div class="atx-hint">${t('atx.free.examples_html', {}, 'Examples: <code>45k Jumbo cash</code> &middot; <code>transfer 500k crdb zu sav</code> &middot; <code>250k Tanesco kft</code>')}</div>
-        <div class="atx-actions">
-          <button data-action="submitFreeText">${t('atx.free.btn_parse', {}, 'Parse &rarr;')}</button>
-        </div>
-      </div>
-
-      <!-- Manual mode -->
-      <div id="atx-manual" style="display:${addTxState.mode === 'manual' ? 'block' : 'none'}">
+      <div id="atx-manual">
         <div class="atx-row">
           <div class="atx-field fx1">
             <label>${t('common.label.date', {}, 'Date')}</label>
@@ -161,7 +134,7 @@ async function renderAddTxPage() {
           <div class="atx-field fx1">
             <label>${t('common.col.payee', {}, 'Payee')}</label>
             <div class="ac-wrapper">
-              <input type="text" id="atx-m-payee" placeholder="${t('atx.m.placeholder_payee', {}, 'Jumbo')}" autocomplete="off">
+              <input type="text" id="atx-m-payee" placeholder="${t('atx.m.placeholder_payee', {}, 'Whole Foods')}" autocomplete="off">
               <div class="ac-list" id="atx-payee-ac"></div>
             </div>
           </div>
@@ -212,12 +185,6 @@ async function renderAddTxPage() {
   loadTxContext().then(ctx => populateTxDropdowns(ctx));
 }
 
-function switchTxMode(mode) {
-  addTxState.mode = mode;
-  addTxState.preview = null;
-  renderAddTxPage();
-}
-
 function applyQuickExpense(qeId) {
   // The dispatcher passes the QE id verbatim. Find the matching chip via
   // dataset comparison rather than a selector with interpolation, so a
@@ -227,8 +194,7 @@ function applyQuickExpense(qeId) {
   if (!chip) return;
   const qe = JSON.parse(chip.getAttribute('data-qe'));
 
-  // Switch to manual mode and pre-fill
-  addTxState.mode = 'manual';
+  // Pre-fill the Add-TX form from the chip
   addTxState.preview = null;
   renderAddTxPage().then(() => {
     // Wait for dropdowns to load, then fill
@@ -459,40 +425,6 @@ function showTxStatus(type, msg) {
 function showTxLoading(msg) {
   const area = document.getElementById('atx-status-area');
   if (area) area.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${msg}</div>`;
-}
-
-async function submitFreeText() {
-  const input = document.getElementById('atx-raw-input');
-  const dateInput = document.getElementById('atx-freetext-date');
-  if (!input || !input.value.trim()) return;
-
-  showTxLoading(t('txflow.free.parsing', {}, 'Parsing with Claude API...'));
-  document.getElementById('atx-preview-area').innerHTML = '';
-
-  try {
-    const res = await fetch('/api/tx/parse', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw_input: input.value.trim(), date: dateInput.value }),
-    });
-    const data = await res.json();
-
-    if (data.error) {
-      if (data.code === 'NO_API_KEY') {
-        const switchLink = `<a href="#" data-action="switchTxMode" data-arg1="manual">${t('txflow.free.switch_manual', {}, 'Switch to manual mode')}</a>`;
-        showTxStatus('warning', escapeHtml(data.error) + ' ' + switchLink);
-      } else {
-        showTxStatus('error', escapeHtml(data.error));
-      }
-      return;
-    }
-
-    addTxState.preview = data;
-    renderTxPreview(data);
-    document.getElementById('atx-status-area').innerHTML = '';
-  } catch (e) {
-    showTxStatus('error', t('txflow.request_failed', { msg: escapeHtml(e.message) }, `Request failed: ${escapeHtml(e.message)}`));
-  }
 }
 
 // ─── Split Lines ──────────────────────────────────────────────────────────
@@ -764,8 +696,6 @@ async function confirmTx() {
     document.getElementById('atx-preview-area').innerHTML = '';
 
     // Clear inputs
-    const rawInput = document.getElementById('atx-raw-input');
-    if (rawInput) rawInput.value = '';
     const amountInput = document.getElementById('atx-m-amount');
     if (amountInput) amountInput.value = '';
     const payeeInput = document.getElementById('atx-m-payee');
