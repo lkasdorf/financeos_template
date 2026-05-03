@@ -118,8 +118,9 @@ Recurring booking templates in `data/scheduled.csv`. The engine does **not** run
 ### Frequency format
 - `monthly:15` → on the 15th of every month
 - `monthly:last` → last day of the month
-- `weekly:<weekday>`
-- `yearly:MM-DD` (extensible)
+- `weekly:<weekday>` → mon/tue/wed/thu/fri/sat/sun
+- `yearly:MM-DD` → once a year on MM-DD
+- `quarterly:MM-DD` → every three months on DD; MM anchors the set (`03-15` → Mar/Jun/Sep/Dec, `01-01` → Jan/Apr/Jul/Oct)
 
 ### After a fire
 `last_run` is updated, `next_run` rolled forward to the next occurrence. Git commit covers `transactions.csv` + `scheduled.csv` together.
@@ -390,7 +391,7 @@ Run FinanceOS on a 24/7 host (single-board computer, NAS, VPS) with bidirectiona
 ### Cron jobs (opt-in)
 The repo ships with several cron scripts that you wire up via crontab on your always-on host:
 
-- `cron_commit.py` — every 5 minutes a bidirectional git sync: fetch → rebase → commit pending data/ → push. If the pull brings in non-data files (code/config), `sudo systemctl restart $FINANCEOS_SERVICE_NAME` (default `financeos`) is also triggered so the service picks up new code immediately.
+- `cron_commit.py` — every 5 minutes a bidirectional git sync: fetch → rebase → commit pending data/ → push. The service is **not** restarted automatically on code pulls; auto-restart was removed because it interrupted active dashboard sessions during PC-side coding. Restart manually after a code push: `sudo systemctl restart <unit>` (or `ssh <host> 'sudo systemctl restart <unit>'` from the dev machine).
 - `cron_fx.py` — daily FX-rate snapshot
 - `cron_sched.py` — daily scheduled-due check
 - `cron_integrity.py` — daily schema/balance check

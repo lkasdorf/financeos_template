@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import calendar
+import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -48,12 +49,37 @@ WEEKDAY_MAP = {
 }
 
 
+def _parse_md(spec: str) -> tuple[int, int]:
+    """Parse an `MM-DD` token, raising ValueError on malformed input.
+
+    Used by yearly:/quarterly: where the spec encodes both the anchor
+    month and the day-of-month. Day capping for short months happens
+    later, when we know which calendar month the next run lands in.
+    """
+    parts = spec.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"expected MM-DD, got {spec!r}")
+    month, day = int(parts[0]), int(parts[1])
+    if not (1 <= month <= 12):
+        raise ValueError(f"month out of range: {month}")
+    if not (1 <= day <= 31):
+        raise ValueError(f"day out of range: {day}")
+    return month, day
+
+
 def calculate_next_run(frequency: str, from_date: date) -> date:
     """Calculate the next run date based on frequency string.
 
     Supported formats:
-      monthly:<day>   — day 1-31 or 'last' for last day of month
-      weekly:<weekday> — mon/tue/wed/thu/fri/sat/sun
+      monthly:<day>     — day 1-31 or 'last' for last day of month
+      weekly:<weekday>  — mon/tue/wed/thu/fri/sat/sun
+      yearly:MM-DD      — once a year on MM-DD (e.g. yearly:09-15)
+      quarterly:MM-DD   — every 3 months on day DD; MM anchors the
+                          quarter set (e.g. quarterly:03-15 fires on
+                          Mar/Jun/Sep/Dec, quarterly:01-01 on
+                          Jan/Apr/Jul/Oct). Day capped per month length
+                          (e.g. quarterly:03-31 → Mar 31, Jun 30, Sep 30,
+                          Dec 31).
     """
     if frequency.startswith("weekly:"):
         day_name = frequency.split(":", 1)[1].strip().lower()
@@ -64,6 +90,35 @@ def calculate_next_run(frequency: str, from_date: date) -> date:
         if days_ahead == 0:
             days_ahead = 7  # Always advance to NEXT week, never fire same day again
         return from_date + timedelta(days=days_ahead)
+
+    if frequency.startswith("yearly:"):
+        target_month, target_day = _parse_md(frequency.split(":", 1)[1].strip())
+        # Try this calendar year first; if the target has already passed
+        # (or is today), roll over to next year. Day capped to month
+        # length so yearly:02-29 in a non-leap year lands on Feb 28.
+        for year in (from_date.year, from_date.year + 1):
+            last_day = calendar.monthrange(year, target_month)[1]
+            candidate = date(year, target_month, min(target_day, last_day))
+            if candidate > from_date:
+                return candidate
+        # Unreachable in practice (year+1 always strictly after from_date).
+        raise RuntimeError(f"yearly: could not advance past {from_date}")
+
+    if frequency.startswith("quarterly:"):
+        anchor_month, target_day = _parse_md(frequency.split(":", 1)[1].strip())
+        # MM anchors the set of 4 months that share the same offset
+        # within a quarter. Sort so we walk forward chronologically when
+        # searching for the next candidate strictly after from_date.
+        anchor_months = sorted(
+            {((anchor_month - 1 + 3 * k) % 12) + 1 for k in range(4)}
+        )
+        for year in (from_date.year, from_date.year + 1):
+            for month in anchor_months:
+                last_day = calendar.monthrange(year, month)[1]
+                candidate = date(year, month, min(target_day, last_day))
+                if candidate > from_date:
+                    return candidate
+        raise RuntimeError(f"quarterly: could not advance past {from_date}")
 
     if not frequency.startswith("monthly:"):
         raise ValueError(f"Unsupported frequency: {frequency}")
@@ -233,7 +288,13 @@ def main() -> int:
         summary_str += f" +{len(summaries) - 5} more"
     commit_msg = f"SCHED cron: {n_booked} Buchungen ({summary_str})"
 
-    tx_engine.git_commit(commit_msg, files=[
+    # Force synchronous git commit+push so a silent push-fail is visible
+    # to cron (non-zero exit) instead of leaving the appended TXs in a
+    # mid-state where transactions.csv and scheduled.csv are written but
+    # the commit/push never lands. The dashboard's interactive path keeps
+    # the async default; this opt-in is per-process via env var.
+    os.environ["GIT_COMMIT_SYNC"] = "1"
+    commit_ok = tx_engine.git_commit(commit_msg, files=[
         "data/transactions.csv",
         "data/scheduled.csv",
     ])
@@ -243,9 +304,11 @@ def main() -> int:
     for line in all_tx_lines:
         direction = "+" if line["type"] == "income" else "-"
         print(f"    {direction} {line['amount']} {line['currency']} | {line['payee']} | {line['category']} | ID: {line['import_id']}")
-    print(f"  Committed: {commit_msg}")
-
-    return 0
+    if commit_ok:
+        print(f"  Committed: {commit_msg}")
+        return 0
+    print(f"  [error] git_commit returned False — TXs appended but not pushed.", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

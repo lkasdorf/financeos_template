@@ -41,8 +41,11 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+import hmac
 import json
 import sys
+import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -156,10 +159,13 @@ def verify_credentials(user: str, password: str) -> bool:
     cfg = load_auth_config()
     if cfg.get("mode") != "basic":
         return False
-    if user != cfg.get("user", ""):
-        return False
+    expected_user = cfg.get("user", "")
     expected = cfg.get("password_bcrypt", "")
-    if not expected:
+    if not expected_user or not expected:
+        return False
+    # hmac.compare_digest avoids leaking the username via timing — the
+    # password check below is already constant-time via bcrypt.
+    if not hmac.compare_digest(user.encode("utf-8"), expected_user.encode("utf-8")):
         return False
     try:
         import bcrypt
@@ -172,6 +178,42 @@ def verify_credentials(user: str, password: str) -> bool:
         return bcrypt.checkpw(password.encode("utf-8"), expected.encode("ascii"))
     except (ValueError, TypeError):
         return False
+
+
+# ── Brute-force throttle ──────────────────────────────────────────────────
+# In-memory per-IP failure counter. Each consecutive failure on the same
+# IP delays the 401 response by 0.5 s × n_fails (capped at 5 s), giving a
+# bcrypt-rate of ~0.2 attempts/s after a handful of misses without ever
+# hard-locking a real user out (Tailscale subnet sharing means we cannot
+# trust 1 IP == 1 person). State drops on server restart and after
+# _FAILURE_TTL of inactivity. Thread-safe via _failure_lock since serve.py
+# uses ThreadingHTTPServer.
+_failure_state: dict[str, dict[str, float]] = {}
+_failure_lock = threading.Lock()
+_FAILURE_TTL = 3600.0
+_FAILURE_DELAY_STEP = 0.5
+_FAILURE_DELAY_MAX = 5.0
+
+
+def _record_failure(ip: str) -> float:
+    """Increment failure count for ``ip`` and return the delay to apply."""
+    now = time.monotonic()
+    with _failure_lock:
+        # Lazy GC of stale entries so a long-running server doesn't grow
+        # the dict unbounded under scan traffic.
+        for key in list(_failure_state):
+            if now - _failure_state[key]["last"] > _FAILURE_TTL:
+                _failure_state.pop(key, None)
+        entry = _failure_state.setdefault(ip, {"fails": 0.0, "last": now})
+        entry["fails"] += 1
+        entry["last"] = now
+        return min(entry["fails"] * _FAILURE_DELAY_STEP, _FAILURE_DELAY_MAX)
+
+
+def _record_success(ip: str) -> None:
+    """Reset failure count for ``ip`` after a successful authentication."""
+    with _failure_lock:
+        _failure_state.pop(ip, None)
 
 
 # ── Middleware ────────────────────────────────────────────────────────────
@@ -187,11 +229,20 @@ def check_request(handler) -> bool:
     if is_exempt(handler.path):
         return True
 
+    client_ip = "unknown"
+    addr = getattr(handler, "client_address", None)
+    if addr:
+        client_ip = addr[0] or "unknown"
+
     auth_header = handler.headers.get("Authorization", "")
     creds = _decode_basic(auth_header)
     if creds is not None and verify_credentials(*creds):
+        _record_success(client_ip)
         return True
 
+    delay = _record_failure(client_ip)
+    if delay > 0:
+        time.sleep(delay)
     _send_challenge(handler)
     return False
 

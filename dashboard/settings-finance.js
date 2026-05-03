@@ -1,0 +1,475 @@
+// ─── Settings: Finance Sub-Tabs (Currency, FX, Budgets, Goals) ───────────
+//
+// Extracted from forms.js (Code-Review HIGH 1, forms.js God-Module split,
+// step 2a/3: Finance settings island ~465 LOC). External dependencies stay
+// in core.js / i18n.js: t, escapeHtml, fxRates, fxDate, fxSource, state,
+// loadAccounts, loadCategories, applyI18n. All functions remain on the
+// global scope so onclick="..." string handlers in the rendered HTML
+// keep working unchanged.
+
+// ─── Settings: Default Currency ──────────────────────────────────────────
+
+function renderCurrencyTab() {
+  const container = document.getElementById('settings-tab-content');
+  const saved = localStorage.getItem('lp-default-currency') || 'TZS';
+  const currencies = ['TZS', 'EUR', 'USD', 'PLN'];
+  container.innerHTML = `
+    <div class="section">
+      <div class="section-title">${t('settings.currency.title', {}, 'Default Display Currency')}</div>
+      <p class="hint-md mb-16">${t('settings.currency.hint', {}, 'This currency is used on page load. You can still switch temporarily via the header toggle.')}</p>
+      <div class="flex-row gap-sm">
+        <select id="set-default-cur" style="padding:10px 16px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);">
+          ${currencies.map(c => `<option value="${c}" ${c === saved ? 'selected' : ''}>${c}</option>`).join('')}
+        </select>
+        <button class="btn-save" onclick="saveDefaultCurrency()">${t('common.actions.save', {}, 'Save')}</button>
+      </div>
+      <div id="set-cur-status" class="mt-12"></div>
+    </div>
+  `;
+}
+
+function saveDefaultCurrency() {
+  const cur = document.getElementById('set-default-cur').value;
+  localStorage.setItem('lp-default-currency', cur);
+  displayCurrency = cur;
+  document.querySelectorAll('.currency-switcher button').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim() === cur);
+  });
+  updateFxInfo();
+  document.getElementById('set-cur-status').innerHTML = `<div class="atx-status success">${escapeHtml(t('settings.currency.saved', { currency: cur }, `Saved. Dashboard will use ${cur} on next load.`))}</div>`;
+}
+
+// ─── Settings: FX Rates ─────────────────────────────────────────────────
+
+function renderFxRatesTab() {
+  const container = document.getElementById('settings-tab-content');
+  const mainCurrencies = ['EUR', 'USD', 'PLN', 'TRY'];
+  const overridePhNone = t('settings.fxrates.override_placeholder_none', {}, 'n/a');
+  const rows = mainCurrencies.map(c => {
+    const rate = fxRates[c] || '';
+    return `<tr>
+      <td><strong>${c}</strong></td>
+      <td style="font-variant-numeric:tabular-nums;">${rate ? formatCurrency(rate, 'TZS') : '—'}</td>
+      <td><input type="text" id="fx-override-${c}" placeholder="${rate || overridePhNone}" style="width:120px;padding:6px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);"></td>
+    </tr>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="section">
+      <div class="section-title">${t('settings.fxrates.title', {}, 'Exchange Rates')} <span class="hint">${t('settings.fxrates.subtitle', {}, '(TZS per 1 unit)')}</span></div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">${t('settings.fxrates.source_line', { source: fxSource, date: fxDate }, `Source: ${fxSource} · Updated: ${fxDate}`)}</p>
+      <table class="tx-table">
+        <thead><tr><th>${t('common.col.currency', {}, 'Currency')}</th><th class="amt">${t('settings.fxrates.col_rate', {}, 'Current Rate')}</th><th>${t('settings.fxrates.col_override', {}, 'Override')}</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="display:flex;gap:8px;margin-top:16px;">
+        <button class="btn-save" onclick="applyFxOverrides()">${t('settings.fxrates.apply', {}, 'Apply Overrides')}</button>
+        <button onclick="resetFxRates()">${t('settings.fxrates.reset', {}, 'Reset to Live')}</button>
+      </div>
+      <div id="fx-status" class="mt-12"></div>
+    </div>
+  `;
+}
+
+async function applyFxOverrides() {
+  const mainCurrencies = ['EUR', 'USD', 'PLN', 'TRY'];
+  let applied = 0;
+  for (const c of mainCurrencies) {
+    const input = document.getElementById('fx-override-' + c);
+    if (input && input.value.trim()) {
+      const val = parseFloat(input.value.trim());
+      if (!isNaN(val) && val > 0) {
+        fxRates[c] = val;
+        applied++;
+      }
+    }
+  }
+  if (applied > 0) {
+    fxSource = 'manual-override';
+    updateFxInfo();
+    document.getElementById('fx-status').innerHTML = `<div class="atx-status success">${applied} rate(s) overridden. Dashboard recalculated.</div>`;
+    boot(); // re-render dashboard
+  } else {
+    document.getElementById('fx-status').innerHTML = '<div class="atx-status warning">No valid overrides entered.</div>';
+  }
+}
+
+async function resetFxRates() {
+  await loadFxRates();
+  updateFxInfo();
+  document.getElementById('fx-status').innerHTML = '<div class="atx-status success">Rates reset to ' + fxSource + '.</div>';
+  renderFxRatesTab();
+  boot();
+}
+
+// ─── Settings: Budgets ──────────────────────────────────────────────────
+
+async function renderBudgetsTab() {
+  const container = document.getElementById('settings-tab-content');
+  const enabled = localStorage.getItem('lp-budgets-enabled') === 'true';
+
+  if (!enabled) {
+    container.innerHTML = `
+      <div style="text-align:center;padding:40px 0;">
+        <h3 style="margin-bottom:8px;">${t('settings.budgets.disabled_title', {}, 'Budget Tracking')}</h3>
+        <p class="c-mut fs-12" style="margin-bottom:16px;">${t('settings.budgets.disabled_desc_html', {}, 'Track monthly spending limits per category.<br>Disabled by default — enable to start using it.')}</p>
+        <button id="budgets-enable-btn" style="padding:8px 24px;background:var(--accent);color:var(--bg);font-size:13px;">${t('settings.budgets.enable', {}, 'Enable Budgets')}</button>
+      </div>
+    `;
+    container.querySelector('#budgets-enable-btn').addEventListener('click', () => {
+      localStorage.setItem('lp-budgets-enabled', 'true');
+      renderBudgetsTab();
+    });
+    return;
+  }
+
+  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.budgets.loading', {}, 'Loading budgets...'))}</div>`;
+
+  let budgets = [];
+  try {
+    const res = await fetch('/api/budgets/list', { method: 'POST' });
+    budgets = (await res.json()).budgets || [];
+  } catch { /* empty */ }
+
+  // Rename map var `t` to `tx` to avoid shadowing the global t() i18n function.
+  const allCats = [...new Set(state.tx.map(tx => tx.category).filter(Boolean))].sort();
+  const topCats = [...new Set(allCats.map(c => c.split(':')[0]))].sort();
+  // Combine top-level and full categories for dropdown
+  const catOptions = [...new Set([...topCats, ...allCats])].sort();
+
+  const labelEdit = t('common.actions.edit', {}, 'Edit');
+  const labelDelete = t('common.actions.delete', {}, 'Delete');
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h3 style="margin:0;">${t('settings.budgets.title', {}, 'Budgets')}</h3>
+      <div style="display:flex;gap:8px;">
+        <button id="budget-add-btn" style="padding:6px 16px;">${t('settings.budgets.add', {}, '+ Add Budget')}</button>
+        <button id="budgets-disable-btn" style="padding:6px 12px;font-size:11px;color:var(--muted);">${t('settings.budgets.disable', {}, 'Disable')}</button>
+      </div>
+    </div>
+    <div id="budgets-status"></div>
+    ${budgets.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#x1F4CA;</div><div class="empty-state-title">${t('settings.budgets.empty_title', {}, 'No budgets yet')}</div><div class="empty-state-desc">${t('settings.budgets.empty_desc', {}, 'Set monthly spending limits per category to track your budget.')}</div></div>` : `
+    <table class="tx-table">
+      <thead><tr><th>${t('common.col.category', {}, 'Category')}</th><th class="amt">${t('settings.budgets.col_budget', {}, 'Budget')}</th><th>${t('common.col.currency', {}, 'Currency')}</th><th>${t('settings.budgets.col_period', {}, 'Period')}</th><th>${t('settings.budgets.col_actions', {}, 'Actions')}</th></tr></thead>
+      <tbody>
+        ${budgets.map(b => `<tr>
+          <td><strong>${escapeHtml(b.category)}</strong></td>
+          <td class="amt">${formatCurrency(b.amount, b.currency)}</td>
+          <td>${b.currency}</td>
+          <td class="fs-12">${b.period}</td>
+          <td>
+            <button class="tx-edit-btn budget-edit-btn" data-budget-id="${escapeHtml(b.id)}">${labelEdit}</button>
+            <button class="tx-edit-btn btn-delete-sm budget-del-btn" data-budget-id="${escapeHtml(b.id)}">${labelDelete}</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`}
+  `;
+
+  // Disable toggle
+  container.querySelector('#budgets-disable-btn').addEventListener('click', async () => {
+    if (await uiConfirm(t('settings.budgets.confirm_disable', {}, 'Disable budget tracking? Your budgets will be preserved.'))) {
+      localStorage.setItem('lp-budgets-enabled', 'false');
+      renderBudgetsTab();
+    }
+  });
+
+  // Add budget
+  container.querySelector('#budget-add-btn').addEventListener('click', () => {
+    showBudgetModal(null, catOptions);
+  });
+
+  // Edit / Delete
+  container.querySelectorAll('.budget-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const b = budgets.find(x => x.id === btn.getAttribute('data-budget-id'));
+      if (b) showBudgetModal(b, catOptions);
+    });
+  });
+  container.querySelectorAll('.budget-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const bid = btn.getAttribute('data-budget-id');
+      if (!(await uiConfirm(t('settings.budgets.confirm_delete', {}, 'Delete this budget?'), { type: 'destructive' }))) return;
+      try {
+        await fetch('/api/budgets/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: bid }),
+        });
+        const res = await fetch('/api/budgets/list', { method: 'POST' });
+        state.budgets = (await res.json()).budgets || [];
+        renderBudgetsTab();
+      } catch (e) {
+        container.querySelector('#budgets-status').innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.budgets.delete_failed', { msg: e.message }, `Delete failed: ${e.message}`))}</div>`;
+      }
+    });
+  });
+}
+
+function showBudgetModal(budget, catOptions) {
+  const isEdit = !!budget;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  const currencies = ['TZS', 'EUR', 'USD', 'PLN'];
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:400px;">
+      <h3>${isEdit ? t('settings.budgets.modal.title_edit', {}, 'Edit <span class="accent">Budget</span>') : t('settings.budgets.modal.title_add', {}, 'Add <span class="accent">Budget</span>')}</h3>
+      <div style="display:grid;gap:12px;margin-top:16px;">
+        <div>
+          <label class="fs-12">${t('settings.budgets.modal.label_category', {}, 'Category (prefix match)')}</label>
+          <input type="text" id="budget-category" list="budget-cat-list" value="${escapeHtml(budget?.category || '')}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          <datalist id="budget-cat-list">${catOptions.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <label class="fs-12">${t('settings.budgets.modal.label_monthly_limit', {}, 'Monthly Limit')}</label>
+            <input type="text" inputmode="numeric" id="budget-amount" value="${budget?.amount || ''}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          </div>
+          <div>
+            <label class="fs-12">${t('common.col.currency', {}, 'Currency')}</label>
+            <select id="budget-currency" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+              ${currencies.map(c => `<option value="${c}" ${budget?.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+      </div>
+      <div id="budget-modal-status"></div>
+      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
+        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
+        <button id="budget-save-btn" style="background:var(--accent);color:var(--bg);">${t('common.actions.save', {}, 'Save')}</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#budget-save-btn').addEventListener('click', async () => {
+    const category = overlay.querySelector('#budget-category').value.trim();
+    const amount = parseAmountInput(overlay.querySelector('#budget-amount').value) || 0;
+    const currency = overlay.querySelector('#budget-currency').value;
+    const statusEl = overlay.querySelector('#budget-modal-status');
+
+    if (!category) { statusEl.innerHTML = `<div class="atx-status error">${t('settings.budgets.modal.err_category_required', {}, 'Category is required')}</div>`; return; }
+    if (amount <= 0) { statusEl.innerHTML = `<div class="atx-status error">${t('settings.budgets.modal.err_amount_positive', {}, 'Amount must be > 0')}</div>`; return; }
+
+    statusEl.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${t('common.saving', {}, 'Saving...')}</div>`;
+
+    try {
+      const endpoint = isEdit ? '/api/budgets/update' : '/api/budgets/add';
+      const body = isEdit
+        ? { id: budget.id, updated: { category, amount, currency, period: 'monthly' } }
+        : { category, amount, currency, period: 'monthly' };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`; return; }
+
+      const budgetsRes = await fetch('/api/budgets/list', { method: 'POST' });
+      state.budgets = (await budgetsRes.json()).budgets || [];
+
+      overlay.remove();
+      renderBudgetsTab();
+    } catch (e) {
+      statusEl.innerHTML = `<div class="atx-status error">${t('common.save_failed', { msg: escapeHtml(e.message) }, `Save failed: ${escapeHtml(e.message)}`)}</div>`;
+    }
+  });
+
+  const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  document.addEventListener('keydown', handler);
+}
+
+// ─── Settings: Savings Goals ────────────────────────────────────────────
+
+async function renderGoalsTab() {
+  const container = document.getElementById('settings-tab-content');
+  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.goals.loading', {}, 'Loading goals...'))}</div>`;
+
+  let goals = [];
+  try {
+    const res = await fetch('/api/goals/list', { method: 'POST' });
+    const data = await res.json();
+    goals = data.goals || [];
+  } catch { /* empty */ }
+
+  const accounts = state.accounts.filter(a => a.status === 'active' && a.owner === 'self');
+  const currencies = [...new Set(accounts.map(a => a.currency))];
+
+  const labelEdit = t('common.actions.edit', {}, 'Edit');
+  const labelDelete = t('common.actions.delete', {}, 'Delete');
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h3 style="margin:0;">${t('settings.goals.title', {}, 'Savings Goals')}</h3>
+      <button id="goal-add-btn" style="padding:6px 16px;">${t('settings.goals.add', {}, '+ Add Goal')}</button>
+    </div>
+    <div id="goals-status"></div>
+    ${goals.length === 0 ? `<div class="empty-state"><div class="empty-state-icon">&#x1F3AF;</div><div class="empty-state-title">${t('settings.goals.empty_title', {}, 'No savings goals yet')}</div><div class="empty-state-desc">${t('settings.goals.empty_desc', {}, 'Define a target amount and track your progress toward it.')}</div></div>` : `
+    <table class="tx-table">
+      <thead><tr><th>${t('common.col.name', {}, 'Name')}</th><th>${t('common.col.account', {}, 'Account')}</th><th>${t('settings.goals.col_target', {}, 'Target')}</th><th>${t('settings.goals.col_current', {}, 'Current')}</th><th>${t('settings.goals.col_progress', {}, 'Progress')}</th><th>${t('settings.goals.col_deadline', {}, 'Deadline')}</th><th>${t('settings.goals.col_actions', {}, 'Actions')}</th></tr></thead>
+      <tbody>
+        ${goals.map(g => {
+          const bal = state.balances[g.account] || 0;
+          const pct = g.target > 0 ? Math.min((bal / g.target) * 100, 100) : 0;
+          const color = pct >= 75 ? 'var(--positive)' : pct >= 25 ? 'var(--warn, #f59e0b)' : 'var(--negative)';
+          return `<tr>
+            <td><strong>${escapeHtml(g.name)}</strong></td>
+            <td>${escapeHtml(g.account)}</td>
+            <td class="amt">${formatCurrency(g.target, g.currency)} ${g.currency}</td>
+            <td class="amt">${formatCurrency(bal, g.currency)} ${g.currency}</td>
+            <td>
+              <div class="goal-bar-bg" style="width:120px;display:inline-block;vertical-align:middle;">
+                <div class="goal-bar-fill" style="width:${pct.toFixed(1)}%;background:${color};"></div>
+              </div>
+              <span style="font-size:11px;color:${color};margin-left:4px;">${pct.toFixed(0)}%</span>
+            </td>
+            <td class="fs-12">${g.deadline || '—'}</td>
+            <td>
+              <button class="tx-edit-btn goal-edit-btn" data-goal-id="${escapeHtml(g.id)}">${labelEdit}</button>
+              <button class="tx-edit-btn btn-delete-sm goal-del-btn" data-goal-id="${escapeHtml(g.id)}">${labelDelete}</button>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`}
+  `;
+
+  // Add goal button
+  container.querySelector('#goal-add-btn').addEventListener('click', () => {
+    showGoalModal(null, accounts, currencies);
+  });
+
+  // Edit / Delete handlers
+  container.querySelectorAll('.goal-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const g = goals.find(x => x.id === btn.getAttribute('data-goal-id'));
+      if (g) showGoalModal(g, accounts, currencies);
+    });
+  });
+  container.querySelectorAll('.goal-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const gid = btn.getAttribute('data-goal-id');
+      if (!(await uiConfirm(t('settings.goals.confirm_delete', {}, 'Delete this goal?'), { type: 'destructive' }))) return;
+      try {
+        await fetch('/api/goals/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: gid }),
+        });
+        // Reload goals in state
+        const res = await fetch('/api/goals/list', { method: 'POST' });
+        state.savingsGoals = (await res.json()).goals || [];
+        renderGoalsTab();
+      } catch (e) {
+        container.querySelector('#goals-status').innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.goals.delete_failed', { msg: e.message }, `Delete failed: ${e.message}`))}</div>`;
+      }
+    });
+  });
+}
+
+function showGoalModal(goal, accounts, currencies) {
+  const isEdit = !!goal;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:420px;">
+      <h3>${isEdit ? t('settings.goals.modal.title_edit', {}, 'Edit <span class="accent">Goal</span>') : t('settings.goals.modal.title_add', {}, 'Add <span class="accent">Goal</span>')}</h3>
+      <div style="display:grid;gap:12px;margin-top:16px;">
+        <div>
+          <label class="fs-12">${t('common.col.name', {}, 'Name')}</label>
+          <input type="text" id="goal-name" value="${escapeHtml(goal?.name || '')}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <label class="fs-12">${t('common.col.account', {}, 'Account')}</label>
+            <select id="goal-account" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+              ${accounts.map(a => `<option value="${a.alias}" ${goal?.account === a.alias ? 'selected' : ''}>${a.alias} (${a.currency})</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="fs-12">${t('common.col.currency', {}, 'Currency')}</label>
+            <select id="goal-currency" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+              ${currencies.map(c => `<option value="${c}" ${goal?.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <label class="fs-12">${t('settings.goals.modal.label_target_amount', {}, 'Target Amount')}</label>
+            <input type="text" inputmode="numeric" id="goal-target" value="${goal?.target || ''}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          </div>
+          <div>
+            <label class="fs-12">${t('common.label.deadline_optional', {}, 'Deadline (optional)')}</label>
+            <input type="date" id="goal-deadline" value="${goal?.deadline || ''}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          </div>
+        </div>
+      </div>
+      <div id="goal-modal-status"></div>
+      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
+        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
+        <button id="goal-save-btn" style="background:var(--accent);color:var(--bg);">${t('common.actions.save', {}, 'Save')}</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Auto-sync currency when account changes
+  overlay.querySelector('#goal-account').addEventListener('change', (e) => {
+    const acc = accounts.find(a => a.alias === e.target.value);
+    if (acc) overlay.querySelector('#goal-currency').value = acc.currency;
+  });
+
+  overlay.querySelector('#goal-save-btn').addEventListener('click', async () => {
+    const name = overlay.querySelector('#goal-name').value.trim();
+    const account = overlay.querySelector('#goal-account').value;
+    const currency = overlay.querySelector('#goal-currency').value;
+    const target = parseAmountInput(overlay.querySelector('#goal-target').value) || 0;
+    const deadline = overlay.querySelector('#goal-deadline').value;
+    const statusEl = overlay.querySelector('#goal-modal-status');
+
+    if (!name) { statusEl.innerHTML = `<div class="atx-status error">${t('settings.goals.modal.err_name_required', {}, 'Name is required')}</div>`; return; }
+    if (target <= 0) { statusEl.innerHTML = `<div class="atx-status error">${t('settings.goals.modal.err_target_positive', {}, 'Target must be > 0')}</div>`; return; }
+
+    statusEl.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${t('common.saving', {}, 'Saving...')}</div>`;
+
+    try {
+      const endpoint = isEdit ? '/api/goals/update' : '/api/goals/add';
+      const body = isEdit
+        ? { id: goal.id, updated: { name, account, currency, target, deadline } }
+        : { name, account, currency, target, deadline };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`; return; }
+
+      // Reload goals in state
+      const goalsRes = await fetch('/api/goals/list', { method: 'POST' });
+      state.savingsGoals = (await goalsRes.json()).goals || [];
+
+      overlay.remove();
+      renderGoalsTab();
+    } catch (e) {
+      statusEl.innerHTML = `<div class="atx-status error">${t('common.save_failed', { msg: escapeHtml(e.message) }, `Save failed: ${escapeHtml(e.message)}`)}</div>`;
+    }
+  });
+
+  const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
+  document.addEventListener('keydown', handler);
+}
+
+// ─── Settings: Backup & Export ──────────────────────────────────────────
+

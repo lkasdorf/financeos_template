@@ -12,16 +12,21 @@ language can follow along without context-switching.
 ## 1. Service via systemd
 
 **DE.** `serve.py` läuft als systemd-Unit, damit das Dashboard nach Reboot
-automatisch hochfährt und beim Pull eines Code-Commits durch den Cron neu
-gestartet werden kann. Der Unit-Name darf abweichen — wichtig ist nur, dass
-der Cron-User per `sudo` ohne Passwort genau diesen Unit-Namen neustarten
-darf (siehe Abschnitt 3).
+automatisch hochfährt und nach einem Code-Push manuell neu gestartet werden
+kann. Code-Deploys passieren bewusst manuell (`sudo systemctl restart
+<unit>` lokal, oder `ssh <host> 'sudo systemctl restart <unit>'` von der
+Dev-Maschine) — so wird eine aktive Dashboard-Session nicht durch einen
+zufälligen `*/5`-Tick unterbrochen. Optional: ein eingegrenzter
+sudoers-Eintrag (Abschnitt 3) lässt den Restart ohne Passwort-Prompt
+durchlaufen.
 
-**EN.** `serve.py` runs as a systemd unit so the dashboard comes back up on
-reboot and can be restarted by the cron job whenever a code commit is
-pulled. The unit name is up to you — the only constraint is that the cron
-user must be allowed to `sudo systemctl restart` that exact unit without a
-password (see section 3).
+**EN.** `serve.py` runs as a systemd unit so the dashboard comes back up
+on reboot and can be restarted manually after a code push. Code deploys
+are a deliberate manual step (`sudo systemctl restart <unit>` locally, or
+`ssh <host> 'sudo systemctl restart <unit>'` from the dev machine) so an
+active dashboard session is never interrupted by a stray `*/5` tick.
+Optional: a narrow sudoers entry (section 3) lets the restart skip the
+password prompt.
 
 ```ini
 # /etc/systemd/system/financeos.service
@@ -52,19 +57,19 @@ sudo systemctl enable --now financeos
 ## 2. Crontab — bidirektionaler Sync alle 5 Minuten / 5-minute bidirectional sync
 
 **DE.** Ein einziger Cron-Eintrag betreibt den vollen Sync-Loop:
-fetch → rebase → commit pending `data/`-Änderungen → push → optional
-`systemctl restart` wenn Nicht-Daten-Files mitgekommen sind. Das ersetzt
-den früheren Doppel-Cron (Bash-Pull + Python-Commit), der über
-`.git/FETCH_HEAD` raceen konnte und in einer Variante stille
+fetch → rebase → commit pending `data/`-Änderungen → push. Kein
+Auto-Restart bei Code-Pulls — Restart erfolgt manuell (Abschnitt 1).
+Das ersetzt den früheren Doppel-Cron (Bash-Pull + Python-Commit), der
+über `.git/FETCH_HEAD` raceen konnte und in einer Variante stille
 Transaktions-Verluste verursacht hat (siehe `CHANGELOG.md`,
 v2026-04-26.3).
 
 **EN.** A single cron entry drives the full sync loop:
-fetch → rebase → commit pending `data/` changes → push → optional
-`systemctl restart` when non-data files were pulled. This replaces the
-earlier two-cron split (bash pull + Python commit) which raced on
-`.git/FETCH_HEAD` and, in one variant, silently destroyed transactions
-(see `CHANGELOG.md`, v2026-04-26.3).
+fetch → rebase → commit pending `data/` changes → push. No
+auto-restart on code pulls — restart is a manual step (section 1).
+This replaces the earlier two-cron split (bash pull + Python commit)
+which raced on `.git/FETCH_HEAD` and, in one variant, silently destroyed
+transactions (see `CHANGELOG.md`, v2026-04-26.3).
 
 ```cron
 # /etc/cron.d/financeos  (or `crontab -e` for the service user)
@@ -87,21 +92,25 @@ sudo chown financeos:financeos /var/log/financeos
 
 ---
 
-## 3. Sudoers-Snippet — passwortloser Restart / passwordless restart
+## 3. Sudoers-Snippet — passwortloser Restart / passwordless restart (optional)
 
-**DE.** Damit `cron_commit.py` den Service nach einem Code-Pull neu
-starten kann, ohne nach einem Passwort zu fragen, braucht der Cron-User
-einen schmalen sudoers-Eintrag — eingeschränkt auf genau den
-`systemctl restart`-Befehl für die FinanceOS-Unit. Den Pfad zu `systemctl`
+**DE.** Optionaler Komfort-Eintrag, damit ein manueller Restart per
+SSH (`ssh <host> 'sudo systemctl restart <unit>'`) ohne Passwort-Prompt
+durchläuft. Eingeschränkt auf genau den `systemctl restart`-Befehl für
+die FinanceOS-Unit — keine breitere Berechtigung. Den Pfad zu `systemctl`
 auf dem Zielsystem über `command -v systemctl` ermitteln; auf den meisten
-Distros liegt er unter `/usr/bin/systemctl`.
+Distros liegt er unter `/usr/bin/systemctl`. Ohne den Eintrag fragt
+`sudo` interaktiv nach dem Passwort — über eine SSH-PTY funktioniert das
+genauso, nur weniger bequem.
 
-**EN.** So `cron_commit.py` can restart the service after pulling a code
-commit without prompting for a password, the cron user needs a narrow
-sudoers entry — locked down to the exact `systemctl restart` invocation
-for the FinanceOS unit. Find the absolute path to `systemctl` on the
-target with `command -v systemctl`; on most distros it lives at
-`/usr/bin/systemctl`.
+**EN.** Optional convenience entry so a manual SSH restart
+(`ssh <host> 'sudo systemctl restart <unit>'`) skips the password
+prompt. Locked down to the exact `systemctl restart` invocation for the
+FinanceOS unit — nothing broader. Find the absolute path to `systemctl`
+on the target with `command -v systemctl`; on most distros it lives at
+`/usr/bin/systemctl`. Without the entry, `sudo` will prompt for the
+password interactively — which works fine over an SSH PTY, just less
+convenient.
 
 ```sudoers
 # /etc/sudoers.d/financeos    (chmod 440, install via `visudo -f`)
@@ -118,26 +127,17 @@ sudo chmod 440 /etc/sudoers.d/financeos
 
 ## 4. Custom service name / abweichender Unit-Name
 
-**DE.** Forks und Eigen-Deployments können den systemd-Unit-Namen
-überschreiben, ohne `cron_commit.py` zu patchen — über die
-Umgebungsvariable `FINANCEOS_SERVICE_NAME`. Default ist `financeos`. Den
-sudoers-Eintrag entsprechend anpassen, sonst schlägt der passwortlose
-`sudo`-Aufruf fehl und der Service läuft mit altem Code weiter.
+**DE.** Der systemd-Unit-Name ist frei wählbar (siehe Abschnitt 1) —
+`cron_commit.py` selbst spricht den Service nicht mehr an, deshalb gibt
+es im Sync-Loop nichts zu konfigurieren. Falls der Unit-Name vom Default
+`financeos` abweicht, einfach den Restart-Befehl und (falls genutzt) den
+sudoers-Eintrag aus Abschnitt 3 entsprechend anpassen.
 
-**EN.** Forks and bespoke deployments can override the systemd unit name
-without patching `cron_commit.py` — set the `FINANCEOS_SERVICE_NAME`
-environment variable. The default is `financeos`. Adjust the sudoers
-entry to match, or the passwordless `sudo` call will fail and the
-service will stay on the old code.
-
-```cron
-# Example: rename the unit to `myfin`
-*/5 * * * * cd /srv/financeos && FINANCEOS_SERVICE_NAME=myfin /usr/bin/python3 scripts/cron_commit.py >> /var/log/financeos/cron_commit.log 2>&1
-```
-
-```sudoers
-financeos ALL=(root) NOPASSWD: /usr/bin/systemctl restart myfin
-```
+**EN.** The systemd unit name is yours to choose (see section 1) —
+`cron_commit.py` no longer talks to the service, so there's nothing to
+configure on the sync side. If the unit name differs from the default
+`financeos`, just adjust the restart command and (if used) the sudoers
+entry from section 3 accordingly.
 
 ---
 
@@ -172,8 +172,9 @@ sudo -n -u financeos systemctl restart financeos   # dry-run the sudoers rule
 - Kein `git reset --hard ORIG_HEAD` als Recovery-Fallback in eigenen
   Wrapper-Scripts. ORIG_HEAD ist sticky aus früheren Operationen und
   zerstört frische Commits stillschweigend.
-- Keine Sudo-Regel à la `NOPASSWD: ALL` — der Cron-User bekommt nur
-  exakt den `systemctl restart <unit>`-Befehl.
+- Keine Sudo-Regel à la `NOPASSWD: ALL` — die optionale
+  Convenience-Regel (Abschnitt 3) erlaubt nur exakt den
+  `systemctl restart <unit>`-Befehl.
 
 **EN.**
 - Don't run a second cron that does `git fetch` / `git pull` on the
@@ -181,5 +182,6 @@ sudo -n -u financeos systemctl restart financeos   # dry-run the sudoers rule
 - Don't use `git reset --hard ORIG_HEAD` as a recovery fallback in
   custom wrapper scripts. ORIG_HEAD is sticky from earlier operations
   and silently nukes fresh commits.
-- Don't grant `NOPASSWD: ALL` — the cron user gets exactly the
-  `systemctl restart <unit>` command and nothing else.
+- Don't grant `NOPASSWD: ALL` — the optional convenience entry
+  (section 3) allows exactly the `systemctl restart <unit>` command and
+  nothing else.

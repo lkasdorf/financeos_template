@@ -1,1 +1,6 @@
-bcrypt>=4.0
+# Pinned with major-version caps so an upstream API break can't blow up
+# the Pi cron silently. Bump deliberately when there's a reason.
+bcrypt>=4.0,<6.0
+# xlrd 2.0 dropped .xls support — we read CRDB legacy .xls statements,
+# so keep it on the 1.x line.
+xlrd<2.0,>=1.2

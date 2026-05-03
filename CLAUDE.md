@@ -200,7 +200,7 @@ Claude Code stores its persistent memories in a directory it manages outside the
 sched_id, name, account, amount, currency, payee, category, note, manual_tags, frequency, next_run, last_run, active
 ```
 
-- `frequency`: compact string. Currently supported: `monthly:<day>` (1–31, or `last` for the month-end), `weekly:<weekday>`. Extensible to `yearly:MM-DD`, `quarterly:MM-DD`.
+- `frequency`: compact string. Supported: `monthly:<day>` (1–31, or `last` for the month-end), `weekly:<weekday>` (mon/tue/…/sun), `yearly:MM-DD` (once a year on MM-DD), `quarterly:MM-DD` (every three months on DD; MM anchors the quarter set, e.g. `03-15` → Mar/Jun/Sep/Dec, `01-01` → Jan/Apr/Jul/Oct). Day capped per month length (Feb 29 in non-leap year → Feb 28).
 - `next_run`: ISO date the row becomes due. Auto-rolled forward after every fire.
 - `last_run`: last actual fire date (audit).
 - `active`: `true`/`false`. `false` → ignored by `SCHED`, but stays in the file.

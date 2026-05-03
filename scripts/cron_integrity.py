@@ -102,12 +102,30 @@ def check_orphaned_pass_through(transactions: list[dict], accounts: dict) -> lis
         elif tx_type == "income":
             incomes.add(key)
 
-    # Flag expenses that have no matching income counter-entry
+    # Flag expenses that have no matching income counter-entry. Allow a
+    # ±1 day tolerance on the date so a manual edit that shifts the
+    # expense or its auto-generated counter-entry by one day (common
+    # when the user back-dates a posting) doesn't show up as orphaned.
+    from datetime import date as _dt_date, timedelta as _dt_td
+
+    def _shift_iso(iso_date: str, delta_days: int) -> str:
+        try:
+            d = _dt_date.fromisoformat(iso_date)
+        except (TypeError, ValueError):
+            return iso_date
+        return (d + _dt_td(days=delta_days)).isoformat()
+
     for key, import_id in expenses:
-        if key not in incomes:
-            dt, acct, amt = key
-            issues.append(
-                f"Orphaned pass-through expense: {dt} | {acct} | {amt} | import_id={import_id}"
+        dt, acct, amt = key
+        candidates = (
+            (dt, acct, amt),
+            (_shift_iso(dt, -1), acct, amt),
+            (_shift_iso(dt, 1), acct, amt),
+        )
+        if any(c in incomes for c in candidates):
+            continue
+        issues.append(
+            f"Orphaned pass-through expense: {dt} | {acct} | {amt} | import_id={import_id}"
             )
 
     return issues

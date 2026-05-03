@@ -251,10 +251,10 @@ async function renderDebtsPage() {
       ? `<div style="margin-top:4px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;width:80px;"><div style="height:100%;width:${progress}%;background:${color};border-radius:2px;"></div></div>`
       : '';
     const actions = isSettled ? '' : `
-      <button class="tx-edit-btn" onclick="showPayDebtModal('${tp.id}')" title="Record payment" class="c-acc">Pay</button>
-      <button class="tx-edit-btn" onclick="showDebtHistory('${tp.id}')" title="Payment history">History</button>
-      <button class="tx-edit-btn" onclick="showDebtModal('${tp.id}')" title="Edit">Edit</button>
-      <button class="tx-edit-btn" onclick="deleteDebt('${tp.id}')" title="Delete" class="c-neg">Delete</button>
+      <button class="tx-edit-btn c-acc" data-action="showPayDebtModal" data-arg1="${tp.id}" title="Record payment">Pay</button>
+      <button class="tx-edit-btn" data-action="showDebtHistory" data-arg1="${tp.id}" title="Payment history">History</button>
+      <button class="tx-edit-btn" data-action="showDebtModal" data-arg1="${tp.id}" title="Edit">Edit</button>
+      <button class="tx-edit-btn c-neg" data-action="deleteDebt" data-arg1="${tp.id}" title="Delete">Delete</button>
     `;
     const nativeOrigHint = tp.currency !== cur ? `<div class="label-xs">${formatCurrency(tp.original_amount, tp.currency)} ${tp.currency}</div>` : '';
     const nativeOutHint = tp.currency !== cur ? `<div class="label-xs">${formatCurrency(tp.amount, tp.currency)} ${tp.currency}</div>` : '';
@@ -267,7 +267,7 @@ async function renderDebtsPage() {
         ${nativeOrigHint}
       </td>
       <td class="amt" style="color:${color};font-weight:500;">
-        ${isSettled ? '<span style="color:var(--positive);">0</span>' : `${formatCurrency(showAmt, cur)}<span class="acc-currency">${cur}</span>`}
+        ${isSettled ? '<span class="c-pos">0</span>' : `${formatCurrency(showAmt, cur)}<span class="acc-currency">${cur}</span>`}
         ${nativeOutHint}
         ${settledLabel}
         ${progressBar}
@@ -280,17 +280,17 @@ async function renderDebtsPage() {
 
   let html = `
     <div class="flex-row gap-md mb-20">
-      <button class="btn-save" onclick="showDebtModal()" style="padding:8px 16px;font-size:11px;">+ Add Debt</button>
+      <button class="btn-save" data-action="showDebtModal" style="padding:8px 16px;font-size:11px;">+ Add Debt</button>
     </div>
-    <div class="income-grid" class="mb-20">
+    <div class="income-grid mb-20">
       <div class="income-cell">
         <div class="ic-label">Owed to You</div>
-        <div class="ic-value" class="c-pos">${formatCurrency(totalOwed, cur)}<span class="ic-cur">${cur}</span></div>
+        <div class="ic-value c-pos">${formatCurrency(totalOwed, cur)}<span class="ic-cur">${cur}</span></div>
         <div class="ic-count">${open.filter(tp => tp.type === 'owed_to_me').length} open</div>
       </div>
       <div class="income-cell">
         <div class="ic-label">You Owe</div>
-        <div class="ic-value" class="c-neg">${formatCurrency(totalOwe, cur)}<span class="ic-cur">${cur}</span></div>
+        <div class="ic-value c-neg">${formatCurrency(totalOwe, cur)}<span class="ic-cur">${cur}</span></div>
         <div class="ic-count">${open.filter(tp => tp.type === 'owed_by_me').length} open</div>
       </div>
       <div class="income-cell">
@@ -302,7 +302,7 @@ async function renderDebtsPage() {
 
   if (open.length > 0) {
     html += `
-      <div class="section" class="mb-24">
+      <div class="section mb-24">
         <div class="section-title">Open</div>
         <table class="tx-table"><thead><tr><th>Person</th><th>Direction</th><th class="amt">Original</th><th class="amt">Outstanding</th><th>Since</th><th>Note</th><th></th></tr></thead>
         <tbody>${open.map(tp => renderRow(tp, false)).join('')}</tbody></table>
@@ -313,7 +313,7 @@ async function renderDebtsPage() {
   if (settled.length > 0) {
     html += `
       <div class="section">
-        <div class="section-title" style="color:var(--muted)">Settled</div>
+        <div class="section-title c-mut">Settled</div>
         <table class="tx-table"><thead><tr><th>Person</th><th>Direction</th><th class="amt">Original</th><th class="amt">Outstanding</th><th>Since</th><th>Note</th><th></th></tr></thead>
         <tbody>${settled.map(tp => renderRow(tp, true)).join('')}</tbody></table>
       </div>

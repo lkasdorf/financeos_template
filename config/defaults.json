@@ -10,7 +10,8 @@
   "currency": {
     "primary": "USD",
     "fx_api_url": "https://open.er-api.com/v6/latest/USD",
-    "metals_spot_api_url": "https://data-asg.goldprice.org/dbXRates/EUR"
+    "metals_spot_api_url": "/api/metals/spot",
+    "metals_spot_upstream_url": "https://data-asg.goldprice.org/dbXRates/EUR"
   },
   "auto_tag": {
     "by_account": {},

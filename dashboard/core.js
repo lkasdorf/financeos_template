@@ -5,7 +5,7 @@ var reportCharts = [];
 
 // Feature flags — defaults are all-on so the app works if config/features.json is missing.
 // Values get overwritten by loadFeatures() before boot() runs.
-window.FEATURES = { metals: true, pwa: true, crdb_recon: true, debt_tracking: true };
+window.FEATURES = { metals: true, pwa: true, crdb_recon: true, debt_tracking: true, vehicles: true };
 async function loadFeatures() {
   try {
     const res = await fetch('../config/features.json', { cache: 'no-store' });
@@ -23,7 +23,12 @@ window.DEFAULTS = {
     primary: 'TZS',
     fallback_tzs_per_usd: 2650,
     fx_api_url: 'https://open.er-api.com/v6/latest/USD',
-    metals_spot_api_url: 'https://data-asg.goldprice.org/dbXRates/EUR',
+    // Same-origin proxy for goldprice.org. The browser cannot fetch
+    // https://data-asg.goldprice.org/... directly because that origin
+    // refuses CORS for our Tailscale hostname. The server-side
+    // /api/metals/spot handler reuses cron_metals.fetch_spot() and
+    // mirrors the upstream JSON shape ({items:[{xauPrice,xagPrice}]}).
+    metals_spot_api_url: '/api/metals/spot',
   },
   auto_tag: { by_account: {}, by_payee: {} },
   pass_through: { reimbursement_categories: {} },
@@ -248,9 +253,12 @@ async function loadFxRates() {
 
 async function loadMetalPrices() {
   try {
+    // No spoofed Origin/Referer headers — we now hit our own
+    // /api/metals/spot proxy, which calls goldprice.org server-side.
+    // POST because serve.py routes API endpoints under do_POST only.
     const res = await fetch(METALS_SPOT_API, {
+      method: 'POST',
       signal: AbortSignal.timeout(5000),
-      headers: { 'Origin': 'https://goldprice.org', 'Referer': 'https://goldprice.org/' },
     });
     if (res.ok) {
       const json = await res.json();
@@ -301,18 +309,19 @@ async function loadMetalsData() {
   } catch (e) { metalPriceHistory = []; }
 }
 
-function toDisplay(amount, nativeCurrency) {
-  if (displayCurrency === nativeCurrency) return amount;
-  const tzsPerNative = fxRates[nativeCurrency] || 1;
-  const tzsPerDisplay = fxRates[displayCurrency] || 1;
-  return amount * tzsPerNative / tzsPerDisplay;
-}
-
 function convertTo(amount, fromCurrency, toCurrency) {
   if (fromCurrency === toCurrency) return amount;
   const tzsPerFrom = fxRates[fromCurrency] || 1;
   const tzsPerTo = fxRates[toCurrency] || 1;
   return amount * tzsPerFrom / tzsPerTo;
+}
+
+// Convenience wrapper around convertTo() that targets the global
+// displayCurrency selector. Kept as its own export so callers reading
+// "amount displayed for the user" don't have to thread displayCurrency
+// through manually.
+function toDisplay(amount, nativeCurrency) {
+  return convertTo(amount, nativeCurrency, displayCurrency);
 }
 
 // ─── Historical FX Rates ────────────────────────────────────────────────
@@ -491,13 +500,24 @@ function computeBalances(tx, accounts) {
   return balances;
 }
 
+// Source of truth for "does this account count toward Net Worth?".
+// Reads the per-account `include_in_net_worth` flag from accounts.csv
+// (added 2026-05-03). If the column is missing — older CSV, freshly
+// imported template, etc. — we fall back to the legacy heuristic:
+// owner=self AND status=active AND type != pass_through.
+function isInNetWorth(a) {
+  const v = a && a.include_in_net_worth;
+  if (v === 'true' || v === true) return true;
+  if (v === 'false' || v === false) return false;
+  return a && a.owner === 'self' && a.status === 'active' && a.type !== 'pass_through';
+}
+
 function netWorthByCurrency(accounts, balances) {
   if (displayCurrency !== 'TZS') {
     // Aggregate all into display currency
     let total = 0, count = 0;
     for (const a of accounts) {
-      if (a.owner !== 'self' || a.status !== 'active') continue;
-      if (a.type === 'pass_through') continue;
+      if (!isInNetWorth(a)) continue;
       total += toDisplay(balances[a.alias] || 0, a.currency);
       count++;
     }
@@ -505,8 +525,7 @@ function netWorthByCurrency(accounts, balances) {
   }
   const result = {};
   for (const a of accounts) {
-    if (a.owner !== 'self' || a.status !== 'active') continue;
-    if (a.type === 'pass_through') continue;
+    if (!isInNetWorth(a)) continue;
     if (!result[a.currency]) result[a.currency] = { total: 0, accounts: 0 };
     result[a.currency].total += balances[a.alias] || 0;
     result[a.currency].accounts += 1;
@@ -791,6 +810,43 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ─── Delegated Click Dispatcher (replaces onclick="fn('${userdata}')") ──
+//
+// Inline onclick handlers with interpolated user data (e.g. payee names
+// like "L'Étoile") would break the JS string and could execute injected
+// code. Migration target — same pattern pages-transactions.js has used
+// since its initial split:
+//   `<button data-action="showPayeeModal" data-arg1="${escapeHtml(p.id)}">Edit</button>`
+//
+// One document-level click listener handles every callsite. Render
+// functions don't have to wire anything per scope — re-renders just
+// replace the buttons, and the next click hits this same listener.
+// The dispatcher looks up window[action]; only globally-defined
+// functions can be invoked. Up to 5 string args (data-arg1..data-arg5)
+// are passed through. Receivers expecting booleans must parse the
+// string ('true'/'false').
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const fn = window[el.dataset.action];
+  if (typeof fn !== 'function') return;
+  const args = [];
+  for (let i = 1; i <= 5; i++) {
+    const v = el.dataset['arg' + i];
+    if (v === undefined) break;
+    args.push(v);
+  }
+  // Suppress the default for buttons and dummy-href anchors (where the
+  // default would just scroll to top), but let real fragment links
+  // (`href="#settings"`) navigate naturally — the hashchange listener
+  // already routes them to navigateTo.
+  const href = el.getAttribute && el.getAttribute('href');
+  if (!(el.tagName === 'A' && href && href !== '#')) {
+    e.preventDefault();
+  }
+  fn.apply(null, args);
+});
+
 // ─── Excel Export ────────────────────────────────────────────────────────
 
 /**
@@ -801,7 +857,7 @@ function escapeHtml(s) {
  */
 function exportXlsx(rows, filename, sheetName) {
   if (!rows || rows.length === 0) return;
-  if (typeof XLSX === 'undefined') { alert('XLSX library not loaded'); return; }
+  if (typeof XLSX === 'undefined') { uiAlert(t('reports.export.err_no_xlsx', {}, 'XLSX library not loaded')); return; }
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, sheetName || 'Data');
@@ -892,6 +948,24 @@ function navigateTo(pageId) {
     const moreMenuLink = document.querySelector(`.nav-more-menu a[data-page="${pageId}"]`);
     if (moreMenuLink && moreBtn) { moreBtn.classList.add('active'); moreMenuLink.classList.add('active'); }
     if (pageId === 'reports' && state.tx.length) { activeReportId = null; destroyReportCharts(); renderReportsPage(); }
+    if (pageId.startsWith('reports/')) {
+      // Sub-route: jump straight to a specific report by id (e.g. #reports/budgetactual).
+      // Activates the same page shell as the list and lets renderReportsPage()
+      // dispatch to renderReportDetail() because activeReportId is set.
+      const reportPage = document.getElementById('page-reports');
+      if (reportPage) reportPage.classList.add('active');
+      const reportLink = document.querySelector('.sidebar-nav > li > a[data-page="reports"]');
+      if (reportLink) reportLink.classList.add('active');
+      const moreReportLink = document.querySelector('.nav-more-menu a[data-page="reports"]');
+      if (moreReportLink && moreBtn) { moreBtn.classList.add('active'); moreReportLink.classList.add('active'); }
+      if (state.tx.length) {
+        const reportId = pageId.slice('reports/'.length);
+        const exists = typeof getAllReports === 'function' && getAllReports().some(r => r.id === reportId);
+        activeReportId = exists ? reportId : null;
+        destroyReportCharts();
+        renderReportsPage();
+      }
+    }
     if (pageId === 'transactions' && state.tx.length) {
       txPage.page = 0; txPage.filterType = ''; txPage.filterAccount = '';
       txPage.filterCategory = ''; txPage.filterTags = [];
@@ -913,6 +987,10 @@ function navigateTo(pageId) {
     if (pageId === 'metals') {
       if (!isFeatureEnabled('metals')) { location.hash = '#dashboard'; return; }
       renderMetalsPage();
+    }
+    if (pageId === 'vehicles') {
+      if (!isFeatureEnabled('vehicles')) { location.hash = '#dashboard'; return; }
+      renderVehiclesPage();
     }
     if (pageId === 'add-tx') renderAddTxPage();
     if (pageId === 'payees') { settingsTab = 'payees'; navigateTo('settings'); return; }
@@ -967,14 +1045,33 @@ document.querySelectorAll('.sidebar-nav > li > a[data-page]').forEach(a => {
   const sidebar = document.getElementById('sidebar');
   const fab = document.getElementById('fab-add-tx');
 
+  // Use the modern `inert` attribute instead of aria-hidden so a focused
+  // child (e.g. the active nav link) doesn't trigger the
+  // "aria-hidden on a focused element" a11y warning. Inert removes the
+  // sub-tree from focus order AND the a11y tree, which is what we
+  // actually want when the off-screen mobile drawer is closed.
+  // Desktop never runs in drawer-open mode, so we only flag inert when
+  // we're below the mobile breakpoint AND the drawer is closed.
+  function syncSidebarInert() {
+    if (!sidebar) return;
+    const mobile = window.matchMedia('(max-width: 768px)').matches;
+    const open = document.body.classList.contains('drawer-open');
+    if (mobile && !open) sidebar.setAttribute('inert', '');
+    else sidebar.removeAttribute('inert');
+  }
   const openDrawer = () => {
     document.body.classList.add('drawer-open');
-    if (sidebar) sidebar.setAttribute('aria-hidden', 'false');
+    syncSidebarInert();
   };
   const closeDrawer = () => {
     document.body.classList.remove('drawer-open');
-    if (sidebar) sidebar.setAttribute('aria-hidden', 'true');
+    syncSidebarInert();
   };
+  // Drop any leftover aria-hidden — third-party extensions or older
+  // builds may have stamped it on the sidebar.
+  if (sidebar) sidebar.removeAttribute('aria-hidden');
+  syncSidebarInert();
+  window.addEventListener('resize', syncSidebarInert);
 
   if (burger) {
     burger.addEventListener('click', (e) => {
@@ -1011,6 +1108,419 @@ window.addEventListener('hashchange', () => {
   navigateTo(hash);
 });
 
+// ── Modal a11y polyfill ────────────────────────────────────────────
+// Every dynamically-created `.modal-overlay` gets role="dialog" plus
+// aria-modal="true" stamped on its inner `.modal`, and the first
+// heading (h1..h4) gets wired as aria-labelledby. This way screen
+// readers announce the modal as a dialog without us having to touch
+// the 17+ render helpers that build modal templates by hand.
+//
+// Focus management: on add, snapshot the previously-focused element,
+// focus the first focusable inside the modal, and trap Tab/Shift+Tab
+// so keyboard users cannot escape the dialog while it is open. On
+// remove, restore focus to the previously-focused element.
+const MODAL_FOCUSABLE_SEL =
+  'a[href], area[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
+  'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function modalFocusables(modal) {
+  return Array.from(modal.querySelectorAll(MODAL_FOCUSABLE_SEL))
+    .filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
+}
+// Modal stack so nested modals (uiConfirm fired from inside an edit
+// modal, etc.) restore focus to the *previous* modal's last focused
+// element rather than to a stale snapshot — and so closing the outer
+// modal first doesn't drop keyboard context.
+window.__modalStack = window.__modalStack || [];
+
+function installModalA11y(node) {
+  const modal = node.querySelector('.modal');
+  if (!modal) return;
+  if (!modal.hasAttribute('role')) modal.setAttribute('role', 'dialog');
+  if (!modal.hasAttribute('aria-modal')) modal.setAttribute('aria-modal', 'true');
+  const heading = modal.querySelector('h1, h2, h3, h4');
+  if (heading && !modal.hasAttribute('aria-labelledby')) {
+    if (!heading.id) heading.id = 'm-h-' + Math.random().toString(36).slice(2, 9);
+    modal.setAttribute('aria-labelledby', heading.id);
+  }
+
+  // Inject a universal close ✕ button in the top-right of every modal
+  // (UX backlog "close-✕"). Dispatches an Escape keydown on the
+  // overlay — bubbles up to document so legacy modals with a global
+  // Escape handler (closeModal) fire, AND directly hits ui-helpers
+  // that listen on overlay. Skip if the modal already has one (e.g.
+  // a hand-rolled close button or repeat-install).
+  if (!modal.querySelector(':scope > .modal-close-x') && !modal.hasAttribute('data-no-close-x')) {
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'modal-close-x';
+    closeBtn.setAttribute('aria-label', (typeof t === 'function' ? t('aria.icon_close', {}, 'Close') : 'Close'));
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Dispatch Escape — bubbles to document for legacy modals with a
+      // global _escHandler, and fires directly on overlay for the ui-
+      // helpers that listen on overlay. Every modal in this codebase
+      // implements Escape, so this is reliable.
+      const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      node.dispatchEvent(ev);
+    });
+    modal.insertBefore(closeBtn, modal.firstChild);
+  }
+
+  // Save previously-focused element so we can restore on close. Push on
+  // a stack so nested modals don't lose the outer modal's focus state.
+  node._prevFocus = document.activeElement;
+  window.__modalStack.push(node);
+
+  // Focus management: prefer an [autofocus] hint over the first
+  // focusable so dialog helpers can encode "Enter = OK" or "Enter =
+  // Cancel" muscle memory by marking the right button. Defer one frame
+  // so any inline setTimeout(focus) calls inside the modal's render
+  // code still win. If no focusable exists at all, focus the modal
+  // itself so screen readers announce it and Tab still works.
+  requestAnimationFrame(() => {
+    if (!node.isConnected) return;
+    if (document.activeElement && modal.contains(document.activeElement)) return;
+    const focusables = modalFocusables(modal);
+    const target = modal.querySelector('[autofocus]') || focusables[0];
+    if (target) {
+      target.focus();
+    } else {
+      if (!modal.hasAttribute('tabindex')) modal.setAttribute('tabindex', '-1');
+      modal.focus();
+    }
+  });
+
+  // Trap Tab so focus cannot leave the modal. Listen on the overlay
+  // (capture=false) — the existing per-modal Escape handler stays
+  // independent and is wired on document.
+  node._tabHandler = (e) => {
+    if (e.key !== 'Tab') return;
+    const focusables = modalFocusables(modal);
+    if (focusables.length === 0) { e.preventDefault(); return; }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey) {
+      if (active === first || !modal.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  };
+  node.addEventListener('keydown', node._tabHandler);
+}
+function teardownModalA11y(node) {
+  if (node._tabHandler) {
+    node.removeEventListener('keydown', node._tabHandler);
+    node._tabHandler = null;
+  }
+  // Pop this node from the stack (regardless of order — outer modal may
+  // have closed first if e.g. Escape race) and try to restore focus to
+  // the most recent still-connected ancestor's snapshot.
+  const stackIdx = window.__modalStack.indexOf(node);
+  if (stackIdx !== -1) window.__modalStack.splice(stackIdx, 1);
+
+  const cur = document.activeElement;
+  const focusInValidPlace = cur && cur !== document.body && cur !== document.documentElement;
+  if (!focusInValidPlace) {
+    // Walk back through the stack for a still-connected target, then
+    // fall through to this node's own snapshot.
+    const candidates = [];
+    for (let i = window.__modalStack.length - 1; i >= 0; i--) {
+      const outer = window.__modalStack[i];
+      if (outer._prevFocus) candidates.push(outer._prevFocus);
+    }
+    candidates.push(node._prevFocus);
+    for (const target of candidates) {
+      if (target && typeof target.focus === 'function' && target.isConnected) {
+        try { target.focus(); break; } catch (_) {}
+      }
+    }
+  }
+  node._prevFocus = null;
+}
+function stampTablistA11y(root) {
+  const lists = root.classList && root.classList.contains('atx-tabs')
+    ? [root]
+    : Array.from(root.querySelectorAll('.atx-tabs'));
+  for (const list of lists) {
+    if (!list.hasAttribute('role')) list.setAttribute('role', 'tablist');
+    const buttons = list.querySelectorAll(':scope > button');
+    buttons.forEach((b) => {
+      if (!b.hasAttribute('role')) b.setAttribute('role', 'tab');
+      const isActive = b.classList.contains('active');
+      b.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      // Roving tabindex: only the active tab is in the tab order; the
+      // rest are reachable via Arrow keys (handled by the keydown
+      // listener below).
+      b.setAttribute('tabindex', isActive ? '0' : '-1');
+    });
+    // If no button is active (initial render edge case), make the
+    // first one focusable so keyboard users can still enter the strip.
+    if (!list.querySelector(':scope > button[tabindex="0"]')) {
+      const first = list.querySelector(':scope > button');
+      if (first) first.setAttribute('tabindex', '0');
+    }
+  }
+}
+// Body-level observer: only fires on direct children of body (where
+// modals are appended). No subtree to keep this cheap.
+new MutationObserver((records) => {
+  for (const r of records) {
+    for (const node of r.addedNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.classList && node.classList.contains('modal-overlay')) {
+        installModalA11y(node);
+        stampTablistA11y(node);
+      }
+    }
+    for (const node of r.removedNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (!node.classList || !node.classList.contains('modal-overlay')) continue;
+      teardownModalA11y(node);
+    }
+  }
+}).observe(document.body, { childList: true });
+
+// ── i18n-aware confirm/prompt/alert helpers ────────────────────────
+// Replace native window.confirm/prompt/alert dialogs (whose OK/Cancel
+// labels live in the *browser* locale, not the dashboard locale) with
+// modal-based promises styled like the rest of the dashboard. The
+// MutationObserver above picks them up automatically for role/dialog
+// stamping and focus trap.
+function _uiEscapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+function _uiBuildOverlay(innerHtml) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = innerHtml;
+  document.body.appendChild(overlay);
+  return overlay;
+}
+function _uiBodyHtml(message) {
+  const safe = _uiEscapeHtml(message).replace(/\n/g, '<br>');
+  return `<div class="hint-md mb-16 ui-dialog-body">${safe}</div>`;
+}
+// Promise-based replacement for window.alert. Always resolves true once
+// dismissed; callers can ignore the return value (fire-and-forget).
+// opts.type: 'default' | 'info' | 'warning' | 'error' — colours the
+// title to telegraph severity. Default falls back to a neutral title.
+function uiAlert(message, opts = {}) {
+  const type = opts.type || 'default';
+  const okLabel = opts.okLabel || (typeof t === 'function'
+    ? t('ui.dialog.ok', {}, 'OK') : 'OK');
+  const titleKey = type === 'error' ? 'ui.dialog.error_title'
+    : type === 'warning' ? 'ui.dialog.warning_title'
+    : type === 'info' ? 'ui.dialog.info_title'
+    : 'ui.dialog.alert_title';
+  const titleFallback = type === 'error' ? 'Error'
+    : type === 'warning' ? 'Warning'
+    : type === 'info' ? 'Info'
+    : 'Notice';
+  const title = opts.title || (typeof t === 'function'
+    ? t(titleKey, {}, titleFallback) : titleFallback);
+  const typeClass = type !== 'default' ? ` ui-dialog-${type}` : '';
+  const okClass = type === 'warning' ? 'btn-warn'
+    : type === 'error' ? 'btn-delete'
+    : 'btn-save';
+  return new Promise((resolve) => {
+    const overlay = _uiBuildOverlay(`
+      <div class="modal ui-dialog${typeClass}">
+        <h3>${_uiEscapeHtml(title)}</h3>
+        ${_uiBodyHtml(message)}
+        <div class="atx-row ui-dialog-actions">
+          <button type="button" class="${okClass}" data-ui-ok autofocus>${_uiEscapeHtml(okLabel)}</button>
+        </div>
+      </div>
+    `);
+    const close = () => { overlay.remove(); resolve(true); };
+    // Scope keydown to the overlay (not document) so a uiAlert mounted
+    // over another form doesn't intercept the form's Enter/Escape. The
+    // focused OK button handles Enter natively via native button
+    // activation; we only wire Escape here.
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('[data-ui-ok]').addEventListener('click', close);
+  });
+}
+// Promise-based replacement for window.confirm. Resolves true on OK,
+// false on Cancel/Escape/backdrop. Callers must `await` the result.
+// opts.type: 'default' | 'destructive' | 'warning'. Backwards-compat:
+// opts.danger === true is sugar for type='destructive'. Destructive
+// blocks backdrop-dismiss + autofocuses Cancel; warning uses the
+// amber `.btn-warn` style but still allows backdrop-dismiss.
+function uiConfirm(message, opts = {}) {
+  const type = opts.type || (opts.danger === true ? 'destructive' : 'default');
+  const isDestructive = type === 'destructive';
+  const isWarning = type === 'warning';
+  const okLabel = opts.okLabel || (typeof t === 'function'
+    ? t('ui.dialog.ok', {}, 'OK') : 'OK');
+  const cancelLabel = opts.cancelLabel || (typeof t === 'function'
+    ? t('common.actions.cancel', {}, 'Cancel') : 'Cancel');
+  const titleKey = isDestructive ? 'ui.dialog.destructive_title'
+    : isWarning ? 'ui.dialog.warning_title'
+    : 'ui.dialog.confirm_title';
+  const titleFallback = isDestructive ? 'Confirm Deletion'
+    : isWarning ? 'Warning'
+    : 'Confirm';
+  const title = opts.title || (typeof t === 'function'
+    ? t(titleKey, {}, titleFallback) : titleFallback);
+  const typeClass = isDestructive ? ' ui-dialog-error'
+    : isWarning ? ' ui-dialog-warning'
+    : '';
+  const okClass = isDestructive ? 'btn-delete' : isWarning ? 'btn-warn' : 'btn-save';
+  return new Promise((resolve) => {
+    // Default-focus & primary-vs-cancel hierarchy:
+    // - default / warning: OK is the safe primary action → autofocus
+    //   on OK so Enter immediately confirms (matches native confirm).
+    // - destructive: autofocus on Cancel as the safer default
+    //   (Material/HIG). User must explicitly Tab + Enter or click OK.
+    const overlay = _uiBuildOverlay(`
+      <div class="modal ui-dialog${typeClass}">
+        <h3>${_uiEscapeHtml(title)}</h3>
+        ${_uiBodyHtml(message)}
+        <div class="atx-row ui-dialog-actions">
+          <button type="button" class="btn-secondary" data-ui-cancel${isDestructive ? ' autofocus' : ''}>${_uiEscapeHtml(cancelLabel)}</button>
+          <button type="button" class="${okClass}" data-ui-ok${isDestructive ? '' : ' autofocus'}>${_uiEscapeHtml(okLabel)}</button>
+        </div>
+      </div>
+    `);
+    const finish = (ok) => {
+      overlay.remove();
+      resolve(ok);
+    };
+    // Scope keydown to overlay so other modals stacked behind don't
+    // lose Enter/Escape. Enter is handled natively by the focused
+    // button. We only wire Escape here.
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    // Backdrop click cancels — except for destructive variants where
+    // accidental outside-clicks would silently undo intent (UX-Reviewer
+    // #2). For destructive, user must use Cancel button or Escape.
+    if (!isDestructive) {
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false); });
+    }
+    overlay.querySelector('[data-ui-cancel]').addEventListener('click', () => finish(false));
+    overlay.querySelector('[data-ui-ok]').addEventListener('click', () => finish(true));
+  });
+}
+// Promise-based replacement for window.prompt. Resolves to the trimmed
+// input string on OK, or null on Cancel/Escape/backdrop (matches the
+// native API's contract — null means "user cancelled").
+function uiPrompt(message, defaultValue = '', opts = {}) {
+  const okLabel = opts.okLabel || (typeof t === 'function'
+    ? t('ui.dialog.ok', {}, 'OK') : 'OK');
+  const cancelLabel = opts.cancelLabel || (typeof t === 'function'
+    ? t('common.actions.cancel', {}, 'Cancel') : 'Cancel');
+  const title = opts.title || (typeof t === 'function'
+    ? t('ui.dialog.prompt_title', {}, 'Input') : 'Input');
+  return new Promise((resolve) => {
+    const overlay = _uiBuildOverlay(`
+      <div class="modal ui-dialog">
+        <h3>${_uiEscapeHtml(title)}</h3>
+        ${_uiBodyHtml(message)}
+        <div class="atx-row"><div class="atx-field">
+          <input type="text" data-ui-input value="${_uiEscapeHtml(defaultValue)}" autocomplete="off" autofocus>
+        </div></div>
+        <div class="atx-row ui-dialog-actions">
+          <button type="button" class="btn-secondary" data-ui-cancel>${_uiEscapeHtml(cancelLabel)}</button>
+          <button type="button" class="btn-save" data-ui-ok>${_uiEscapeHtml(okLabel)}</button>
+        </div>
+      </div>
+    `);
+    const input = overlay.querySelector('[data-ui-input]');
+    const finish = (val) => {
+      overlay.remove();
+      resolve(val);
+    };
+    const submit = () => finish((input.value || '').trim());
+    // Scope keydown to overlay so other modals stacked behind don't
+    // lose Enter/Escape. Enter inside the input submits, Escape on
+    // either overlay or input cancels.
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
+    overlay.querySelector('[data-ui-cancel]').addEventListener('click', () => finish(null));
+    overlay.querySelector('[data-ui-ok]').addEventListener('click', submit);
+  });
+}
+window.uiAlert = uiAlert;
+window.uiConfirm = uiConfirm;
+window.uiPrompt = uiPrompt;
+
+// ── Tab strip a11y (.atx-tabs) ─────────────────────────────────────
+// Single delegated keydown listener that turns every .atx-tabs button
+// strip into a WAI tablist with arrow-key navigation. Buttons retain
+// their existing click handlers; we intercept ArrowLeft/Right/Home/
+// End to move focus, then DEBOUNCE activation by 150ms so a rapid
+// arrow-sweep doesn't trigger a re-render per keypress on tabs that
+// re-fetch (Settings → Categories, Reconciliation → Reports etc.) —
+// WAI APG explicitly allows manual/debounced activation when content
+// load is expensive.
+let _tabActivateTimer = null;
+let _tabActivateTarget = null;
+function _scheduleTabActivation(target) {
+  _tabActivateTarget = target;
+  if (_tabActivateTimer) clearTimeout(_tabActivateTimer);
+  _tabActivateTimer = setTimeout(() => {
+    const next = _tabActivateTarget;
+    _tabActivateTimer = null;
+    _tabActivateTarget = null;
+    if (!next || !next.isConnected) return;
+    const nextDataKey = next.dataset.action || next.dataset.reconTab || next.dataset.period || next.textContent.trim();
+    next.click();
+    // After .click() most tab handlers re-render the page, detaching
+    // `next`. Look up the freshly-rendered .active button by data-key
+    // and refocus so keyboard focus follows the activated tab.
+    requestAnimationFrame(() => {
+      const refreshed = (document.body.contains(next) ? next : null)
+        || Array.from(document.querySelectorAll('.atx-tabs > button.active'))
+          .find(b => (b.dataset.action || b.dataset.reconTab || b.dataset.period || b.textContent.trim()) === nextDataKey);
+      if (refreshed && refreshed !== document.activeElement) refreshed.focus();
+    });
+  }, 150);
+}
+document.addEventListener('keydown', (e) => {
+  const btn = e.target instanceof Element ? e.target.closest('.atx-tabs > button') : null;
+  if (!btn) return;
+  // Enter/Space activate immediately (skip debounce for explicit user
+  // intent — matches WAI APG manual-activation semantics).
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (_tabActivateTimer) { clearTimeout(_tabActivateTimer); _tabActivateTimer = null; _tabActivateTarget = null; }
+    return; // let native button activation fire
+  }
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const buttons = Array.from(btn.parentElement.querySelectorAll(':scope > button'))
+    .filter(b => !b.disabled && b.offsetParent !== null);
+  if (buttons.length === 0) return;
+  const idx = buttons.indexOf(btn);
+  let next;
+  if (e.key === 'ArrowLeft') next = buttons[(idx - 1 + buttons.length) % buttons.length];
+  else if (e.key === 'ArrowRight') next = buttons[(idx + 1) % buttons.length];
+  else if (e.key === 'Home') next = buttons[0];
+  else if (e.key === 'End') next = buttons[buttons.length - 1];
+  if (!next || next === btn) return;
+  e.preventDefault();
+  next.focus();
+  _scheduleTabActivation(next);
+});
+
 // Mobile: detect horizontally scrollable tables and show fade edge
 function updateScrollFades() {
   document.querySelectorAll('.tx-table').forEach(table => {
@@ -1029,8 +1539,35 @@ function updateScrollFades() {
   });
 }
 window.addEventListener('resize', updateScrollFades);
-// Run after each page render via MutationObserver
-new MutationObserver(updateScrollFades).observe(document.querySelector('.content-area') || document.body, { childList: true, subtree: true });
+// Run after each page render via MutationObserver. The observer is the
+// only practical trigger on a hash-routed SPA, but a naive subtree-true
+// childList listener fires on every innerHTML= write across the dashboard
+// and runs querySelectorAll('.tx-table') on each one — visible Pi lag.
+// Debounce via rAF so a burst of mutations from one render coalesces
+// into a single fade update, and skip mutations that did not actually
+// add/remove any element nodes (text-only changes never affect tables).
+let scrollFadesScheduled = false;
+function scheduleScrollFadesUpdate() {
+  if (scrollFadesScheduled) return;
+  scrollFadesScheduled = true;
+  requestAnimationFrame(() => {
+    scrollFadesScheduled = false;
+    updateScrollFades();
+  });
+}
+new MutationObserver(records => {
+  let didFades = false;
+  for (const r of records) {
+    if (r.addedNodes.length || r.removedNodes.length) {
+      if (!didFades) { scheduleScrollFadesUpdate(); didFades = true; }
+      // Stamp tablist a11y on any added node that contains an .atx-tabs strip.
+      // Cheap querySelector check — skips text nodes and unrelated subtrees.
+      for (const node of r.addedNodes) {
+        if (node instanceof HTMLElement) stampTablistA11y(node);
+      }
+    }
+  }
+}).observe(document.querySelector('.content-area') || document.body, { childList: true, subtree: true });
 
 // ─── Keyboard Shortcuts ─────────────────────────────────────────────────
 document.addEventListener('keydown', (e) => {

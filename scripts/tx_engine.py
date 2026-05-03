@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import functools
+import io
 import hashlib
 import json
 import os
@@ -130,6 +131,27 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
         except OSError:
             pass
         raise
+
+
+def _atomic_csv_rewrite(
+    path: Path,
+    fieldnames: list[str],
+    rows: list[dict],
+    extrasaction: str = "raise",
+) -> None:
+    """Rewrite a CSV file atomically (header + rows).
+
+    Builds the full CSV in memory via StringIO, then hands the string to
+    :func:`_atomic_write_text` — so a crash during update_transaction /
+    delete_transaction / batch_* can never leave a truncated
+    transactions.csv. Use this instead of ``open(path, "w")`` for any
+    full-file CSV rewrite.
+    """
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction=extrasaction)
+    writer.writeheader()
+    writer.writerows(rows)
+    _atomic_write_text(path, buf.getvalue())
 
 
 # ── Data Loading ─────────────────────────────────────────────────────────────
@@ -452,10 +474,7 @@ def save_tags(tags: list[dict]) -> None:
     """Write tags to data/tags.csv."""
     tags_path = DATA_DIR / "tags.csv"
     fieldnames = ["tag", "description", "auto_rule", "active"]
-    with open(tags_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(tags)
+    _atomic_csv_rewrite(tags_path, fieldnames, tags)
 
 
 def add_tag(data: dict) -> bool:
@@ -520,10 +539,7 @@ def load_scheduled() -> list[dict]:
 def save_scheduled(items: list[dict]) -> None:
     """Write scheduled transactions to data/scheduled.csv."""
     sched_path = DATA_DIR / "scheduled.csv"
-    with open(sched_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=SCHEDULED_FIELDS)
-        writer.writeheader()
-        writer.writerows(items)
+    _atomic_csv_rewrite(sched_path, list(SCHEDULED_FIELDS), items)
 
 
 def add_scheduled(data: dict) -> str:
@@ -600,10 +616,7 @@ def load_debts() -> list[dict]:
 def save_debts(items: list[dict]) -> None:
     """Write debts to data/third_party.csv."""
     path = DATA_DIR / "third_party.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=DEBT_FIELDS)
-        writer.writeheader()
-        writer.writerows(items)
+    _atomic_csv_rewrite(path, list(DEBT_FIELDS), items)
 
 
 def _create_debt_origination_tx(debt: dict, amount: float, account: str) -> str | None:
@@ -779,10 +792,7 @@ def load_debt_payments(debt_id: str | None = None) -> list[dict]:
 def save_debt_payments(items: list[dict]) -> None:
     """Write debt payments to data/debt_payments.csv."""
     path = DATA_DIR / "debt_payments.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=DEBT_PAYMENT_FIELDS)
-        writer.writeheader()
-        writer.writerows(items)
+    _atomic_csv_rewrite(path, list(DEBT_PAYMENT_FIELDS), items)
 
 
 def pay_debt(debt_id: str, amount: float, currency: str,
@@ -916,10 +926,7 @@ def load_quick_expenses() -> list[dict]:
 def save_quick_expenses(items: list[dict]) -> None:
     """Write quick expenses to data/quick_expenses.csv."""
     qe_path = DATA_DIR / "quick_expenses.csv"
-    with open(qe_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=QUICKEXP_FIELDS)
-        writer.writeheader()
-        writer.writerows(items)
+    _atomic_csv_rewrite(qe_path, list(QUICKEXP_FIELDS), items)
 
 
 def add_quick_expense(data: dict) -> str:
@@ -998,10 +1005,7 @@ def load_atm_fees() -> list[dict]:
 def save_atm_fees(items: list[dict]) -> None:
     """Write ATM fee presets to data/atm_fees.csv."""
     path = DATA_DIR / "atm_fees.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=ATMFEE_FIELDS)
-        writer.writeheader()
-        writer.writerows(items)
+    _atomic_csv_rewrite(path, list(ATMFEE_FIELDS), items)
 
 
 def add_atm_fee(data: dict) -> str:
@@ -1251,16 +1255,15 @@ def save_categories(cats: list[dict]) -> None:
     """Write categories to data/categories.csv."""
     cats_path = DATA_DIR / "categories.csv"
     fieldnames = ["path", "type", "active", "note", "pnl", "essential"]
-    with open(cats_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for c in cats:
-            # Default for legacy rows without the flag: treat expenses as
-            # essential by default, non-expenses as non-essential (the flag
-            # is only consulted for expense TX anyway).
-            if "essential" not in c or c.get("essential") in (None, ""):
-                c = {**c, "essential": "true" if c.get("type") == "expense" else "false"}
-            writer.writerow(c)
+    # Default for legacy rows without the flag: treat expenses as essential
+    # by default, non-expenses as non-essential (the flag is only consulted
+    # for expense TX anyway).
+    normalized = [
+        c if ("essential" in c and c.get("essential") not in (None, ""))
+        else {**c, "essential": "true" if c.get("type") == "expense" else "false"}
+        for c in cats
+    ]
+    _atomic_csv_rewrite(cats_path, fieldnames, normalized, extrasaction="ignore")
 
 
 def add_category(data: dict) -> bool:
@@ -1518,6 +1521,118 @@ TX_COLUMNS = [
 ]
 
 
+# DV1 (2026-04-27): cross-reference validators for non-TX domain objects.
+# Mirror validate_line() for budget / savings_goal / scheduled / third_party /
+# quick_expense / atm_fee. Each is field-presence-aware (skip-if-absent), so
+# the same function works for both add (full body) and update (partial dict).
+
+_DV1_FREQ_RE = re.compile(
+    # monthly:1..31 | last | weekly:mon..sun | yearly:MM-DD | quarterly:MM-DD
+    # Day is bounded 01..31 and month 01..12 — so e.g. monthly:99,
+    # yearly:13-32 are rejected at validate-time instead of slipping in
+    # and exploding when calculate_next_run() tries to use them.
+    r"^("
+    r"monthly:(?:[1-9]|[12]\d|3[01]|last)"
+    r"|weekly:(?:mon|tue|wed|thu|fri|sat|sun)"
+    r"|yearly:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"|quarterly:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r")$"
+)
+_DV1_CCY_RE = re.compile(r"^[A-Z]{3}$")
+_DV1_TX_TYPES = frozenset({"expense", "income", "transfer"})
+
+
+def _dv1_check_amount(body: dict, field: str, errors: list, label: str | None = None) -> None:
+    """If body[field] is present and non-empty, require numeric > 0."""
+    if field not in body or body[field] in ("", None):
+        return
+    name = label or field
+    try:
+        if float(body[field]) <= 0:
+            errors.append(f"{name} must be positive (got {body[field]})")
+    except (ValueError, TypeError):
+        errors.append(f"{name} must be numeric (got {body[field]!r})")
+
+
+def _dv1_check_currency(body: dict, errors: list) -> None:
+    if body.get("currency") and not _DV1_CCY_RE.match(body["currency"]):
+        errors.append(f"currency must be a 3-letter ISO code (got {body['currency']!r})")
+
+
+def _dv1_check_account(body: dict, accounts: dict, errors: list, field: str = "account") -> None:
+    if body.get(field) and body[field] not in accounts:
+        errors.append(f"account '{body[field]}' does not exist")
+
+
+def _dv1_check_category(body: dict, categories: dict, errors: list, field: str = "category") -> None:
+    if body.get(field) and body[field] not in categories:
+        errors.append(f"category '{body[field]}' does not exist")
+
+
+def validate_scheduled(body: dict, accounts: dict, categories: dict) -> list[str]:
+    errors: list[str] = []
+    _dv1_check_amount(body, "amount", errors)
+    _dv1_check_account(body, accounts, errors)
+    _dv1_check_category(body, categories, errors)
+    _dv1_check_currency(body, errors)
+    if body.get("frequency") and not _DV1_FREQ_RE.match(body["frequency"]):
+        errors.append(
+            f"frequency '{body['frequency']}' must match "
+            "monthly:N | weekly:DAY | yearly:MM-DD | quarterly:MM-DD"
+        )
+    return errors
+
+
+def validate_third_party(body: dict, accounts: dict, categories: dict) -> list[str]:
+    errors: list[str] = []
+    _dv1_check_amount(body, "amount", errors)
+    _dv1_check_amount(body, "original_amount", errors)
+    _dv1_check_currency(body, errors)
+    _dv1_check_account(body, accounts, errors)
+    return errors
+
+
+def validate_quick_expense(body: dict, accounts: dict, categories: dict) -> list[str]:
+    errors: list[str] = []
+    _dv1_check_account(body, accounts, errors)
+    _dv1_check_category(body, categories, errors)
+    if body.get("type") and body["type"] not in _DV1_TX_TYPES:
+        errors.append(f"type '{body['type']}' must be one of {sorted(_DV1_TX_TYPES)}")
+    return errors
+
+
+def validate_atm_fee(body: dict, accounts: dict, categories: dict) -> list[str]:
+    errors: list[str] = []
+    _dv1_check_amount(body, "amount", errors)
+    _dv1_check_amount(body, "fee_net", errors)
+    _dv1_check_currency(body, errors)
+    if "levy" in body and body["levy"] not in ("", None):
+        try:
+            if float(body["levy"]) < 0:
+                errors.append(f"levy must be non-negative (got {body['levy']})")
+        except (ValueError, TypeError):
+            errors.append(f"levy must be numeric (got {body['levy']!r})")
+    return errors
+
+
+def validate_budget(body: dict, accounts: dict, categories: dict) -> list[str]:
+    errors: list[str] = []
+    _dv1_check_amount(body, "amount", errors)
+    _dv1_check_currency(body, errors)
+    _dv1_check_category(body, categories, errors)
+    if body.get("period") and body["period"] != "monthly":
+        errors.append(f"period '{body['period']}' must be 'monthly'")
+    return errors
+
+
+def validate_savings_goal(body: dict, accounts: dict, categories: dict) -> list[str]:
+    errors: list[str] = []
+    _dv1_check_amount(body, "target", errors)
+    _dv1_check_currency(body, errors)
+    _dv1_check_account(body, accounts, errors)
+    return errors
+
+
 @with_tx_lock
 def append_transactions(lines: list[dict]) -> None:
     """Append transaction lines to transactions.csv (append-only, never overwrites).
@@ -1572,10 +1687,7 @@ def update_transaction(import_id: str, updated: dict) -> bool:
             rows.append(row)
     if not found:
         return False
-    with open(tx_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
     return True
 
 
@@ -1595,10 +1707,7 @@ def delete_transaction(import_id: str) -> bool:
             rows.append(row)
     if not found:
         return False
-    with open(tx_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
     return True
 
 
@@ -1619,10 +1728,7 @@ def batch_delete_transactions(import_ids: list[str]) -> int:
             rows.append(row)
     if deleted == 0:
         return 0
-    with open(tx_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
     return deleted
 
 
@@ -1654,15 +1760,13 @@ def batch_update_tags(import_ids: list[str], add_tags: list[str], remove_tags: l
             rows.append(row)
     if modified == 0:
         return 0
-    with open(tx_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
     return modified
 
 
 # ── Prompt Log ───────────────────────────────────────────────────────────────
 
+@with_tx_lock
 def log_to_prompt_log(raw_input: str, parsed_json: str) -> int:
     """Log a TX input attempt to prompt_log.csv for audit trail and offline recovery.
 
@@ -1701,6 +1805,7 @@ def log_to_prompt_log(raw_input: str, parsed_json: str) -> int:
     return new_id
 
 
+@with_tx_lock
 def mark_prompt_booked(prompt_id: int) -> None:
     """Mark a prompt_log entry as successfully written to transactions.csv."""
     log_path = DATA_DIR / "prompt_log.csv"
@@ -1715,66 +1820,133 @@ def mark_prompt_booked(prompt_id: int) -> None:
                 row["booked"] = "true"
                 row["booked_at"] = datetime.now().isoformat()
             rows.append(row)
-    with open(log_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    _atomic_csv_rewrite(log_path, list(fieldnames or []), rows)
 
 
 # ── Git ──────────────────────────────────────────────────────────────────────
 
+def _trigger_async_sync() -> None:
+    """Spawn scripts/cron_commit.py as a fully detached background process.
+
+    Used by git_commit() in default async mode so data/ changes reach
+    origin within ~1-2 seconds of a user save instead of waiting up to
+    5 minutes for the next cron tick. The */5 cron stays in place as a
+    safety net for failed event spawns AND as the pull-side mechanism
+    for laptop→Pi sync (event-sync only covers the push direction).
+
+    The child fully detaches: it survives a serve.py restart between
+    launch and completion, has stdin/stdout/stderr piped to DEVNULL,
+    and inherits the same git config and SSH agent as the parent.
+    Spawn failures are silently swallowed — the cron is the safety net,
+    so a failed event spawn just means the change ships at the next
+    */5 tick instead of immediately.
+
+    Concurrency: cron_commit holds the cross-process tx_write_lock
+    (shared with all data writers and the */5 cron itself) for its
+    full run. Multiple concurrent invocations — rapid TX bursts, or
+    an event spawn racing with the */5 cron tick — serialize on that
+    lock. Whoever gets the lock first does the work; followers find
+    nothing to commit and exit as no-ops.
+    """
+    try:
+        cron_script = REPO_ROOT / "scripts" / "cron_commit.py"
+        if not cron_script.exists():
+            return
+        kwargs: dict = {
+            "cwd": str(REPO_ROOT),
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if sys.platform == "win32":
+            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — child outlives parent
+            kwargs["creationflags"] = 0x00000008 | 0x00000200
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([sys.executable, str(cron_script)], **kwargs)
+    except Exception as e:
+        # Never let an event-sync spawn failure break the user's request —
+        # the */5 cron remains the safety net. But surface the failure on
+        # stderr so a chronically broken spawn (missing python, perms, etc.)
+        # doesn't stay silent forever.
+        print(
+            f"[tx_engine] _trigger_async_sync spawn failed: "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+
+
 def git_commit(message: str, files: list[str] | None = None) -> bool:
-    """No-op on the write path. Commits and pushes are handled asynchronously
-    by scripts/cron_commit.py, which runs every 5 minutes and batches all
-    data/ changes into a single commit+push.
+    """Trigger a background git sync after a data mutation.
 
-    This keeps transaction writes fast: the request returns as soon as the
-    CSV is persisted, without waiting for git (which can take several seconds
-    for add+commit+pull--rebase+push).
+    Default behavior (async event-driven): spawns scripts/cron_commit.py
+    in the background so the change is fetched-rebased-committed-pushed
+    within ~1-2 seconds without blocking the request. The */5 cron keeps
+    running as a safety net (catches failed event spawns) and as the
+    pull-side mechanism for laptop→Pi sync.
 
-    The old synchronous behavior is preserved only if GIT_COMMIT_SYNC=1 is
-    set in the environment (useful for local dev / debugging).
+    Modes (controlled by env vars on the running serve.py):
+        FINANCEOS_DISABLE_EVENT_SYNC=1 → no spawn, pure cron-only (legacy
+            pre-event-sync behavior; useful for CI / dev where you don't
+            want every dashboard write to auto-push)
+        GIT_COMMIT_SYNC=1 → synchronous in-process commit+pull--rebase+push
+            (slow, blocks the request; useful for local debugging when
+            you want to see exact git output and timing inline)
+        (neither set) → async event-driven push via background spawn
+            (default; what the Pi runs in production)
 
     Args:
-        message: Commit message string (used only when sync mode is enabled).
-        files: Ignored — the cron commits everything under data/.
+        message: Commit message — currently used only by the synchronous
+            legacy path. The async path delegates to cron_commit.py which
+            generates its own message ("batch: N files (...) [timestamp]").
+        files: Ignored. The cron commits everything under data/, which is
+            the safer default — partial-file commits historically caused
+            split states where related rows were committed in different
+            commits.
 
     Returns:
-        True (always — actual commit status is handled by cron).
+        True. Actual commit/push status is async; observe via origin git
+        log or scripts/cron_commit.py log output.
     """
-    if os.environ.get("GIT_COMMIT_SYNC") != "1":
-        # Async mode: just leave the changes staged-on-disk for the cron job
+    # Opt-out: legacy cron-only behavior, no background spawn.
+    if os.environ.get("FINANCEOS_DISABLE_EVENT_SYNC") == "1":
         return True
 
-    # Legacy synchronous mode (only if explicitly opted in)
-    try:
-        if files:
-            subprocess.run(
-                ["git", "add"] + files,
-                cwd=REPO_ROOT, check=True, capture_output=True,
+    # Opt-in: synchronous in-process mode (slow, lets you see git output).
+    if os.environ.get("GIT_COMMIT_SYNC") == "1":
+        try:
+            if files:
+                subprocess.run(
+                    ["git", "add"] + files,
+                    cwd=REPO_ROOT, check=True, capture_output=True,
+                )
+            else:
+                subprocess.run(
+                    ["git", "add", "data/transactions.csv", "data/prompt_log.csv"],
+                    cwd=REPO_ROOT, check=True, capture_output=True,
+                )
+            result = subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=REPO_ROOT, capture_output=True, text=True,
             )
-        else:
+            if result.returncode != 0:
+                return False
             subprocess.run(
-                ["git", "add", "data/transactions.csv", "data/prompt_log.csv"],
-                cwd=REPO_ROOT, check=True, capture_output=True,
+                ["git", "pull", "origin", "main", "--rebase"],
+                cwd=REPO_ROOT, capture_output=True, timeout=15,
             )
-        result = subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=REPO_ROOT, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
+            subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=REPO_ROOT, capture_output=True, timeout=15,
+            )
+            return True
+        except Exception:
             return False
-        subprocess.run(
-            ["git", "pull", "origin", "main", "--rebase"],
-            cwd=REPO_ROOT, capture_output=True, timeout=15,
-        )
-        subprocess.run(
-            ["git", "push", "origin", "main"],
-            cwd=REPO_ROOT, capture_output=True, timeout=15,
-        )
-        return True
-    except Exception:
-        return False
+
+    # Default: async event-driven push via cron_commit.py background spawn.
+    _trigger_async_sync()
+    return True
 
 
 # ── Claude API Parsing ───────────────────────────────────────────────────────
@@ -1928,6 +2100,27 @@ def parse_with_claude(raw_input: str, tx_date: str) -> dict:
         return {"error": f"Could not parse Claude response as JSON", "code": "PARSE_ERROR"}
     except anthropic.APIError as e:
         return {"error": f"Claude API error: {e}", "code": "API_ERROR"}
+
+    # Schema check: parsed must be a dict with a list of line-dicts. Without
+    # this, a malformed Claude response (top-level string, wrong key,
+    # non-dict line) would crash the loop below or silently book nothing.
+    if not isinstance(parsed, dict):
+        return {"error": "Claude response is not a JSON object", "code": "PARSE_ERROR"}
+    lines_raw = parsed.get("lines", [])
+    if not isinstance(lines_raw, list):
+        return {"error": "Claude response 'lines' is not a list", "code": "PARSE_ERROR"}
+    for idx, line in enumerate(lines_raw):
+        if not isinstance(line, dict):
+            return {
+                "error": f"Claude response line {idx} is not an object",
+                "code": "PARSE_ERROR",
+            }
+        for required in ("account", "type", "amount"):
+            if required not in line:
+                return {
+                    "error": f"Claude response line {idx} missing required field '{required}'",
+                    "code": "PARSE_ERROR",
+                }
 
     # Post-process Claude's output: add import IDs, auto-tags, pass-through lines
     existing_ids = load_existing_import_ids()

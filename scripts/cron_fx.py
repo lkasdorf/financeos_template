@@ -32,6 +32,7 @@ from pathlib import Path
 # Ensure sibling modules are importable
 sys.path.insert(0, str(Path(__file__).parent))
 
+import backup
 import tx_engine
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -218,8 +219,27 @@ def main() -> int:
         else:
             print(f"  {cur}/USD: (not available)")
 
-    changed = write_fx_rates(rates, today_str)
-    history_changed = update_history(rates)
+    # Hold the cross-process tx_write_lock around every backup + write so
+    # concurrent cron_commit / dashboard writes can't interleave with the
+    # FX update. cron_metals does the same.
+    with tx_engine.tx_write_lock():
+        # Backup before any write — CLAUDE.md mandate: every data/*.csv
+        # mutation gets a timestamped snapshot first. Failures here don't
+        # abort the run (cron should still capture today's rates), but the
+        # warning is logged.
+        if FX_PATH.exists():
+            try:
+                backup.backup_file("fx_rates", FX_PATH)
+            except Exception as e:
+                print(f"  [warn] backup fx_rates failed: {e}", file=sys.stderr)
+        if FX_HISTORY_PATH.exists():
+            try:
+                backup.backup_file("fx_rates_history", FX_HISTORY_PATH)
+            except Exception as e:
+                print(f"  [warn] backup fx_rates_history failed: {e}", file=sys.stderr)
+
+        changed = write_fx_rates(rates, today_str)
+        history_changed = update_history(rates)
 
     if not changed and not history_changed:
         print("  FX rates unchanged, no commit needed.")

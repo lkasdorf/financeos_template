@@ -105,21 +105,72 @@ function applyI18n(root) {
     if (translated == null) return;
     el.setAttribute('aria-label', translated);
   });
-  // Rich-text replacement: value is inserted via innerHTML so translations
-  // can preserve small inline markup (e.g. <span class="accent"> for branded
-  // page titles). JSON files are repo-owned, so trust level matches the HTML.
-  // Translators can omit the markup for a plain-text result.
+  // Rich-text replacement: translations may carry tiny inline markup
+  // (e.g. <span class="accent"> for branded page titles). We pass the
+  // string through a strict whitelist sanitizer before assigning to
+  // innerHTML, so a future translation file (or accidental string) with
+  // <script>/<img>/event handlers cannot inject DOM into the dashboard.
   scope.querySelectorAll('[data-i18n-html]').forEach(el => {
     const key = el.getAttribute('data-i18n-html');
     const translated = window.STRINGS[key];
     if (translated == null) return;
-    el.innerHTML = translated;
+    el.replaceChildren(...sanitizeI18nHtml(translated));
   });
+}
+
+// Whitelist sanitizer for data-i18n-html values.
+// Allowed tags: <span class="accent">, <em>, <strong>. Anything else is
+// stripped down to its text content so a malicious translation can at
+// worst inject plain text.
+const I18N_HTML_ALLOWED = {
+  SPAN:   { attrs: { class: new Set(['accent']) } },
+  EM:     { attrs: {} },
+  STRONG: { attrs: {} },
+};
+
+function sanitizeI18nHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html);
+  const out = [];
+  for (const node of tpl.content.childNodes) {
+    const sanitized = sanitizeI18nNode(node);
+    if (sanitized) out.push(sanitized);
+  }
+  return out;
+}
+
+function sanitizeI18nNode(node) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return document.createTextNode(node.textContent);
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+  const allowed = I18N_HTML_ALLOWED[node.tagName];
+  if (!allowed) {
+    // Disallowed tag — keep its descendants' text only (drop the wrapper).
+    const frag = document.createDocumentFragment();
+    for (const child of node.childNodes) {
+      const sanitized = sanitizeI18nNode(child);
+      if (sanitized) frag.appendChild(sanitized);
+    }
+    return frag;
+  }
+  const el = document.createElement(node.tagName);
+  for (const attr of node.attributes) {
+    const allowedValues = allowed.attrs[attr.name];
+    if (allowedValues && allowedValues.has(attr.value)) {
+      el.setAttribute(attr.name, attr.value);
+    }
+  }
+  for (const child of node.childNodes) {
+    const sanitized = sanitizeI18nNode(child);
+    if (sanitized) el.appendChild(sanitized);
+  }
+  return el;
 }
 
 // Switch locales at runtime: persist the choice and reload the page.
 // Why a full reload: most UI strings live inside JS render functions
-// (pages.js, dashboard.js, forms.js, reports.js) that call t() at render
+// (pages-*.js, dashboard.js, forms.js, reports.js, custom-reports*.js) that call t() at render
 // time and write the result via innerHTML. Re-running applyI18n() only
 // updates static [data-i18n] markup; the dynamic cards stay in the boot
 // language. A reload re-enters boot() with the new locale already in

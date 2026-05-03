@@ -39,10 +39,12 @@ import argparse
 import http.server
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -55,6 +57,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import auth
 import backup
+import fuel
 import tx_engine
 from config_loader import get_default, is_enabled
 
@@ -83,6 +86,13 @@ FEATURE_GATED_ROUTES = {
     "/api/custom-reports/update": "custom_reports",
     "/api/custom-reports/delete": "custom_reports",
     "/api/custom-reports/duplicate": "custom_reports",
+    "/api/vehicles/list": "vehicles",
+    "/api/fuel/list": "vehicles",
+    "/api/fuel/add": "vehicles",
+    "/api/fuel/update": "vehicles",
+    "/api/fuel/delete": "vehicles",
+    "/api/fuel/recon/dismiss": "vehicles",
+    "/api/fuel/recon/undismiss": "vehicles",
 }
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -101,9 +111,48 @@ if _env_path.exists():
 
 # System defaults loaded from config/defaults.json with hardcoded fallbacks.
 # Restart required to pick up changes (lru_cache in config_loader).
+def _read_app_version() -> str:
+    """Extract the footer version (e.g. ``v2026-05-01.1``) from
+    ``dashboard/index.html``. Used by ``/api/health`` and consumed by
+    the PWA service worker to bust its shell cache when a new version
+    ships. Falls back to ``unknown`` so missing footer never breaks
+    the health endpoint.
+    """
+    import re
+    idx = REPO_ROOT / "dashboard" / "index.html"
+    try:
+        text = idx.read_text(encoding="utf-8", errors="ignore")
+        m = re.search(r"v\d{4}-\d{2}-\d{2}(?:\.\d+)?", text)
+        return m.group(0) if m else "unknown"
+    except OSError:
+        return "unknown"
+
+
 DEFAULT_PORT = get_default("server.default_port", 8080)
 DEFAULT_BIND = get_default("server.default_bind", "127.0.0.1")
 DASHBOARD_PATH = get_default("server.dashboard_path", "/dashboard/")
+
+# CORS allow-list. Replaces the previous wildcard `Access-Control-Allow-Origin: *`,
+# which combined with `mode: none` auth (LAN/Tailscale default) would hand
+# any page on the internet read access to the dashboard JSON. Same-origin
+# requests don't send an Origin header and are unaffected. Override at
+# startup via env FINANCEOS_CORS_HOSTS=host1,host2 if a new device joins
+# the trusted Pi LAN.
+_DEFAULT_CORS_HOSTS = (
+    "localhost",
+    "127.0.0.1",
+    # "192.168.1.10",   # Add your Pi LAN IP here
+    # "100.x.x.x",       # Add your Tailscale IP here
+    # "your-host",       # Add your Pi hostname here
+    # "your-host.local",
+)
+
+
+def _cors_allowed_hosts() -> tuple[str, ...]:
+    env = os.environ.get("FINANCEOS_CORS_HOSTS")
+    if env:
+        return tuple(h.strip() for h in env.split(",") if h.strip())
+    return _DEFAULT_CORS_HOSTS
 
 
 class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
@@ -122,6 +171,14 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
     # for static files; _respond_json sets it explicitly; do_OPTIONS now
     # sends Content-Length: 0).
     protocol_version = "HTTP/1.1"
+
+    # Per-connection socket timeout. StreamRequestHandler.setup() reads
+    # this and calls self.connection.settimeout(timeout), so a Slow-Loris
+    # client that dribbles bytes cannot pin a worker thread forever — the
+    # socket raises after 30 s of inactivity and the request thread exits.
+    # Tuned high enough that legitimate Pi-over-Tailscale request bursts
+    # (~300 ms RTT, occasional payloads) stay well clear.
+    timeout = 30
 
     _STATIC_EXTS = (".js", ".css", ".woff", ".woff2", ".ttf", ".otf",
                     ".svg", ".png", ".jpg", ".jpeg", ".ico", ".webp")
@@ -184,10 +241,33 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── CORS ─────────────────────────────────────────────────────────────
 
+    def _send_cors_origin(self):
+        """Echo the request Origin only when its host is allow-listed.
+
+        Same-origin requests don't carry an Origin header and need no
+        ACAO header at all. Cross-origin requests get ACAO + Vary:Origin
+        only when the origin's hostname matches :data:`_DEFAULT_CORS_HOSTS`
+        (or the env override). Anything else gets no header and the
+        browser refuses the read — which is the goal: combined with
+        `mode: none` auth, a wildcard ACAO would let any internet page
+        siphon dashboard JSON.
+        """
+        origin = self.headers.get("Origin")
+        if not origin:
+            return
+        try:
+            from urllib.parse import urlparse
+            host = (urlparse(origin).hostname or "").lower()
+        except Exception:
+            return
+        if host in _cors_allowed_hosts():
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
     def do_OPTIONS(self):
         """Handle CORS preflight requests (needed for cross-origin API calls)."""
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_origin()
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         # Empty body — HTTP/1.1 keep-alive needs an explicit Content-Length.
@@ -224,7 +304,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_cors_origin()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -309,10 +389,18 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/recon/files": self.handle_recon_files,
             "/api/recon/suggestions": self.handle_recon_suggestions,
             "/api/recon/adapters": self.handle_recon_adapters,
+            "/api/vehicles/list": self.handle_vehicles_list,
+            "/api/fuel/list": self.handle_fuel_list,
+            "/api/fuel/add": self.handle_fuel_add,
+            "/api/fuel/update": self.handle_fuel_update,
+            "/api/fuel/delete": self.handle_fuel_delete,
+            "/api/fuel/recon/dismiss": self.handle_fuel_recon_dismiss,
+            "/api/fuel/recon/undismiss": self.handle_fuel_recon_undismiss,
             "/api/setup/status": self.handle_setup_status,
             "/api/setup/mmex-upload": self.handle_setup_mmex_upload,
             "/api/setup/finalize": self.handle_setup_finalize,
             "/api/health": self.handle_health,
+            "/api/metals/spot": self.handle_metals_spot,
         }
         # Feature-flag gate: refuse API calls for disabled features.
         gate = FEATURE_GATED_ROUTES.get(self.path)
@@ -327,8 +415,21 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             except BrokenPipeError:
                 pass  # client disconnected before response was sent
             except Exception as e:
+                # Don't leak Python internals (file paths, exception types,
+                # stack traces) to the client. Log full detail server-side
+                # under a short request ID, give the client just the ID so
+                # support can correlate without a public crash dump.
+                req_id = secrets.token_hex(4)
+                print(
+                    f"[serve] 500 req={req_id} path={self.path} {type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc(file=sys.stderr)
                 try:
-                    self._respond_json(500, {"error": str(e)})
+                    self._respond_json(500, {
+                        "error": "Internal server error",
+                        "request_id": req_id,
+                    })
                 except BrokenPipeError:
                     pass
         else:
@@ -355,6 +456,10 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 "owner": acc["owner"],
                 "status": acc["status"],
                 "pass_through_payee": acc.get("pass_through_payee", ""),
+                "initial_balance": acc.get("initial_balance", ""),
+                "initial_balance_date": acc.get("initial_balance_date", ""),
+                "notes": acc.get("notes", ""),
+                "include_in_net_worth": acc.get("include_in_net_worth", ""),
             })
 
         cat_list = []
@@ -627,6 +732,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not body.get("category"):
             self._respond_json(400, {"error": "category is required"})
             return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_budget(body, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
+            return
         bid = tx_engine.add_budget(body)
         tx_engine.git_commit(f"Budget add: {body['category']}", ["data/budgets.json"])
         self._respond_json(200, {"success": True, "id": bid})
@@ -638,6 +749,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         updated = body.get("updated", {})
         if not bid:
             self._respond_json(400, {"error": "id is required"})
+            return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_budget(updated, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
             return
         if not tx_engine.update_budget(bid, updated):
             self._respond_json(404, {"error": f"Budget '{bid}' not found"})
@@ -670,6 +787,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not body.get("name"):
             self._respond_json(400, {"error": "name is required"})
             return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_savings_goal(body, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
+            return
         gid = tx_engine.add_savings_goal(body)
         tx_engine.git_commit(f"Goal add: {body['name']}", ["data/savings_goals.json"])
         self._respond_json(200, {"success": True, "id": gid})
@@ -681,6 +804,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         updated = body.get("updated", {})
         if not gid:
             self._respond_json(400, {"error": "id is required"})
+            return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_savings_goal(updated, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
             return
         if not tx_engine.update_savings_goal(gid, updated):
             self._respond_json(404, {"error": f"Goal '{gid}' not found"})
@@ -785,6 +914,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not body.get("name") or not body.get("account") or not body.get("amount"):
             self._respond_json(400, {"error": "name, account, and amount are required"})
             return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_scheduled(body, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
+            return
         sched_id = tx_engine.add_scheduled(body)
         tx_engine.git_commit(f"Scheduled add: {body['name']}", ["data/scheduled.csv"])
         self._respond_json(200, {"success": True, "sched_id": sched_id})
@@ -795,6 +930,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         updated = body.get("updated", {})
         if not sched_id:
             self._respond_json(400, {"error": "sched_id is required"})
+            return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_scheduled(updated, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
             return
         if not tx_engine.update_scheduled(sched_id, updated):
             self._respond_json(404, {"error": f"Scheduled '{sched_id}' not found"})
@@ -826,6 +967,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not body.get("person_name") or not body.get("amount"):
             self._respond_json(400, {"error": "person_name and amount are required"})
             return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_third_party(body, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
+            return
+        # Backup-Pflicht: third_party.csv and transactions.csv may both mutate.
+        backup.backup_file("third_party", tx_engine.DATA_DIR / "third_party.csv")
+        backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
         result = tx_engine.add_debt(body)
         files = ["data/third_party.csv"]
         if result.get("import_id"):
@@ -839,6 +989,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         updated = body.get("updated", {})
         if not debt_id:
             self._respond_json(400, {"error": "id is required"})
+            return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_third_party(updated, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
             return
         if not tx_engine.update_debt(debt_id, updated):
             self._respond_json(404, {"error": f"Debt '{debt_id}' not found"})
@@ -856,6 +1012,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not debt_id or not amount:
             self._respond_json(400, {"error": "id and amount are required"})
             return
+        # Backup-Pflicht: third_party.csv mutates always; transactions.csv
+        # mutates unless skip_tx is set.
+        backup.backup_file("third_party", tx_engine.DATA_DIR / "third_party.csv")
+        if not skip_tx:
+            backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
         result = tx_engine.topup_debt(debt_id, amount, note, account, skip_tx)
         if not result:
             self._respond_json(404, {"error": f"Debt '{debt_id}' not found or already settled"})
@@ -898,6 +1059,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not account:
             self._respond_json(400, {"error": "account is required"})
             return
+        # Backup-Pflicht: pay_debt writes to third_party.csv,
+        # debt_payments.csv, and transactions.csv.
+        backup.backup_file("third_party", tx_engine.DATA_DIR / "third_party.csv")
+        backup.backup_file("debt_payments", tx_engine.DATA_DIR / "debt_payments.csv")
+        backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
         result = tx_engine.pay_debt(debt_id, amount, currency, converted, note, account)
         if not result:
             self._respond_json(404, {"error": f"Debt '{debt_id}' not found"})
@@ -925,6 +1091,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not body.get("name") or not body.get("account"):
             self._respond_json(400, {"error": "name and account are required"})
             return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_quick_expense(body, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
+            return
         qe_id = tx_engine.add_quick_expense(body)
         tx_engine.git_commit(f"Quick Expense add: {body['name']}", ["data/quick_expenses.csv"])
         self._respond_json(200, {"success": True, "id": qe_id})
@@ -935,6 +1107,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         updated = body.get("updated", {})
         if not qe_id:
             self._respond_json(400, {"error": "id is required"})
+            return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_quick_expense(updated, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
             return
         if not tx_engine.update_quick_expense(qe_id, updated):
             self._respond_json(404, {"error": f"Quick Expense '{qe_id}' not found"})
@@ -964,6 +1142,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not body.get("bank") or not body.get("amount"):
             self._respond_json(400, {"error": "bank and amount are required"})
             return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_atm_fee(body, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
+            return
         fee_id = tx_engine.add_atm_fee(body)
         tx_engine.git_commit(
             f"ATM fee add: {body['bank']} {body['amount']}",
@@ -977,6 +1161,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         updated = body.get("updated", {})
         if not fee_id:
             self._respond_json(400, {"error": "id is required"})
+            return
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        errors = tx_engine.validate_atm_fee(updated, accounts, categories)
+        if errors:
+            self._respond_json(400, {"errors": errors})
             return
         if not tx_engine.update_atm_fee(fee_id, updated):
             self._respond_json(404, {"error": f"ATM fee '{fee_id}' not found"})
@@ -1013,26 +1203,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         import csv
         from pathlib import Path
         accounts_path = Path(__file__).parent.parent / "data" / "accounts.csv"
-        rows = []
-        found = False
-        with open(accounts_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames
-            for row in reader:
-                if row["alias"] == alias:
-                    found = True
-                    for k, v in updated.items():
-                        if k in row and k != "alias":
-                            row[k] = v
-                rows.append(row)
-        if not found:
-            self._respond_json(404, {"error": f"Account '{alias}' not found"})
-            return
-        with open(accounts_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        tx_engine.git_commit(f"Account edit: {alias}", ["data/accounts.csv"])
+        # Hold the cross-process tx_write_lock so a concurrent cron
+        # (cron_sched / cron_commit) can't slip a write between our
+        # backup snapshot, read, and atomic rewrite. Same defense the
+        # rename cascade got in v2026-05-03.2 (commit 86db70d).
+        with tx_engine.tx_write_lock():
+            # Backup-Pflicht before modifying accounts.csv.
+            backup.backup_file("accounts", accounts_path)
+            rows = []
+            found = False
+            with open(accounts_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    if row["alias"] == alias:
+                        found = True
+                        for k, v in updated.items():
+                            if k in row and k != "alias":
+                                row[k] = v
+                    rows.append(row)
+            if not found:
+                self._respond_json(404, {"error": f"Account '{alias}' not found"})
+                return
+            tx_engine._atomic_csv_rewrite(accounts_path, list(fieldnames or []), rows)
+            tx_engine.git_commit(f"Account edit: {alias}", ["data/accounts.csv"])
         self._respond_json(200, {"success": True})
 
     def handle_accounts_rename(self):
@@ -1056,103 +1250,110 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         from pathlib import Path
         data_dir = Path(__file__).parent.parent / "data"
 
-        # Check new alias doesn't already exist
-        accounts_path = data_dir / "accounts.csv"
-        rows = []
-        fieldnames = None
-        found = False
-        with open(accounts_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames
-            for row in reader:
-                if row["alias"] == new_alias:
-                    self._respond_json(400, {"error": f"Alias '{new_alias}' already exists"})
-                    return
-                if row["alias"] == old_alias:
-                    found = True
-                    row["alias"] = new_alias
-                rows.append(row)
-        if not found:
-            self._respond_json(404, {"error": f"Account '{old_alias}' not found"})
-            return
-
-        # Backup first
-        import subprocess
-        subprocess.run(["python", str(Path(__file__).parent / "backup.py"), "transactions"],
-                       capture_output=True, cwd=str(data_dir.parent))
-
-        # Update accounts.csv
-        with open(accounts_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-
-        # Update transactions.csv (account + transfer_to_account)
-        tx_path = data_dir / "transactions.csv"
-        tx_rows = []
-        with open(tx_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            tx_fields = reader.fieldnames
-            for row in reader:
-                if row.get("account") == old_alias:
-                    row["account"] = new_alias
-                if row.get("transfer_to_account") == old_alias:
-                    row["transfer_to_account"] = new_alias
-                tx_rows.append(row)
-        with open(tx_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=tx_fields)
-            writer.writeheader()
-            writer.writerows(tx_rows)
-
-        # Update scheduled.csv
-        sched_path = data_dir / "scheduled.csv"
-        if sched_path.exists():
-            s_rows = []
-            with open(sched_path, newline="", encoding="utf-8") as f:
+        # Hold the cross-process tx_write_lock for the full cascade so a
+        # parallel cron_sched/cron_commit cannot interleave between the
+        # accounts.csv rewrite and the transactions.csv / scheduled.csv /
+        # quick_expenses.csv / payees.json updates.
+        with tx_engine.tx_write_lock():
+            # Check new alias doesn't already exist
+            accounts_path = data_dir / "accounts.csv"
+            rows = []
+            fieldnames = None
+            found = False
+            with open(accounts_path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
-                s_fields = reader.fieldnames
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    if row["alias"] == new_alias:
+                        self._respond_json(400, {"error": f"Alias '{new_alias}' already exists"})
+                        return
+                    if row["alias"] == old_alias:
+                        found = True
+                        row["alias"] = new_alias
+                    rows.append(row)
+            if not found:
+                self._respond_json(404, {"error": f"Account '{old_alias}' not found"})
+                return
+
+            # Backup-Pflicht: rename cascades through accounts.csv,
+            # transactions.csv, scheduled.csv, quick_expenses.csv, payees.json.
+            # Snapshot every file we are about to touch before the first write
+            # so a partial-cascade failure can be reverted.
+            backup.backup_file("accounts", accounts_path)
+            backup.backup_file("transactions", data_dir / "transactions.csv")
+            sched_path = data_dir / "scheduled.csv"
+            if sched_path.exists():
+                backup.backup_file("scheduled", sched_path)
+            qe_path_pre = data_dir / "quick_expenses.csv"
+            if qe_path_pre.exists():
+                # quick_expenses.csv is not in BACKUP_TARGETS by stem; the
+                # raw source path is enough for the snapshot copy.
+                backup.backup_file("quick_expenses", qe_path_pre)
+            payees_path_pre = data_dir / "payees.json"
+            if payees_path_pre.exists():
+                backup.backup_file("payees", payees_path_pre)
+
+            # Update accounts.csv
+            tx_engine._atomic_csv_rewrite(accounts_path, list(fieldnames or []), rows)
+
+            # Update transactions.csv (account + transfer_to_account)
+            tx_path = data_dir / "transactions.csv"
+            tx_rows = []
+            with open(tx_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                tx_fields = reader.fieldnames
                 for row in reader:
                     if row.get("account") == old_alias:
                         row["account"] = new_alias
-                    s_rows.append(row)
-            with open(sched_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=s_fields)
-                writer.writeheader()
-                writer.writerows(s_rows)
+                    if row.get("transfer_to_account") == old_alias:
+                        row["transfer_to_account"] = new_alias
+                    tx_rows.append(row)
+            tx_engine._atomic_csv_rewrite(tx_path, list(tx_fields or []), tx_rows)
 
-        # Update quick_expenses.csv
-        qe_path = data_dir / "quick_expenses.csv"
-        if qe_path.exists():
-            q_rows = []
-            with open(qe_path, newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                q_fields = reader.fieldnames
-                for row in reader:
-                    if row.get("account") == old_alias:
-                        row["account"] = new_alias
-                    q_rows.append(row)
-            with open(qe_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=q_fields)
-                writer.writeheader()
-                writer.writerows(q_rows)
+            # Update scheduled.csv
+            if sched_path.exists():
+                s_rows = []
+                with open(sched_path, newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    s_fields = reader.fieldnames
+                    for row in reader:
+                        if row.get("account") == old_alias:
+                            row["account"] = new_alias
+                        s_rows.append(row)
+                tx_engine._atomic_csv_rewrite(sched_path, list(s_fields or []), s_rows)
 
-        # Update payees.json
-        payees_path = data_dir / "payees.json"
-        if payees_path.exists():
-            with open(payees_path, "r", encoding="utf-8") as f:
-                payees = json.load(f)
-            changed = False
-            for p in payees:
-                if p.get("default_account") == old_alias:
-                    p["default_account"] = new_alias
-                    changed = True
-            if changed:
-                with open(payees_path, "w", encoding="utf-8") as f:
-                    json.dump(payees, f, ensure_ascii=False, indent=2)
+            # Update quick_expenses.csv
+            qe_path = data_dir / "quick_expenses.csv"
+            if qe_path.exists():
+                q_rows = []
+                with open(qe_path, newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    q_fields = reader.fieldnames
+                    for row in reader:
+                        if row.get("account") == old_alias:
+                            row["account"] = new_alias
+                        q_rows.append(row)
+                tx_engine._atomic_csv_rewrite(qe_path, list(q_fields or []), q_rows)
 
-        git_files = ["data/accounts.csv", "data/transactions.csv", "data/scheduled.csv",
-                      "data/quick_expenses.csv", "data/payees.json"]
-        tx_engine.git_commit(f"Account rename: {old_alias} → {new_alias}", git_files)
+            # Update payees.json
+            payees_path = data_dir / "payees.json"
+            if payees_path.exists():
+                with open(payees_path, "r", encoding="utf-8") as f:
+                    payees = json.load(f)
+                changed = False
+                for p in payees:
+                    if p.get("default_account") == old_alias:
+                        p["default_account"] = new_alias
+                        changed = True
+                if changed:
+                    tx_engine._atomic_write_text(
+                        payees_path,
+                        json.dumps(payees, ensure_ascii=False, indent=2),
+                    )
+
+            git_files = ["data/accounts.csv", "data/transactions.csv", "data/scheduled.csv",
+                          "data/quick_expenses.csv", "data/payees.json"]
+            tx_engine.git_commit(f"Account rename: {old_alias} → {new_alias}", git_files)
         self._respond_json(200, {"success": True})
 
     # ── API: /api/backup ─────────────────────────────────────────────
@@ -1172,7 +1373,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             output = (result.stdout + result.stderr).strip()
             self._respond_json(200, {"success": True, "message": output})
         except Exception as e:
-            self._respond_json(500, {"error": str(e)})
+            req_id = secrets.token_hex(4)
+            print(f"[serve] backup_create req={req_id}: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {"error": "Backup failed", "request_id": req_id})
 
     def handle_backup_list(self):
         """List all backup files with sizes and dates for the dashboard UI."""
@@ -1195,8 +1400,13 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         Excludes data/backups/ (already point-in-time snapshots, would inflate the
         archive without adding restore value) and any __pycache__ directories.
         Filename embeds a UTC timestamp so multiple downloads do not collide.
+
+        Memory profile: ZIP is built into a SpooledTemporaryFile capped at
+        16 MB — anything bigger spills to disk on the Pi instead of pinning
+        the whole archive in RAM. Streamed back to the client in 64 KB
+        chunks so wfile.write() never sees a multi-MB buffer either.
         """
-        import io
+        import tempfile
         import zipfile
         from datetime import datetime, timezone
 
@@ -1205,9 +1415,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(404, {"error": "data directory not found"})
             return
 
-        buffer = io.BytesIO()
+        spool = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
         try:
-            with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 for path in data_dir.rglob("*"):
                     if not path.is_file():
                         continue
@@ -1219,20 +1429,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                     if "__pycache__" in parts:
                         continue
                     zf.write(path, arcname=str(rel))
+            spool.seek(0, 2)
+            size = spool.tell()
+            spool.seek(0)
         except Exception as e:
+            spool.close()
             self._respond_json(500, {"error": f"ZIP build failed: {e}"})
             return
 
-        body = buffer.getvalue()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
         filename = f"financeos-backup-{stamp}.zip"
         self.send_response(200)
         self.send_header("Content-Type", "application/zip")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
+        self._send_cors_origin()
+        self.send_header("Content-Length", str(size))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            while True:
+                chunk = spool.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        finally:
+            spool.close()
 
     # ── API: /api/recon/* ────────────────────────────────────────────
     # Bank-statement reconciliation. Adapters live in
@@ -1290,9 +1510,20 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         adapter = get_adapter_for_account(account)
-        stmt_path = tx_engine.DATA_DIR / adapter.data_subdir / filename
+        # Path-traversal guard: filename must be a bare basename and must
+        # appear in the adapter's whitelisted file listing. Without this,
+        # `../transactions.csv` would resolve to any CSV in the repo.
+        safe_name = Path(filename).name
+        if safe_name != filename or safe_name in ("", ".", ".."):
+            self._respond_json(400, {"error": "Invalid filename"})
+            return
+        allowed = {f.get("name") for f in adapter.list_files(tx_engine.DATA_DIR)}
+        if safe_name not in allowed:
+            self._respond_json(404, {"error": f"File not found: {safe_name}"})
+            return
+        stmt_path = tx_engine.DATA_DIR / adapter.data_subdir / safe_name
         if not stmt_path.exists():
-            self._respond_json(404, {"error": f"File not found: {filename}"})
+            self._respond_json(404, {"error": f"File not found: {safe_name}"})
             return
 
         try:
@@ -1310,9 +1541,126 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 "matched": len(bank_rows) - len(suggestions),
                 "adapter": adapter.name,
                 "account": account,
+                # parse_errors is populated by adapters that track per-row
+                # parse failures (currently only crdb_tz). Empty list when
+                # the adapter does not surface them.
+                "parse_errors": getattr(adapter, "parse_errors", []),
             })
         except Exception as e:
             self._respond_json(500, {"error": f"Parse error: {e}"})
+
+    # ── API: /api/vehicles/* + /api/fuel/* (Block G — Vehicles tab) ───
+    # Vehicles list is read-only at the API level (edit data/vehicles.csv
+    # directly for stammdaten changes). Fuel entries are CRUD via fuel.py,
+    # which keeps the cascade to transactions.csv (expense + reimbursement)
+    # in lockstep.
+
+    def handle_vehicles_list(self):
+        """Return all vehicles from data/vehicles.csv."""
+        vehicles = list(fuel.load_vehicles().values())
+        self._respond_json(200, {"vehicles": vehicles})
+
+    def handle_fuel_list(self):
+        """Return fuel entries with computed per-row metrics + summary totals
+        plus a reconciliation report so the dashboard can surface findings
+        (unlinked fuel TXs, orphaned log entries) without a second round-trip.
+        """
+        rows = fuel.load_fuel_log()
+        vehicles = fuel.load_vehicles()
+        enriched = fuel.enrich_fuel_log(rows)
+        self._respond_json(200, {
+            "entries": enriched,
+            "summary": fuel.fuel_summary(enriched),
+            "vehicles": list(vehicles.values()),
+            "reconciliation": fuel.reconcile(rows, vehicles),
+        })
+
+    def handle_fuel_add(self):
+        """Create a fuel entry and the linked expense (+ reimbursement) TX."""
+        body = self._read_json_body()
+        try:
+            result = fuel.add_fuel_entry(
+                date=body["date"],
+                vehicle_id=body["vehicle_id"],
+                odometer_km=float(body["odometer_km"]),
+                liters=float(body["liters"]),
+                total_cost=float(body["total_cost"]),
+                station=body.get("station", "").strip(),
+                full_tank=bool(body.get("full_tank", True)),
+                account=(body.get("account") or "").strip() or None,
+                remarks=body.get("remarks", "").strip(),
+            )
+        except (KeyError, ValueError) as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_fuel_update(self):
+        """Edit an existing fuel entry. Body: {fuel_id, ...partial fields}.
+
+        Empty/null values are ignored so the client can send only the
+        fields that actually changed. The cascade (TX delete + recreate)
+        runs server-side; fuel_id and on-screen ordering stay stable.
+        """
+        body = self._read_json_body()
+        fuel_id = body.get("fuel_id", "").strip()
+        if not fuel_id:
+            self._respond_json(400, {"error": "fuel_id is required"})
+            return
+        # Whitelist editable fields; ignore extras to keep the API contract tight.
+        editable = (
+            "date", "vehicle_id", "odometer_km", "liters", "total_cost",
+            "station", "full_tank", "account", "remarks",
+        )
+        new_fields = {k: body.get(k) for k in editable if k in body}
+        try:
+            result = fuel.update_fuel_entry(fuel_id, **new_fields)
+        except ValueError as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_fuel_recon_dismiss(self):
+        """Mark a TX as 'not vehicle fuel' so reconcile() ignores it.
+
+        Body: {import_id, reason?}. Use case: lawn-mower fuel, generator
+        fill-ups, jerry-cans for someone else — all booked under the
+        same Automobile:Petrol category but not part of the fuel log.
+        """
+        body = self._read_json_body()
+        import_id = body.get("import_id", "").strip()
+        if not import_id:
+            self._respond_json(400, {"error": "import_id is required"})
+            return
+        fuel.add_dismissed_recon(import_id, body.get("reason", ""))
+        self._respond_json(200, {"success": True})
+
+    def handle_fuel_recon_undismiss(self):
+        """Re-include a previously dismissed TX. Body: {import_id}."""
+        body = self._read_json_body()
+        import_id = body.get("import_id", "").strip()
+        if not import_id:
+            self._respond_json(400, {"error": "import_id is required"})
+            return
+        ok = fuel.remove_dismissed_recon(import_id)
+        if not ok:
+            self._respond_json(404, {"error": f"'{import_id}' not in dismissed list"})
+            return
+        self._respond_json(200, {"success": True})
+
+    def handle_fuel_delete(self):
+        """Delete a fuel entry by fuel_id, cascading the linked TX(s)."""
+        body = self._read_json_body()
+        fuel_id = body.get("fuel_id", "").strip()
+        if not fuel_id:
+            self._respond_json(400, {"error": "fuel_id is required"})
+            return
+        try:
+            result = fuel.delete_fuel_entry(fuel_id)
+        except ValueError as exc:
+            self._respond_json(404, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
 
     # ── API: /api/setup/* — Web-Wizard (Block C.3) ────────────────────
     # Counterpart to scripts/setup.py CLI wizard. All three endpoints share
@@ -1534,6 +1882,43 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             pass
         return False
 
+    # ── API: /api/metals/spot ─────────────────────────────────────────
+    # Server-side proxy for goldprice.org. The dashboard previously fetched
+    # this endpoint directly from the browser, but goldprice.org's CORS
+    # policy refuses cross-origin reads from our Tailscale HTTPS origin
+    # (and the workaround `Origin` header in the fetch config is silently
+    # ignored — browsers don't let scripts spoof it). Routing through the
+    # server eliminates the issue: cron_metals already does the same call
+    # daily, we reuse its fetch_spot() helper. Output mirrors the
+    # goldprice JSON shape so the frontend parser is unchanged. Cached
+    # in-memory for 5 min so a dashboard reload spree doesn't hammer the
+    # upstream.
+
+    def handle_metals_spot(self):
+        """Proxy goldprice.org spot prices, returning the upstream JSON shape."""
+        import time
+        import cron_metals
+
+        cache = getattr(FinanceOSHandler, "_metals_spot_cache", None)
+        now = time.time()
+        if cache and (now - cache["ts"] < 300):
+            self._respond_json(200, cache["data"])
+            return
+        try:
+            gold_oz_eur, silver_oz_eur = cron_metals.fetch_spot()
+        except Exception as e:
+            req_id = secrets.token_hex(4)
+            print(f"[serve] metals_spot req={req_id}: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            self._respond_json(502, {
+                "error": "Upstream goldprice fetch failed",
+                "request_id": req_id,
+            })
+            return
+        payload = {"items": [{"xauPrice": gold_oz_eur, "xagPrice": silver_oz_eur}]}
+        FinanceOSHandler._metals_spot_cache = {"ts": now, "data": payload}
+        self._respond_json(200, payload)
+
     # ── API: /api/health ──────────────────────────────────────────────
 
     def handle_health(self):
@@ -1546,6 +1931,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "hostname": platform.node(),
             "platform": platform.system(),
             "server_time": datetime.now().isoformat(timespec='seconds'),
+            "app_version": _read_app_version(),
         }
 
         # Git status

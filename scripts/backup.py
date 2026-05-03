@@ -51,6 +51,14 @@ BACKUP_TARGETS = {
     "custom_reports": DATA_DIR / "custom_reports.json",
     "categories": DATA_DIR / "categories.csv",
     "accounts": DATA_DIR / "accounts.csv",
+    "fuel_log": DATA_DIR / "fuel_log.csv",
+    "vehicles": DATA_DIR / "vehicles.csv",
+    "fuel_recon_dismissed": DATA_DIR / "fuel_recon_dismissed.csv",
+    "debt_payments": DATA_DIR / "debt_payments.csv",
+    "fx_rates": DATA_DIR / "fx_rates.csv",
+    "fx_rates_history": DATA_DIR / "fx_rates_history.csv",
+    "metal_price_history": DATA_DIR / "metal_price_history.csv",
+    "metal_spot_fallback": DATA_DIR / "metal_spot_fallback.csv",
 }
 
 

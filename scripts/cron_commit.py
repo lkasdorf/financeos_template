@@ -8,11 +8,12 @@ serializes against tx_engine writes via a shared lockfile and then:
 2. Rebases local commits onto FETCH_HEAD if anything new came in.
 3. Commits any pending data/ changes as a batch commit.
 4. Pushes if local is ahead of origin (best-effort, retries next run).
-5. Restarts the financeos service when the pulled commits touched any
-   non-data file (sudo entry for `systemctl restart financeos` required
-   on the Pi; on the PC there is no such service so this is a no-op
-   when the sudo call fails). Override the unit name via the
-   FINANCEOS_SERVICE_NAME env var when forking under a different name.
+
+Code-deploy (restart of the financeos service after a non-data pull) is
+deliberately NOT done here. Auto-restarting on every code push interrupted
+active dashboard sessions whenever the operator was working from the PC,
+so deploys are now an explicit manual step:
+`ssh <your-pi-host> 'sudo systemctl restart financeos'` after a code push.
 
 Replaces the earlier two-cron split (this script + a bash one-liner that
 ran `git fetch + pull + systemctl restart`). Both ran on the same `*/5`
@@ -27,7 +28,6 @@ left for manual operator recovery.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -36,11 +36,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCK_PATH = REPO_ROOT / "data" / ".transactions.lock"
-
-# systemd unit name to restart when a code/config commit was pulled.
-# Override via FINANCEOS_SERVICE_NAME for forks that ship under a different
-# unit name; default keeps the upstream Pi deployment working unchanged.
-SERVICE_NAME = os.environ.get("FINANCEOS_SERVICE_NAME", "financeos")
 
 
 # Cross-platform exclusive file lock matching tx_engine.tx_write_lock().
@@ -219,7 +214,7 @@ def _rev_parse(ref: str) -> str:
 
 
 def main() -> int:
-    """One consolidated sync run: pull remote, commit local data, push, optionally restart.
+    """One consolidated sync run: pull remote, commit local data, push.
 
     Replaces the prior split of `cron_commit.py` (data push only, fast-exit when
     no local changes) plus a separate cron-line one-liner (`git fetch + pull +
@@ -245,8 +240,10 @@ def main() -> int:
     4. rebase FETCH_HEAD — integrate any remote commits onto our (now
        committed) local tip. No-op when local is already up-to-date or ahead.
     5. push if ahead — best-effort; failure is logged but next run retries.
-    6. restart financeos if non-data files were pulled — picks up code/config
-       updates without a separate auto-deploy script.
+
+    No service restart: code deploys are an explicit manual step (see
+    module docstring) so an active dashboard session is never interrupted
+    by a background `*/5` tick.
     """
     with tx_write_lock():
         if not recover_stuck_rebase():
@@ -294,9 +291,7 @@ def main() -> int:
             # ── Step 3: rebase to integrate remote (skip when no-op) ─────
             # Working tree is clean now (any local data/ changes became a
             # commit in step 2), so rebase will not be blocked by unstaged
-            # changes. head_before still reflects the pre-fetch tip — used
-            # below to detect whether remote brought in new code/config and
-            # we need to restart the service.
+            # changes.
             if head_before != fetch_head:
                 rebase_result = run(["git", "rebase", "FETCH_HEAD"], timeout=15)
                 if rebase_result.returncode != 0:
@@ -304,38 +299,27 @@ def main() -> int:
                     abort_rebase_safely()
                     return 1
 
-            head_after_pull = _rev_parse("HEAD")
-            pulled_changes = head_after_pull != head_before
-
             # ── Step 4: push if we are ahead of origin ───────────────────
             head_now = _rev_parse("HEAD")
             if head_now and head_now != fetch_head:
-                push_result = run(["git", "push", "origin", "main"], timeout=15)
+                # Push timeout 60s (was 15s): Pi over mobile-tethering or
+                # high-latency Tailscale needs the headroom. The next cron
+                # tick still retries cheaply if this one is slow.
+                push_result = run(["git", "push", "origin", "main"], timeout=60)
                 if push_result.returncode != 0:
-                    # Best-effort. Next run retries. Don't bail — we still
-                    # want to honour any code-pull restart below.
+                    # Non-zero exit so cron/systemd see the failure. The
+                    # next run still retries — this just makes failures
+                    # observable instead of silent (memory note: SSH
+                    # passphrase issues used to swallow failures here).
                     print(f"[cron_commit] push failed: {push_result.stderr.strip()}", file=sys.stderr)
-
-            # ── Step 5: restart service if non-data files were pulled ────
-            if pulled_changes:
-                diff_result = run(["git", "diff", "--name-only", head_before, head_after_pull])
-                files = [f.strip() for f in diff_result.stdout.split("\n") if f.strip()]
-                code_changed = any(not f.startswith("data/") for f in files)
-                if code_changed:
-                    print(
-                        f"[cron_commit] code update pulled, restarting {SERVICE_NAME} service",
-                        file=sys.stderr,
-                    )
-                    restart_result = run(
-                        ["sudo", "-n", "systemctl", "restart", SERVICE_NAME],
-                        timeout=30,
-                    )
-                    if restart_result.returncode != 0:
-                        print(
-                            f"[cron_commit] service restart failed: {restart_result.stderr.strip()} "
-                            f"(check sudoers entry for systemctl restart {SERVICE_NAME})",
-                            file=sys.stderr,
-                        )
+                    return 1
+                # Heartbeat: record last successful push for monitoring
+                # (cron_integrity can flag stale heartbeats).
+                try:
+                    heartbeat = REPO_ROOT / "data" / ".last_successful_push"
+                    heartbeat.write_text(datetime.now().isoformat() + "\n")
+                except Exception:
+                    pass  # heartbeat is best-effort
 
             return 0
         except subprocess.TimeoutExpired as e:

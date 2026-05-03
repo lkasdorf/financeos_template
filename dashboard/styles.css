@@ -1342,7 +1342,91 @@
     align-items: center;
     justify-content: center;
     animation: fadeIn 0.15s ease;
+    /* Hint that the backdrop is dismissible (Reviewer-#7). The inner
+       .modal resets to default so the cursor only flips over the
+       click-to-close area, not over the modal content itself. */
+    cursor: pointer;
   }
+  .modal-overlay > .modal { cursor: default; }
+  /* Used by uiAlert/uiConfirm/uiPrompt — small dialog box, action row
+     right-aligned. Keeps the new helpers free of inline `style=""`
+     (Reviewer-#8). */
+  .modal.ui-dialog { max-width: 480px; min-width: min(360px, 92vw); }
+  /* Action row matches .modal-footer chrome (border-top + spacing) so the
+     new ui-dialog buttons read as a footer, not floating off the body
+     (Design-Reviewer #3). gap bumped to 12px and min-height: 44px on
+     buttons for mobile touch targets (UX-Reviewer #7). */
+  .ui-dialog-actions {
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .ui-dialog-actions button { min-height: 44px; }
+  .ui-dialog-body { white-space: normal; line-height: 1.45; }
+  /* Explicit secondary/ghost button so unstyled Cancel buttons don't
+     hover accent-blue side-by-side with a saturated primary
+     (Design-Reviewer #4). Border-only hover, no background flip. */
+  button.btn-secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  button.btn-secondary:hover {
+    border-color: var(--muted);
+    color: var(--text);
+    background: transparent;
+  }
+  /* Warning button — used by uiConfirm/uiAlert with type='warning'.
+     Yellow/amber accent for "are you sure" cases that are NOT
+     destructive (e.g. unsaved-changes prompts, network warnings). */
+  button.btn-warn {
+    background: rgba(232,147,12,0.10);
+    border-color: rgba(232,147,12,0.35);
+    color: #e8930c;
+  }
+  button.btn-warn:hover {
+    background: rgba(232,147,12,0.20);
+    border-color: #e8930c;
+  }
+  /* ui-dialog type variants — colour the title to telegraph severity
+     before the user reads the body. Keep body text neutral so the
+     accent stays minimal and accessible against dark+light themes. */
+  .modal.ui-dialog-warning > h3 { color: #e8930c; }
+  .modal.ui-dialog-error > h3 { color: var(--negative); }
+  .modal.ui-dialog-info > h3 { color: var(--accent); }
+  /* Universal modal close ✕ button — injected into every .modal by
+     installModalA11y so users always have a visible dismiss
+     affordance, not just backdrop-click + Esc (UX backlog "close-✕").
+     Position is absolute, so the parent .modal needs position:relative
+     (modal already uses default static; add it). */
+  .modal { position: relative; }
+  .modal-close-x {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: var(--radius-xs);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    z-index: 1;
+  }
+  .modal-close-x:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  /* Make sure the headline doesn't run under the ✕ button */
+  .modal > h1, .modal > h2, .modal > h3, .modal > h4 { padding-right: 36px; }
   .modal {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1699,8 +1783,11 @@
     }
     .sidebar-nav .nav-icon svg { width: 20px; height: 20px; }
 
-    /* Add TX stays as FAB — hide the sidebar link to avoid duplication */
-    .sidebar-nav li:first-child { display: none !important; }
+    /* Add TX stays as FAB — hide the sidebar link to avoid duplication.
+       :first-child gives this rule (0,2,1) higher specificity than the
+       generic `.sidebar-nav li { display: block }` above (0,1,1), so no
+       !important is needed. */
+    .sidebar-nav li:first-child { display: none; }
 
     /* Accounts sub-nav visible in drawer (was hidden on mobile in bottom-bar mode) */
     .sidebar-nav .nav-toggle { display: flex; }
@@ -1813,6 +1900,8 @@
     .atx-row .atx-field > input,
     .atx-row .atx-field > select,
     .atx-row .atx-field > textarea {
+      /* !important needed: form templates inline `style="flex:..."` on
+         these fields and inline styles win over class selectors. */
       flex: 1 1 auto !important;
       width: 100%;
     }
@@ -2001,8 +2090,14 @@
   }
 
   .fw-500 { font-weight: 500; }
+  .fw-700 { font-weight: 700; }
   .ptr { cursor: pointer; }
   .op-50 { opacity: 0.5; }
+  .t-right { text-align: right; }
+  .t-left { text-align: left; }
+  .t-center { text-align: center; }
+  .nowrap { white-space: nowrap; }
+  .num-right { text-align: right; font-weight: 700; }
 
   /* Busy overlay — blocks UI during slow server operations */
   .busy-overlay {
@@ -2963,7 +3058,10 @@
   :root.dark .mobile-sheet-card .icon-sun { display: none; }
   :root.dark .mobile-sheet-card .icon-moon { display: block; }
 
-  /* Hide the old More-menu dropdown styles on all sizes — replaced by sheet */
+  /* Hide the old More-menu dropdown on all sizes — replaced by sheet.
+     !important needed because `.nav-more-menu.open { display: flex }`
+     (specificity 0,2,0) at L1504 would otherwise show it again on any
+     legacy code path that still adds the .open class. */
   .nav-more-menu { display: none !important; }
 
   /* Prevent body scroll while drawer/sheet is open */
