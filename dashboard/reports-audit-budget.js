@@ -1252,23 +1252,23 @@ function renderBudgetActualBody(period, year) {
   container.innerHTML = `
     <div style="margin-bottom:8px;color:var(--muted);font-size:11px;">${escapeHtml(periodLabel)}${monthsInPeriod > 1 ? ` · ${t('reports.budget.budget_x_months', { n: monthsInPeriod }, `Budget = monthly × ${monthsInPeriod}`)}` : ''}</div>
 
-    <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
-      <div class="kpi-card" style="padding:14px;background:var(--card);border:1px solid var(--border);">
-        <div class="c-mut fs-11" style="margin-bottom:4px;">${t('reports.budget.kpi_budget', {}, 'Total Budget')}</div>
-        <div style="font-size:18px;font-weight:600;">${formatCurrency(totalBudget, cur)} ${cur}</div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="label">${t('reports.budget.kpi_budget', {}, 'Total Budget')}</div>
+        <div class="value">${formatCurrency(totalBudget, cur)} <span class="cur">${cur}</span></div>
       </div>
-      <div class="kpi-card" style="padding:14px;background:var(--card);border:1px solid var(--border);">
-        <div class="c-mut fs-11" style="margin-bottom:4px;">${t('reports.budget.kpi_actual', {}, 'Total Actual')}</div>
-        <div style="font-size:18px;font-weight:600;">${formatCurrency(totalActual, cur)} ${cur}</div>
+      <div class="kpi-card">
+        <div class="label">${t('reports.budget.kpi_actual', {}, 'Total Actual')}</div>
+        <div class="value">${formatCurrency(totalActual, cur)} <span class="cur">${cur}</span></div>
       </div>
-      <div class="kpi-card" style="padding:14px;background:var(--card);border:1px solid var(--border);">
-        <div class="c-mut fs-11" style="margin-bottom:4px;">${t('reports.budget.kpi_variance', {}, 'Variance')}</div>
-        <div style="font-size:18px;font-weight:600;color:${totalVariance > 0 ? 'var(--negative)' : 'var(--positive)'};">${totalVariance > 0 ? '+' : ''}${formatCurrency(totalVariance, cur)} ${cur}</div>
-        <div class="c-mut fs-11" style="margin-top:2px;">${totalPct.toFixed(0)}% ${t('reports.budget.of_budget', {}, 'of budget')}</div>
+      <div class="kpi-card">
+        <div class="label">${t('reports.budget.kpi_variance', {}, 'Variance')}</div>
+        <div class="value ${totalVariance > 0 ? 'negative' : 'positive'}">${totalVariance > 0 ? '+' : ''}${formatCurrency(totalVariance, cur)} <span class="cur">${cur}</span></div>
+        <div class="delta">${totalPct.toFixed(0)}% ${t('reports.budget.of_budget', {}, 'of budget')}</div>
       </div>
-      <div class="kpi-card" style="padding:14px;background:var(--card);border:1px solid var(--border);">
-        <div class="c-mut fs-11" style="margin-bottom:4px;">${t('reports.budget.kpi_over', {}, 'Over budget')}</div>
-        <div style="font-size:18px;font-weight:600;color:${overCount > 0 ? 'var(--negative)' : 'var(--positive)'};">${overCount} / ${items.length}</div>
+      <div class="kpi-card">
+        <div class="label">${t('reports.budget.kpi_over', {}, 'Over budget')}</div>
+        <div class="value ${overCount > 0 ? 'negative' : 'positive'}">${overCount} / ${items.length}</div>
       </div>
     </div>
 

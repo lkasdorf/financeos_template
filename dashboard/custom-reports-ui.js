@@ -834,7 +834,7 @@ function drawCustomReportChart(tx, view, cur) {
   const labels = [...buckets.keys()];
   if (labels.length === 0) {
     document.getElementById('cr-run-chart').innerHTML = `
-      <div class="report-section"><div class="hint-md" style="padding:12px;">${t('pages.custom.runner.empty.no_tx', {}, 'No transactions in this period.')}</div></div>
+      <div class="report-section"><div class="empty-state compact"><div class="empty-state-icon">&#x1F4DD;</div><div class="empty-state-desc">${t('pages.custom.runner.empty.no_tx', {}, 'No transactions in this period.')}</div></div></div>
     `;
     return;
   }

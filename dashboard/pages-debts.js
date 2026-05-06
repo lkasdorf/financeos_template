@@ -341,7 +341,7 @@ async function showDebtHistory(debtId) {
         Remaining: ${formatCurrency(debt.amount, debt.currency)} ${debt.currency}
       </div>
       ${payments.length === 0
-        ? `<div style="color:var(--muted);padding:20px 0;text-align:center;">${t('pages.debt.payments.empty', {}, 'No payments recorded yet.')}</div>`
+        ? `<div class="empty-state compact"><div class="empty-state-icon">&#x1F4B8;</div><div class="empty-state-desc">${t('pages.debt.payments.empty', {}, 'No payments recorded yet.')}</div></div>`
         : `<table class="tx-table"><thead><tr><th>Date</th><th class="amt">Paid</th><th class="amt">Converted</th><th>Note</th></tr></thead><tbody>
           ${payments.map(p => `<tr>
             <td>${fmtDate(p.date)}</td>

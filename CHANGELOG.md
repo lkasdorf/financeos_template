@@ -18,6 +18,29 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.2.1] - 2026-05-07
+
+UI design refresh — visible polish across Add-TX, Reports, Dashboard. Pure UI: no data-format, schema, or migration impact.
+
+### Added
+
+- **Add-TX split lines** now have a visually grouped container, an inline circular ✕ remove button, and a colored live-sum badge that flips green when the split total matches the typed main amount and red with a ±diff display when it doesn't.
+- **Net Worth hero card** — the largest-balance currency renders as a wider, accent-tinted card with an inline 6-month sparkline, absolute delta, and percentage change. The standalone trend card now only appears when the trend currency does not match the hero currency.
+- **Account groups** are now native `<details>` sections (Own / Custody / Archived) with a rotating ▸ caret. Archived starts collapsed.
+- **Empty-state pattern** — dashed-border default variant plus a new `.empty-state.compact` modifier for inline panels and an `.empty-state-cta` button class for primary actions.
+
+### Changed
+
+- **Reports KPI cards** consolidated under shared `.kpi-grid` / `.kpi-card` classes (label / value / cur / delta slots). Print mode forces a 4-column horizontal strip.
+- **Report tables** denser padding and font with `color-mix` zebra striping and a sticky `<thead>` so column headers stay visible when scrolling long lists.
+- **Print layout** — `print-header` repeats across pages where browsers support CSS Paged Media `position: running()`; KPI / summary cards print as compact 4-up strips; report-section tables drop to 8pt.
+- **Account balance readability** — explicit `.amt.negative` (red), `.amt.zero` (muted), `tr.row-archived` (dimmed) states; tabular-nums applied throughout balance columns.
+- **Chart.js defaults** — animation tightened from 1000ms to 400ms, point-style legend with smaller swatches and tighter padding, points hidden until hover, softer line tension (0.25), bar border-radius, denser tooltip with index-mode hover. Scale grid/ticks now extend Chart.js defaults via property assignment instead of replacing the whole config object.
+
+### Fixed
+
+- Three inline empty-states migrated to the shared `.empty-state.compact` pattern: payee TX overlay (`pages-payees`), debt payments (`pages-debts`), custom-report runner with no TX in period (`custom-reports-ui`).
+
 ## [1.2.0] - 2026-05-04
 
 Removes the optional Claude-API-backed free-text TX entry mode. Manual entry is now the sole in-dashboard booking path; Claude Code terminal TX (a CLAUDE.md convention, no server endpoint) and `TX fuel` (a local regex parser in `scripts/fuel.py`) are unaffected. No data-format or migration impact.

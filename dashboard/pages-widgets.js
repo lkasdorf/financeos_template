@@ -191,11 +191,16 @@ function renderNetWorth() {
   const trend = netWorthMonthly(6);
   const trendValues = trend.map(t => t.total);
   const trendLabels = trend.map(t => monthLabel(t.ym));
-  const trendSpark = sparklineSvg(trendValues, 120, 32);
   const trendChange = trendValues.length >= 2 ? trendValues[trendValues.length - 1] - trendValues[0] : 0;
+  const trendStart = trendValues.length >= 2 ? trendValues[0] : 0;
+  const trendPct = trendStart !== 0 ? (trendChange / Math.abs(trendStart)) * 100 : 0;
   const trendCur = displayCurrency !== 'TZS' ? displayCurrency : 'TZS';
+  // Hero absorbs the trend strip when its currency matches the trend currency
+  // — otherwise the delta is between unrelated totals and would mislead.
+  const heroCur = entries.length ? entries[0][0] : null;
+  const heroAbsorbsTrend = heroCur === trendCur && trendValues.length >= 2;
 
-  const cards = entries.map(([cur, info]) => {
+  const cards = entries.map(([cur, info], idx) => {
     const debt = debts[cur] || { net: 0, owedToMe: 0, owedByMe: 0 };
     const hasDebts = debt.owedToMe !== 0 || debt.owedByMe !== 0;
     const adjusted = info.total + debt.net;
@@ -208,23 +213,37 @@ function renderNetWorth() {
         </div>
       </div>
     ` : '';
+    const isHero = idx === 0;
+    const showTrendInline = isHero && heroAbsorbsTrend;
+    const trendStrip = showTrendInline ? `
+      <div class="nw-trend-strip">
+        ${sparklineSvg(trendValues, 100, 24)}
+        <span class="nw-trend-delta ${trendChange >= 0 ? 'positive' : 'negative'}">
+          ${trendChange >= 0 ? '+' : ''}${formatCurrency(trendChange, trendCur)}
+          <span class="nw-trend-pct">(${trendChange >= 0 ? '+' : ''}${trendPct.toFixed(1)}%)</span>
+        </span>
+        <span class="nw-trend-range">${trendLabels[0]} → ${trendLabels[trendLabels.length - 1]}</span>
+      </div>
+    ` : '';
     return `
-    <div class="networth-card">
+    <div class="networth-card${isHero ? ' hero' : ''}">
       <div class="nw-label">${t('dashboard.networth.card_label', { currency: cur }, `Net Worth ${cur}`)}</div>
       <div class="nw-value">${formatCurrency(info.total, cur)}<span class="nw-currency">${cur}</span></div>
       <div class="nw-breakdown">${info.accounts === 1
         ? t('dashboard.networth.across_one', {}, 'across 1 account')
         : t('dashboard.networth.across_many', { n: info.accounts }, `across ${info.accounts} accounts`)}</div>
+      ${trendStrip}
       ${balanceBlock}
     </div>
   `;
   }).join('');
 
-  const trendCard = trendValues.length >= 2 ? `
+  // Standalone trend card only when hero can't absorb it (currency mismatch).
+  const trendCard = (trendValues.length >= 2 && !heroAbsorbsTrend) ? `
     <div class="networth-card">
       <div class="nw-label">${t('dashboard.networth.trend_label', { currency: trendCur }, `6-Month Trend ${trendCur}`)}</div>
       <div style="display:flex;align-items:center;gap:12px;">
-        ${trendSpark}
+        ${sparklineSvg(trendValues, 120, 32)}
         <span style="font-size:14px;font-weight:600;color:${trendChange >= 0 ? 'var(--positive)' : 'var(--negative)'};">
           ${trendChange >= 0 ? '+' : ''}${formatCurrency(trendChange, trendCur)}
         </span>
@@ -260,7 +279,7 @@ function renderAccounts() {
     const bal = state.balances[a.alias] || 0;
     const showCur = displayCurrency !== 'TZS' ? displayCurrency : a.currency;
     const showBal = displayCurrency !== 'TZS' ? toDisplay(bal, a.currency) : bal;
-    const balClass = showBal < 0 ? 'negative' : '';
+    const balClass = showBal < 0 ? 'negative' : (showBal === 0 ? 'zero' : '');
     const tag = a.type === 'pass_through' ? '<span class="label-xs" style="margin-left:6px;">PT</span>' : '';
     const nativeHint = (displayCurrency !== 'TZS' && a.currency !== displayCurrency) ? `<span class="label-xs" style="margin-left:4px;">(${a.currency})</span>` : '';
     const spark = sparklineSvg(accountDailyBalances(a.alias, 30), 72, 22);
@@ -274,13 +293,16 @@ function renderAccounts() {
     `;
   };
 
-  const renderTable = (rows, label) => `
-    <div class="accounts-group">
-      <div class="group-label">${label}</div>
+  // Renders a group as native <details>/<summary> so users can collapse
+  // sections. `open` controls the default state per group: own + custody open,
+  // archived closed (rarely needed at-a-glance).
+  const renderTable = (rows, label, isOpen = true) => `
+    <details class="accounts-group" ${isOpen ? 'open' : ''}>
+      <summary class="group-label"><span class="group-caret">▸</span><span>${label}</span></summary>
       <table class="tx-table mb-0">
         <tbody>${rows}</tbody>
       </table>
-    </div>
+    </details>
   `;
 
   const leftCol = renderTable(groups.self.map(renderRow).join(''), t('dashboard.accounts.self_group', { n: groups.self.length }, `Own Accounts (${groups.self.length})`));
@@ -291,7 +313,7 @@ function renderAccounts() {
       const bal = state.balances[r.alias] || 0;
       const showCur = displayCurrency !== 'TZS' ? displayCurrency : r.currency;
       const showBal = displayCurrency !== 'TZS' ? toDisplay(bal, r.currency) : bal;
-      const balClass = showBal < 0 ? 'negative' : '';
+      const balClass = showBal < 0 ? 'negative' : (showBal === 0 ? 'zero' : '');
       const spark = sparklineSvg(accountDailyBalances(r.alias, 30), 72, 22);
       return `<tr>
         <td><span class="acc-alias" style="margin:0;font-size:10px;">${r.alias}</span></td>
@@ -306,12 +328,12 @@ function renderAccounts() {
       const bal = state.balances[r.alias] || 0;
       const showCur = displayCurrency !== 'TZS' ? displayCurrency : r.currency;
       const showBal = displayCurrency !== 'TZS' ? toDisplay(bal, r.currency) : bal;
-      return `<tr style="opacity:0.5;">
+      return `<tr class="row-archived">
         <td><span class="acc-alias" style="margin:0;font-size:10px;">${r.alias}</span></td>
         <td class="fs-11">${escapeHtml(r.name)}</td>
-        <td class="amt">${formatCurrency(showBal, showCur)}<span class="acc-currency">${showCur}</span></td>
+        <td class="amt zero">${formatCurrency(showBal, showCur)}<span class="acc-currency">${showCur}</span></td>
       </tr>`;
-    }).join(''), t('dashboard.accounts.archived_group', { n: groups.archived.length }, `Archived (${groups.archived.length})`));
+    }).join(''), t('dashboard.accounts.archived_group', { n: groups.archived.length }, `Archived (${groups.archived.length})`), false);
   }
 
   return `

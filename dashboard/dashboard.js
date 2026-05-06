@@ -332,23 +332,57 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-// Apply Chart.js global defaults (theme-aware, called on init and theme change)
+// Apply Chart.js global defaults (theme-aware, called on init and theme change).
+// All values track CSS variables so dark/light + print modes pick up the right
+// palette without needing to re-render existing charts.
 function setChartDefaults() {
   Chart.defaults.color = cssVar('--chart-text') || '#8a8b83';
   Chart.defaults.font.family = "'Plus Jakarta Sans', sans-serif";
   Chart.defaults.font.size = 11;
   Chart.defaults.borderColor = cssVar('--chart-border') || '#e2e4ea';
-  Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(23,26,35,0.92)';
+  // Tighter animation — 1000ms default feels sluggish on month/filter switches
+  Chart.defaults.animation.duration = 400;
+  Chart.defaults.animation.easing = 'easeOutQuart';
+
+  // Tooltip — dark-on-light always for legibility, with denser body padding
+  Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(23,26,35,0.94)';
   Chart.defaults.plugins.tooltip.titleColor = '#fff';
-  Chart.defaults.plugins.tooltip.bodyColor = '#fff';
-  Chart.defaults.plugins.tooltip.borderColor = 'rgba(255,255,255,0.1)';
+  Chart.defaults.plugins.tooltip.bodyColor = 'rgba(255,255,255,0.92)';
+  Chart.defaults.plugins.tooltip.borderColor = 'rgba(255,255,255,0.08)';
   Chart.defaults.plugins.tooltip.borderWidth = 1;
-  Chart.defaults.plugins.tooltip.padding = 10;
+  Chart.defaults.plugins.tooltip.padding = 12;
   Chart.defaults.plugins.tooltip.cornerRadius = 8;
   Chart.defaults.plugins.tooltip.titleFont = { size: 12, weight: '600' };
-  Chart.defaults.plugins.tooltip.bodyFont = { size: 12 };
+  Chart.defaults.plugins.tooltip.bodyFont = { size: 11.5 };
+  Chart.defaults.plugins.tooltip.titleMarginBottom = 6;
   Chart.defaults.plugins.tooltip.displayColors = true;
-  Chart.defaults.plugins.tooltip.boxPadding = 4;
+  Chart.defaults.plugins.tooltip.boxPadding = 6;
+  Chart.defaults.plugins.tooltip.usePointStyle = true;
+
+  // Legend — smaller swatches, more breathing room, point-style markers
+  Chart.defaults.plugins.legend.labels.boxWidth = 8;
+  Chart.defaults.plugins.legend.labels.boxHeight = 8;
+  Chart.defaults.plugins.legend.labels.padding = 14;
+  Chart.defaults.plugins.legend.labels.usePointStyle = true;
+  Chart.defaults.plugins.legend.labels.font = { size: 11, weight: '500' };
+
+  // Elements — thinner lines + softer curve, points visible only on hover
+  Chart.defaults.elements.line.borderWidth = 2;
+  Chart.defaults.elements.line.tension = 0.25;
+  Chart.defaults.elements.point.radius = 0;
+  Chart.defaults.elements.point.hoverRadius = 5;
+  Chart.defaults.elements.point.hitRadius = 12;
+  Chart.defaults.elements.bar.borderRadius = 3;
+
+  // Scales — subtle grid, no axis border, denser ticks. Property-by-property
+  // assignment so we extend Chart.js defaults rather than replacing the whole
+  // grid/ticks objects (which would drop any settings Chart.js itself sets).
+  Chart.defaults.scale.grid.color = cssVar('--chart-grid') || 'rgba(0,0,0,0.06)';
+  Chart.defaults.scale.grid.drawBorder = false;
+  Chart.defaults.scale.grid.drawTicks = false;
+  Chart.defaults.scale.ticks.padding = 8;
+  Chart.defaults.scale.ticks.color = cssVar('--chart-text') || '#8a8b83';
+  if (Chart.defaults.scale.border) Chart.defaults.scale.border.display = false;
 }
 
 // Update chart colors after theme change (called by applyTheme)

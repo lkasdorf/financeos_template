@@ -197,7 +197,7 @@ async function showPayeeTxOverlay(payeeName) {
     <div class="modal" style="width:640px;">
       <h3>${t('payees.overlay.title', { name: escapeHtml(payeeName) }, `<span class="accent">${escapeHtml(payeeName)}</span> — Recent Transactions`)}</h3>
       <div class="hint-md mb-16">${t('payees.overlay.hint', { shown: escapeHtml(shownLabel), total: allMatching.length }, `${shownLabel} of ${allMatching.length} transactions`)}${aliasSuffix}</div>
-      ${txs.length === 0 ? `<div style="color:var(--muted);padding:20px 0;">${t('payees.overlay.empty', {}, 'No transactions found.')}</div>` : `
+      ${txs.length === 0 ? `<div class="empty-state compact"><div class="empty-state-icon">&#x1F50D;</div><div class="empty-state-desc">${t('payees.overlay.empty', {}, 'No transactions found.')}</div></div>` : `
       <table class="tx-table mb-0">
         <thead><tr><th>${t('common.label.date', {}, 'Date')}</th><th>${t('common.col.account', {}, 'Account')}</th><th>${t('common.col.category', {}, 'Category')}</th><th>${t('common.label.note', {}, 'Note')}</th><th class="amt">${t('common.col.amount', {}, 'Amount')}</th></tr></thead>
         <tbody>

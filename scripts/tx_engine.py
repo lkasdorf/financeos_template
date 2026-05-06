@@ -1992,6 +1992,11 @@ def build_manual_lines(form_data: dict) -> dict:
         receipt_group = f"split-{rg_hash}"
 
         for sp in splits:
+            # Per-split note overrides the form-level note. Empty per-split
+            # note falls back to base_note so the main field still works as
+            # a default for all lines.
+            sp_note = (sp.get("note") or "").strip()
+            line_note = sp_note if sp_note else base_note
             line = {
                 "date": base_date,
                 "account": base_account,
@@ -2000,7 +2005,7 @@ def build_manual_lines(form_data: dict) -> dict:
                 "currency": base_currency,
                 "payee": base_payee,
                 "category": sp.get("category", ""),
-                "note": base_note,
+                "note": line_note,
                 "raw_note": "",
                 "transfer_to_account": "",
                 "transfer_to_amount": "",

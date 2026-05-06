@@ -144,9 +144,9 @@ async function renderAddTxPage() {
           </div>
         </div>
         <div id="atx-splits-area"></div>
-        <div class="atx-row" id="atx-m-payee-row-split-btn" style="margin-top:-8px;margin-bottom:8px;">
+        <div class="atx-row" id="atx-m-payee-row-split-btn" style="margin-top:-8px;margin-bottom:8px;align-items:center;">
           <button data-action="addSplitLine" style="font-size:11px;padding:5px 12px;">${t('atx.m.btn_add_split', {}, '+ Split')}</button>
-          <span id="atx-split-info" style="font-size:11px;color:var(--muted);margin-left:8px;"></span>
+          <span id="atx-split-info" class="split-badge" hidden></span>
         </div>
         <div class="atx-row" id="atx-m-transfer-row" style="display:none">
           <div class="atx-field fx1">
@@ -431,11 +431,12 @@ function showTxLoading(msg) {
 let splitLines = [];
 
 function addSplitLine() {
-  // On first split, move main amount+category into split 0
+  // On first split, move main amount+category into split 0.
+  // Main note remains as fallback when a split-line note is empty.
   if (splitLines.length === 0) {
     const mainAmt = document.getElementById('atx-m-amount')?.value || '';
     const mainCat = document.getElementById('atx-m-category')?.value || '';
-    splitLines.push({ amount: mainAmt, category: mainCat });
+    splitLines.push({ amount: mainAmt, category: mainCat, note: '' });
     // Clear main amount (total will be calculated)
     document.getElementById('atx-m-amount').value = '';
     document.getElementById('atx-m-amount').setAttribute('readonly', 'true');
@@ -444,7 +445,7 @@ function addSplitLine() {
     // Hide main category
     document.getElementById('atx-m-category').style.display = 'none';
   }
-  splitLines.push({ amount: '', category: '' });
+  splitLines.push({ amount: '', category: '', note: '' });
   renderSplitLines();
 }
 
@@ -460,6 +461,11 @@ function removeSplitLine(idx) {
     document.getElementById('atx-m-amount').placeholder = t('atx.m.placeholder_amount', {}, '45000');
     document.getElementById('atx-m-category').style.display = '';
     document.getElementById('atx-m-category').value = remaining.category || '';
+    // Restore per-line note into main note field if present
+    if (remaining.note) {
+      const noteEl = document.getElementById('atx-m-note');
+      if (noteEl) noteEl.value = remaining.note;
+    }
     document.getElementById('atx-splits-area').innerHTML = '';
     updateSplitInfo();
     return;
@@ -473,18 +479,20 @@ function renderSplitLines() {
   // Clone category options
   const catOptionsHtml = catSel ? catSel.innerHTML : '';
 
-  let html = '<div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin:8px 0;">';
-  html += `<div style="font-size:11px;font-weight:500;margin-bottom:8px;">${t('atx.split.heading', {}, 'Split Lines')}</div>`;
+  let html = '<div class="split-block">';
+  html += `<div class="split-block-heading">${t('atx.split.heading', {}, 'Split Lines')}</div>`;
   const amountLabel = t('common.col.amount', {}, 'Amount');
   const removeTitle = t('atx.split.remove_title', {}, 'Remove');
+  const noteLabel = t('atx.split.placeholder_note', {}, 'Note (optional)');
   splitLines.forEach((s, i) => {
-    html += `<div class="atx-row" style="margin-bottom:6px;align-items:center;">
+    html += `<div class="split-row">
       <div class="atx-field fx1"><input type="text" placeholder="${amountLabel}" value="${escapeHtml(s.amount)}" onchange="splitLines[${i}].amount=this.value;updateSplitInfo()"></div>
       <div class="atx-field fx2"><select onchange="splitLines[${i}].category=this.value">${catOptionsHtml}</select></div>
-      <button data-action="removeSplitLine" data-arg1="${i}" style="padding:4px 8px;font-size:11px;color:var(--negative);background:none;border:none;cursor:pointer;" title="${removeTitle}">&times;</button>
+      <div class="atx-field fx2"><input type="text" placeholder="${noteLabel}" value="${escapeHtml(s.note || '')}" onchange="splitLines[${i}].note=this.value"></div>
+      <button class="split-x-btn" data-action="removeSplitLine" data-arg1="${i}" title="${removeTitle}" aria-label="${removeTitle}">&times;</button>
     </div>`;
   });
-  html += `<button data-action="addSplitLine" style="font-size:11px;padding:4px 10px;margin-top:4px;">${t('atx.split.btn_add_line', {}, '+ Add line')}</button>`;
+  html += `<button class="split-add-line-btn" data-action="addSplitLine">${t('atx.split.btn_add_line', {}, '+ Add line')}</button>`;
   html += '</div>';
   area.innerHTML = html;
 
@@ -500,16 +508,41 @@ function renderSplitLines() {
 function updateSplitInfo() {
   const info = document.getElementById('atx-split-info');
   if (!info) return;
-  if (splitLines.length < 2) { info.textContent = ''; return; }
+  if (splitLines.length < 2) {
+    info.hidden = true;
+    info.textContent = '';
+    info.classList.remove('match', 'mismatch');
+    return;
+  }
   const total = splitLines.reduce((s, l) => s + (parseAmountInput(l.amount) || 0), 0);
   const totalStr = formatCurrency(total, 'TZS');
-  info.textContent = splitLines.length === 1
-    ? t('atx.split.info_one', { amount: totalStr }, `1 line, total: ${totalStr}`)
-    : t('atx.split.info_many', { n: splitLines.length, amount: totalStr }, `${splitLines.length} lines, total: ${totalStr}`);
-  // Update the read-only amount field
   const amtField = document.getElementById('atx-m-amount');
-  if (amtField && amtField.hasAttribute('readonly')) {
+  const isReadonly = amtField && amtField.hasAttribute('readonly');
+  if (isReadonly) {
     amtField.value = total || '';
+  }
+  // When the main-amount field is editable (read-only flag was lifted, e.g. user typed a target),
+  // show diff vs. the typed target so user sees if splits balance.
+  const target = !isReadonly ? parseAmountInput(amtField?.value || '') : 0;
+  const lineLabel = splitLines.length === 1
+    ? t('atx.split.lines_one', {}, '1 line')
+    : t('atx.split.lines_many', { n: splitLines.length }, `${splitLines.length} lines`);
+  info.hidden = false;
+  if (target > 0) {
+    const diff = total - target;
+    const matched = Math.abs(diff) < 0.005;
+    info.classList.toggle('match', matched);
+    info.classList.toggle('mismatch', !matched);
+    if (matched) {
+      info.textContent = `Σ ${totalStr} · ${lineLabel} ✓`;
+    } else {
+      const sign = diff > 0 ? '+' : '−';
+      info.textContent = `Σ ${totalStr} / ${formatCurrency(target, 'TZS')} · Δ ${sign}${formatCurrency(Math.abs(diff), 'TZS')}`;
+    }
+  } else {
+    info.classList.remove('mismatch');
+    info.classList.add('match');
+    info.textContent = `Σ ${totalStr} · ${lineLabel}`;
   }
 }
 
@@ -530,8 +563,11 @@ async function submitManual() {
 
   // Attach splits if active
   if (splitLines.length >= 2) {
-    formData.splits = splitLines.map(s => ({ amount: s.amount, category: s.category }));
-    formData.splits = formData.splits.map(s => ({ amount: parseAmountInputStr(s.amount), category: s.category }));
+    formData.splits = splitLines.map(s => ({
+      amount: parseAmountInputStr(s.amount),
+      category: s.category,
+      note: s.note || '',
+    }));
     formData.amount = splitLines.reduce((sum, s) => sum + (parseAmountInput(s.amount) || 0), 0).toString();
   }
 

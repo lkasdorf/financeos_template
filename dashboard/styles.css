@@ -288,6 +288,15 @@
     transition: all 0.2s;
   }
   .networth-card:hover { box-shadow: var(--shadow-md); }
+  /* Hero card — the largest-balance currency gets visual prominence so the
+     primary number is the first thing the eye lands on. Spans 2 columns on
+     wide grids; collapses gracefully on narrow widths via grid auto-flow. */
+  .networth-card.hero {
+    grid-column: span 2;
+    background: linear-gradient(135deg, var(--surface) 0%, var(--accent-subtle) 100%);
+    border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  }
+  .networth-card.hero .nw-value { font-size: 34px; }
   .nw-label { font-size: 11px; letter-spacing: 0.02em; text-transform: none; color: var(--muted); margin-bottom: 12px; font-weight: 500; }
   .nw-value {
     font-weight: 600;
@@ -299,8 +308,66 @@
   .nw-currency { color: var(--muted); font-size: 11px; margin-left: 6px; }
   .nw-breakdown { margin-top: 14px; font-size: 10px; color: var(--muted); letter-spacing: 0.05em; }
 
+  /* Inline trend strip on the hero card — sparkline + delta + range */
+  .nw-trend-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+  }
+  .nw-trend-delta {
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .nw-trend-delta.positive { color: var(--positive); }
+  .nw-trend-delta.negative { color: var(--negative); }
+  .nw-trend-pct {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.8;
+  }
+  .nw-trend-range {
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    margin-left: auto;
+  }
+  /* On narrow viewports, drop hero spanning so cards stack cleanly */
+  @media (max-width: 720px) {
+    .networth-card.hero { grid-column: span 1; }
+    .networth-card.hero .nw-value { font-size: 26px; }
+  }
+
   /* Accounts */
   .accounts-group { margin-bottom: 28px; }
+  /* When .accounts-group is a <details> element, hide the native disclosure
+     marker — we render our own ▸ caret in summary that rotates on open */
+  details.accounts-group { display: block; }
+  details.accounts-group > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  details.accounts-group > summary::-webkit-details-marker { display: none; }
+  details.accounts-group > summary::marker { content: ''; }
+  details.accounts-group .group-caret {
+    display: inline-block;
+    transition: transform 0.18s ease;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  details.accounts-group[open] > summary .group-caret { transform: rotate(90deg); }
+  details.accounts-group > summary:hover .group-caret { color: var(--accent); }
   .group-label {
     font-size: 11px;
     letter-spacing: 0.02em;
@@ -388,6 +455,48 @@
   .summary-card .cur { color: var(--muted-soft); font-size: 11px; margin-left: 6px; }
   .summary-card .meta { font-size: 10px; color: var(--muted); margin-top: 4px; }
 
+  /* KPI grid + card — denser variant of summary-card used at the top of
+     reports. Same visual language (label small/muted, value large/bold,
+     optional delta), but tighter padding so 4-6 fit on one row. */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .kpi-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 14px 16px;
+    transition: box-shadow 0.2s;
+  }
+  .kpi-card:hover { box-shadow: var(--shadow-md); }
+  .kpi-card .label {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  .kpi-card .value {
+    font-weight: 600;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-card .value.positive { color: var(--positive); }
+  .kpi-card .value.negative { color: var(--negative); }
+  .kpi-card .cur { color: var(--muted-soft); font-size: 11px; margin-left: 4px; }
+  .kpi-card .delta {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-card .delta.positive { color: var(--positive); }
+  .kpi-card .delta.negative { color: var(--negative); }
+
   .month-nav {
     display: flex;
     gap: 8px;
@@ -462,6 +571,10 @@
   .tx-table .amt.expense { color: var(--negative); }
   .tx-table .amt.income { color: var(--positive); }
   .tx-table .amt.transfer { color: var(--info); }
+  /* Account-list balance states (used in renderAccounts row class on .amt) */
+  .tx-table .amt.negative { color: var(--negative); }
+  .tx-table .amt.zero { color: var(--muted); }
+  .tx-table tr.row-archived td { opacity: 0.55; }
   .tx-table .cat { color: var(--muted-soft); }
   .tx-table .tag-chip {
     display: inline-block;
@@ -609,13 +722,28 @@
   /* Empty state pattern */
   .empty-state {
     text-align: center;
-    padding: 40px 20px;
+    padding: 48px 24px;
     color: var(--muted);
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
   }
+  /* Compact variant — for inline empty states inside detail panels (debt
+     payments, payee overlay, etc.). No background/border, less padding. */
+  .empty-state.compact {
+    padding: 24px 16px;
+    background: transparent;
+    border: none;
+  }
+  .empty-state.compact .empty-state-icon { font-size: 24px; margin-bottom: 8px; }
+  .empty-state.compact .empty-state-title { font-size: 13px; }
+  .empty-state.compact .empty-state-desc { font-size: 11px; margin-bottom: 0; }
+
   .empty-state-icon {
-    font-size: 32px;
-    margin-bottom: 12px;
-    opacity: 0.4;
+    font-size: 36px;
+    margin-bottom: 14px;
+    opacity: 0.6;
+    line-height: 1;
   }
   .empty-state-title {
     font-size: 14px;
@@ -627,6 +755,25 @@
     font-size: 12px;
     margin-bottom: 16px;
     line-height: 1.6;
+  }
+  .empty-state-desc:last-child { margin-bottom: 0; }
+  .empty-state-cta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .empty-state-cta:hover {
+    background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+    border-color: var(--accent);
   }
 
   #refresh-btn:hover {
@@ -888,6 +1035,28 @@
   .report-section {
     margin-bottom: 32px;
   }
+
+  /* Denser tables in reports — scoped to .report-section so the main TX page
+     keeps its comfortable density. Reports tend to be data-heavy and benefit
+     from seeing more rows at once. Sticky thead helps on long tables. */
+  .report-section .tx-table th,
+  .report-section .tx-table td {
+    padding: 7px 12px;
+    font-size: 12.5px;
+  }
+  .report-section .tx-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface-2);
+    box-shadow: 0 1px 0 var(--border);
+  }
+  .report-section .tx-table tbody tr:nth-child(even) td {
+    background: color-mix(in srgb, var(--surface-2) 50%, var(--surface));
+  }
+  .report-section .tx-table tbody tr:hover td {
+    background: var(--accent-glow);
+  }
   .report-section-title {
     font-size: 13px;
     letter-spacing: 0;
@@ -1064,6 +1233,101 @@
     color: var(--muted);
     margin-top: -8px;
     margin-bottom: 16px;
+  }
+
+  /* Split-Lines block — visually grouped container with header, rows, X buttons,
+     and an "+ Add line" affordance. Screen-only; no print rules required since
+     Add-TX is a live form. */
+  .split-block {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 14px 14px 10px;
+    margin: 4px 0 12px;
+  }
+  .split-block-heading {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted-soft);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .split-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .split-row:last-of-type { margin-bottom: 8px; }
+  .split-row .atx-field { flex: 1; }
+  .split-row .atx-field input,
+  .split-row .atx-field select {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .split-x-btn {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+  }
+  .split-x-btn:hover {
+    color: var(--negative);
+    background: var(--surface);
+    border-color: var(--border);
+  }
+
+  .split-add-line-btn {
+    font-size: 11px;
+    padding: 5px 12px;
+    margin-top: 2px;
+    color: var(--accent);
+    border: 1px dashed var(--border);
+    background: transparent;
+  }
+  .split-add-line-btn:hover {
+    border-style: solid;
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+
+  /* Live sum badge — shown next to "+ Split" button, only when 2+ split lines.
+     `match` (green) when sum equals target or no target set; `mismatch` (red)
+     when sum diverges from a typed-in target main amount. */
+  .split-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    padding: 4px 10px;
+    margin-left: 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--muted-soft);
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .split-badge.match {
+    color: var(--positive);
+    border-color: color-mix(in srgb, var(--positive) 30%, var(--border));
+    background: color-mix(in srgb, var(--positive) 8%, var(--surface));
+  }
+  .split-badge.mismatch {
+    color: var(--negative);
+    border-color: color-mix(in srgb, var(--negative) 35%, var(--border));
+    background: color-mix(in srgb, var(--negative) 9%, var(--surface));
   }
 
   .qe-chips {
@@ -2383,6 +2647,7 @@
     .income-cell,
     .report-card,
     .kpi-card,
+    .summary-card,
     .card {
       page-break-inside: avoid;
       break-inside: avoid;
@@ -2394,6 +2659,43 @@
     .income-cell .ic-label { font-size: 7pt !important; margin-bottom: 3pt !important; }
     .income-cell .ic-value { font-size: 10pt !important; }
     .income-cell .ic-count { font-size: 6.5pt !important; margin-top: 3pt !important; }
+
+    /* Force KPI / summary cards into a horizontal strip on paper. With auto-fit
+       at 160px min, they may stack on portrait A4 (~190mm). Explicit 4 columns
+       keeps them on one row, which is the canonical "exhibit" look. */
+    .kpi-grid {
+      grid-template-columns: repeat(4, 1fr) !important;
+      gap: 6pt !important;
+      margin-bottom: 8pt !important;
+    }
+    .kpi-card .label { font-size: 7pt !important; margin-bottom: 3pt !important; }
+    .kpi-card .value { font-size: 10pt !important; letter-spacing: 0 !important; }
+    .kpi-card .delta { font-size: 6.5pt !important; margin-top: 3pt !important; }
+    .summary-card .label { font-size: 7.5pt !important; margin-bottom: 4pt !important; }
+    .summary-card .value { font-size: 11pt !important; letter-spacing: 0 !important; }
+    .summary-card .meta { font-size: 6.5pt !important; margin-top: 3pt !important; }
+
+    /* Repeat the print-header on subsequent pages via CSS Generated Content
+       running headers. Browsers without paged-media support fall back to a
+       single header at top — still readable, just not stamped on each page. */
+    .print-header {
+      position: running(report-header);
+    }
+    @page { @top-center { content: element(report-header); } }
+
+    /* Denser report-section tables in print — reduce padding further beyond
+       screen density and tighten the sticky thead trick (sticky breaks in
+       paged media; reset to static so headers re-render via thead-as-group). */
+    .report-section .tx-table th {
+      position: static !important;
+      box-shadow: none !important;
+      background: var(--surface-2) !important;
+    }
+    .report-section .tx-table th,
+    .report-section .tx-table td {
+      padding: 3pt 5pt !important;
+      font-size: 8pt !important;
+    }
 
     /* Chart containers — compact dimensions for a professional report.
        Charts should support the data story, not dominate the page.
