@@ -259,6 +259,25 @@ _MMEX_TRANSCODE_EXPENSE = "Withdrawal"
 _MMEX_TRANSCODE_INCOME = "Deposit"
 _MMEX_TRANSCODE_TRANSFER = "Transfer"
 
+# Canonical FinanceOS account-type vocabulary. The setup wizard offers
+# exactly these as the curated choice set; users can still hand-edit
+# `data/accounts.csv` to anything else later. Order is the order the
+# dropdown shows them in (most-common first). Labels are translated at
+# render time on the frontend; the keys stay stable for CSV round-trips.
+ACCOUNT_TYPES: list[dict[str, str]] = [
+    {"key": "cash",          "label": "Cash",           "hint": "Physical cash on hand"},
+    {"key": "bank",          "label": "Bank account",   "hint": "Checking / current account"},
+    {"key": "savings",       "label": "Savings",        "hint": "Savings account or term deposit"},
+    {"key": "credit",        "label": "Credit card",    "hint": "Carries a credit limit; balance is debt"},
+    {"key": "loan",          "label": "Loan",           "hint": "Outgoing personal/business loan"},
+    {"key": "mobile_money",  "label": "Mobile money",   "hint": "M-PESA, Airtel Money, Wise, …"},
+    {"key": "brokerage",     "label": "Brokerage",      "hint": "Investment / securities account"},
+    {"key": "pass_through",  "label": "Pass-through",   "hint": "Held for someone else; auto counter-booked to balance 0"},
+    {"key": "custody",       "label": "Custody",        "hint": "Held for someone else; balance excluded from Net Worth"},
+    {"key": "other",         "label": "Other",          "hint": "Anything that doesn't fit above"},
+]
+ACCOUNT_TYPE_KEYS: set[str] = {t["key"] for t in ACCOUNT_TYPES}
+
 # MMEX account-type strings → FOS account-type vocabulary.
 # Anything not in the map is passed through lower-cased; the wizard's review
 # step (C.2c interactive / C.3 web) is where the user fixes mis-mappings.
@@ -267,10 +286,10 @@ _MMEX_ACCOUNT_TYPE_MAP: dict[str, str] = {
     "savings": "savings",
     "credit card": "credit",
     "cash": "cash",
-    "investment": "investment",
+    "investment": "brokerage",
     "term deposit": "savings",
     "loan": "loan",
-    "asset": "asset",
+    "asset": "other",
 }
 
 
@@ -343,14 +362,20 @@ def _convert_accounts(
         seed = acc.get("preferred_alias") or acc.get("name", "")
         alias = _unique_slug(seed, taken, fallback="account")
         id_to_alias[int(acc["id"])] = alias
+        # ``preferred_type`` (set by the wizard's per-account type dropdown)
+        # wins over the MMEX-heuristic mapping. If the user picked
+        # "custody" via the type dropdown we also want owner != self so
+        # the account drops out of Net Worth correctly.
+        chosen_type = acc.get("preferred_type") or _map_account_type(acc.get("type", ""))
+        owner = acc.get("preferred_owner") or ("self" if chosen_type != "custody" else "custody")
         rows.append({
             "alias": alias,
             "name": acc.get("name", "") or alias,
             "currency": acc.get("currency_code") or default_currency,
-            "type": _map_account_type(acc.get("type", "")),
-            "owner": "self",
+            "type": chosen_type,
+            "owner": owner,
             "status": _map_account_status(acc.get("status", "")),
-            "pass_through_payee": "",
+            "pass_through_payee": acc.get("preferred_pass_through_payee", ""),
             "initial_balance": _format_amount(acc.get("initial_balance", 0.0)),
             "initial_balance_date": acc.get("initial_date") or "",
             "notes": acc.get("notes", "") or "",

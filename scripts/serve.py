@@ -1671,6 +1671,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "has_data": has_data,
             "default_currency": get_default("currency.default", "EUR"),
             "wizard_version": setup_core.WIZARD_VERSION,
+            "account_types": setup_core.ACCOUNT_TYPES,
         })
 
     def handle_setup_mmex_upload(self):
@@ -1784,6 +1785,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         config = body.get("config") or {}
         staging_id = body.get("staging_id") or ""
         alias_overrides = body.get("account_alias_overrides") or {}
+        # Per-account FinanceOS type override (key = mmex account id, value =
+        # one of ACCOUNT_TYPE_KEYS). Optional companion: owner override
+        # (key = id, value = name) and pass_through_payee override.
+        type_overrides = body.get("account_type_overrides") or {}
+        owner_overrides = body.get("account_owner_overrides") or {}
+        pt_payee_overrides = body.get("account_pt_payee_overrides") or {}
 
         # Validate the config shape early (mirrors scripts/setup.py).
         for required in ("brand", "currency", "auth_mode", "datasource"):
@@ -1811,12 +1818,21 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 self._respond_json(500, {"error": f"failed to read staging: {e}"})
                 return
 
-            # Apply alias overrides on top of staging (key = mmex account id).
-            if alias_overrides and staging.get("accounts"):
+            # Apply per-account overrides on top of staging
+            # (key = mmex account id, all string-keyed for JSON safety).
+            if staging.get("accounts"):
                 for acc in staging["accounts"]:
-                    override = alias_overrides.get(str(acc.get("id")))
-                    if override:
-                        acc["preferred_alias"] = override.strip().lower()
+                    aid = str(acc.get("id"))
+                    if alias_overrides.get(aid):
+                        acc["preferred_alias"] = alias_overrides[aid].strip().lower()
+                    if type_overrides.get(aid):
+                        chosen = type_overrides[aid].strip().lower()
+                        if chosen in setup_core.ACCOUNT_TYPE_KEYS:
+                            acc["preferred_type"] = chosen
+                    if owner_overrides.get(aid):
+                        acc["preferred_owner"] = owner_overrides[aid].strip().lower() or "self"
+                    if pt_payee_overrides.get(aid):
+                        acc["preferred_pass_through_payee"] = pt_payee_overrides[aid].strip()
 
         try:
             result = setup_core.run_setup(

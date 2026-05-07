@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.6] - 2026-05-07
+
+### Added
+
+- **Setup wizard classifies each MMEX-imported account.** Step 7 gets a Type dropdown per row with a curated 10-item vocabulary: cash / bank / savings / credit / loan / mobile_money / brokerage / pass_through / custody / other. Default per row is a best-guess from the MMEX type string; user picks the right one. `setup_core.run_setup` honours the override and auto-flips owner to `custody` when type=custody so the account drops out of Net Worth.
+- `ACCOUNT_TYPES` is the single source of truth in `scripts/setup_core.py`. The frontend reads the list via `/api/setup/status` (with a built-in fallback for offline boot). `/api/setup/finalize` accepts `account_type_overrides`, `account_owner_overrides`, `account_pt_payee_overrides` (the last two are wired API-side, not yet exposed in the UI — follow-up).
+
 ## [1.3.0-rc.5] - 2026-05-07
 
 Continuous user-test sweep. Combines what would have been rc.4 (income-bucket configurability + FAQ rewrite + setup locale picker) with rc.5 (report-title i18n + accent color + dashboard favicon).

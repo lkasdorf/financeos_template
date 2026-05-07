@@ -77,6 +77,16 @@ const state = {
     reports_config: null,     // populated on Next from step 6 if customize
   },
   staging: null, // { id, summary, accounts, warnings, filename }
+  // Curated FinanceOS account-type vocabulary, populated by /api/setup/status
+  // on boot. Used by the Type dropdown in the alias-table review step.
+  // Fallback list keeps the wizard usable if the status fetch fails.
+  account_types: [
+    { key: 'cash', label: 'Cash' }, { key: 'bank', label: 'Bank account' },
+    { key: 'savings', label: 'Savings' }, { key: 'credit', label: 'Credit card' },
+    { key: 'loan', label: 'Loan' }, { key: 'mobile_money', label: 'Mobile money' },
+    { key: 'brokerage', label: 'Brokerage' }, { key: 'pass_through', label: 'Pass-through' },
+    { key: 'custody', label: 'Custody' }, { key: 'other', label: 'Other' },
+  ],
 };
 
 // ── Boot ─────────────────────────────────────────────────────────────────
@@ -116,6 +126,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       state.config.currency = status.default_currency;
       document.getElementById('currency-input').value = status.default_currency;
       highlightCurrencyPick(status.default_currency);
+    }
+
+    // Curated account-type list for the alias-table dropdown in step 7.
+    if (Array.isArray(status.account_types) && status.account_types.length) {
+      state.account_types = status.account_types;
     }
   } catch (e) {
     console.warn('Status probe failed; continuing in offline mode.', e);
@@ -583,15 +598,33 @@ function renderReview() {
   tbody.innerHTML = '';
   if (state.config.datasource === 'mmex' && state.staging?.accounts?.length) {
     aliasZone.hidden = false;
+    // MMEX-string → FOS-key best-guess for the dropdown default. Mirrors
+    // _MMEX_ACCOUNT_TYPE_MAP in scripts/setup_core.py — kept short, the
+    // user fixes mismatches on the dropdown.
+    const mmexTypeGuess = (raw) => {
+      const t = (raw || '').toLowerCase().trim();
+      if (t === 'checking') return 'bank';
+      if (t === 'credit card') return 'credit';
+      if (t === 'investment' || t === 'asset') return 'brokerage';
+      if (t === 'term deposit') return 'savings';
+      if (t === 'cash' || t === 'savings' || t === 'loan' || t === 'bank') return t;
+      return 'other';
+    };
+    const typeKeys = new Set(state.account_types.map(t => t.key));
     for (const acc of state.staging.accounts) {
       const tr = document.createElement('tr');
       const slug = autoSlug(acc.name);
-      // MMEX staging payload uses currency_code; older paths used currency.
       const cur = acc.currency_code || acc.currency || '—';
+      const guess = mmexTypeGuess(acc.type);
+      const selected = typeKeys.has(guess) ? guess : 'other';
+      const opts = state.account_types.map(t =>
+        `<option value="${escapeHtml(t.key)}"${t.key === selected ? ' selected' : ''}>${escapeHtml(t.label)}</option>`
+      ).join('');
       tr.innerHTML = `
         <td>${escapeHtml(acc.name)}</td>
         <td>${escapeHtml(cur)}</td>
-        <td><input type="text" data-acc-id="${acc.id}" placeholder="${slug}" pattern="[a-z0-9_]+" maxlength="40"></td>
+        <td><select data-acc-id="${acc.id}" data-acc-field="type" class="setup-type-select">${opts}</select></td>
+        <td><input type="text" data-acc-id="${acc.id}" data-acc-field="alias" placeholder="${slug}" pattern="[a-z0-9_]+" maxlength="40"></td>
       `;
       tbody.appendChild(tr);
     }
@@ -622,11 +655,15 @@ async function finalize() {
   status.className = 'setup-status info';
   status.textContent = 'Writing setup files…';
 
-  // Read alias overrides (key = mmex account id as string)
-  const overrides = {};
-  document.querySelectorAll('#alias-table input').forEach(inp => {
+  // Read alias + type overrides (key = mmex account id as string)
+  const aliasOverrides = {};
+  document.querySelectorAll('#alias-table input[data-acc-field="alias"]').forEach(inp => {
     const v = inp.value.trim().toLowerCase();
-    if (v) overrides[inp.dataset.accId] = v;
+    if (v) aliasOverrides[inp.dataset.accId] = v;
+  });
+  const typeOverrides = {};
+  document.querySelectorAll('#alias-table select[data-acc-field="type"]').forEach(sel => {
+    typeOverrides[sel.dataset.accId] = sel.value;
   });
 
   // Build the request payload — strip empty optional features to keep it clean
@@ -634,7 +671,8 @@ async function finalize() {
   const body = {
     config: cfg,
     staging_id: state.staging?.id || '',
-    account_alias_overrides: overrides,
+    account_alias_overrides: aliasOverrides,
+    account_type_overrides: typeOverrides,
   };
 
   try {
