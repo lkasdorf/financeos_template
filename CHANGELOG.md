@@ -18,6 +18,46 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0] - 2026-05-08
+
+Promoted rc.17 to final. No code changes vs. v1.3.0-rc.17; this is the version-string bump and a final GitHub release. The full v1.3.0 series ran through 17 release candidates over 2026-05-07 and 2026-05-08, driven by a Windows-11 testing pass against a real MMEX file.
+
+### Highlights of the v1.3.0 minor
+
+**Configurable reports** (rc.1+) — eight category-driven reports (Bills, AI Costs, Dining, Vice, Bank Fees, Cash Discrepancy, Automobile, Discretionary vs. Fixed) read their filter rules from `config/reports.json`. Settings → Reports + Setup-Wizard Step 6 let users map their own category names without touching code.
+
+**Bilingual delivery** (rc.5–rc.8, rc.13) — full DE locale (incl. setup wizard, FAQ, report titles + filter labels). Locale picker in Settings + the wizard's first step.
+
+**Per-account type dropdown in Step 7** (rc.6) — user picks `cash` / `bank` / `savings` / `credit` / `loan` / `mobile_money` / `brokerage` / `pass_through` / `custody` / `other` per account during setup.
+
+**Setup-Wizard category mapping** (rc.5–rc.10) — Step 6 unions every category source (MMEX staging + EMPTY_START + bucket defaults + already-selected + user-typed). Filter input + diagnostic banner + "Add categories manually" textarea.
+
+**Brand follows the configured display name everywhere** (rc.11) — sidebar logo, mobile top-bar, page heading and tab title all read from `config/branding.json`. Self-heals on existing forks.
+
+**SCHED button on the Dashboard** (rc.12) — fire due scheduled transactions with one click instead of relying on the Pi cron. Modal with full TX preview + per-row checkboxes.
+
+**Add Vehicle dialog** (rc.13) — `+ Add Vehicle` next to `+ Add Fuel Entry`, with a form that POSTs atomically to `/api/vehicles/add`.
+
+**`initial_balance` sign preservation** (rc.14) — credit-card and loan accounts keep their negative opening balance through MMEX import.
+
+**Footer version matches the wizard label** (rc.14) — both show `v1.3.0` after this final release.
+
+**Upstream-private "House 4C / Household Costs" report dropped from the template** (rc.15) — fork users got an empty report by default; replaced by the Custom Reports flow.
+
+**Actionable empty-state on every category-driven report** (rc.16, rc.17) — when a report has zero matches across the dataset, it now shows the configured categories, the user's actual categories, and a deep link to Settings → Reports.
+
+**Documentation** — full `docs/faq.de.md` ships alongside `docs/faq.md`. New "Running locally vs always-on" FAQ section explains which features need a 24/7 host (scheduled transactions, FX history, integrity checks) vs. which work fine on a stop/start laptop, with concrete Windows Task Scheduler / cron snippets.
+
+### Upgrading from 1.2.x
+
+`git pull origin main && git checkout v1.3.0` → restart `python scripts/serve.py` → hard-refresh the browser. Existing data files stay untouched.
+
+If your dashboard balance for a credit-card or loan account looks wrong (off by 2 × |opening|), open `data/accounts.csv` and check the `initial_balance` sign — re-importing your MMEX file with the v1.3.0 wizard will fix it; for instances already initialised, just flip the sign manually.
+
+### Upgrading from any 1.3.0-rc.X
+
+Same as 1.2.x but no data fix needed.
+
 ## [1.3.0-rc.17] - 2026-05-08
 
 ### Added
