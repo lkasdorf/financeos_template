@@ -145,28 +145,12 @@ def calculate_next_run(frequency: str, from_date: date) -> date:
         return date(next_year, next_month, day)
 
 
-def main() -> int:
-    """Main entry point: find due scheduled entries and execute them.
-
-    Returns:
-        0 on success (including 'nothing due'), 2 on unhandled exception
-        (caught by the wrapper in __main__).
+def _filter_due(scheduled: list[dict], today: date) -> tuple[list[dict], list[str]]:
+    """Return (due_entries, warnings). An entry is due when active=true AND
+    next_run is a parseable ISO date <= today.
     """
-    dry_run = "--dry" in sys.argv
-    now = datetime.now()
-    today = date.today()
-    ts = now.strftime("%Y-%m-%d %H:%M:%S")
-
-    print(f"[{ts}] cron_sched: checking for due scheduled transactions...")
-
-    # ── Load reference data ─────────────────────────────────────────────
-    scheduled = tx_engine.load_scheduled()
-    accounts = tx_engine.load_accounts()
-    categories = tx_engine.load_categories()
-    existing_ids = tx_engine.load_existing_import_ids()
-
-    # ── Filter for due entries (active=true AND next_run <= today) ───────
-    due = []
+    due: list[dict] = []
+    warnings: list[str] = []
     for entry in scheduled:
         if entry.get("active", "").lower() != "true":
             continue
@@ -176,136 +160,238 @@ def main() -> int:
         try:
             run_date = date.fromisoformat(next_run)
         except ValueError:
-            print(f"  [warn] Invalid next_run date for {entry['sched_id']}: {next_run}")
+            warnings.append(f"Invalid next_run date for {entry.get('sched_id', '?')}: {next_run}")
             continue
         if run_date <= today:
             due.append(entry)
+    return due, warnings
+
+
+def _build_primary_line(entry: dict, accounts: dict, categories: dict, today: date, existing_ids: set) -> dict:
+    """Build the primary TX line from a scheduled entry. Does not mutate `entry`."""
+    account_alias = entry.get("account", "")
+    amount_str = entry.get("amount", "0")
+    currency = entry.get("currency", "")
+    payee = entry.get("payee", "")
+    category = entry.get("category", "")
+    note = entry.get("note", "")
+
+    if not currency and account_alias in accounts:
+        currency = accounts[account_alias]["currency"]
+
+    manual_tags = [t.strip() for t in entry.get("manual_tags", "").split(";") if t.strip()]
+    all_tags = tx_engine.apply_auto_tags(account_alias, payee, manual_tags)
+
+    cat_info = categories.get(category, {})
+    tx_type = cat_info.get("type", "expense")
+    if tx_type not in ("income", "expense"):
+        tx_type = "expense"
+
+    line = {
+        "date": today.isoformat(),
+        "account": account_alias,
+        "type": tx_type,
+        "amount": amount_str,
+        "currency": currency,
+        "payee": payee,
+        "category": category,
+        "note": note,
+        "raw_note": "",
+        "transfer_to_account": "",
+        "transfer_to_amount": "",
+        "receipt_group": "",
+        "receipt_url": "",
+        "tags": ";".join(all_tags),
+        "third_party_id": "",
+    }
+    line["import_id"] = tx_engine.generate_import_id(
+        line["date"], line["account"], float(line["amount"]),
+        line["payee"], line["category"], line["note"], existing_ids,
+    )
+    return line
+
+
+def build_preview(today: date | None = None) -> dict:
+    """Return a JSON-serializable preview of what would be booked today.
+
+    Used by the dashboard's "Run due scheduled" widget to render the
+    confirmation modal. Does not write anything and does not mutate
+    `scheduled.csv`. Each entry includes an optional `pass_through`
+    counter-line if the account is pass-through and the entry is an expense.
+    """
+    today = today or date.today()
+    scheduled = tx_engine.load_scheduled()
+    accounts = tx_engine.load_accounts()
+    categories = tx_engine.load_categories()
+    existing_ids = tx_engine.load_existing_import_ids()
+
+    due, warnings = _filter_due(scheduled, today)
+    entries_out: list[dict] = []
+    for entry in due:
+        # Use a working copy of existing_ids so preview-side import_ids do not
+        # poison subsequent run_due() calls or leak across preview/run boundaries.
+        scratch_ids = set(existing_ids)
+        primary = _build_primary_line(entry, accounts, categories, today, scratch_ids)
+        scratch_ids.add(primary["import_id"])
+        pt_line: dict | None = None
+        acc_info = accounts.get(entry.get("account", ""), {})
+        if acc_info.get("pass_through_payee") and primary["type"] == "expense":
+            pt_line = tx_engine.generate_pass_through_line(primary, acc_info, scratch_ids)
+            if pt_line:
+                pt_line.pop("is_auto_generated", None)
+        try:
+            next_after = calculate_next_run(entry.get("frequency", ""), today).isoformat()
+        except ValueError as e:
+            warnings.append(f"Could not calculate next_run for {entry.get('sched_id', '?')}: {e}")
+            next_after = (today + timedelta(days=30)).isoformat()
+        entries_out.append({
+            "sched_id": entry.get("sched_id", ""),
+            "name": entry.get("name", ""),
+            "frequency": entry.get("frequency", ""),
+            "current_next_run": entry.get("next_run", ""),
+            "next_run_after": next_after,
+            "primary": primary,
+            "pass_through": pt_line,
+        })
+    return {
+        "today": today.isoformat(),
+        "due_count": len(entries_out),
+        "entries": entries_out,
+        "warnings": warnings,
+    }
+
+
+def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
+            source: str = "cron") -> dict:
+    """Book due scheduled entries, optionally filtered to `selected_ids`.
+
+    Performs the full atomic flow: backup → append_transactions → save_scheduled
+    → git_commit. Returns a JSON-serializable summary. The dashboard widget
+    passes `selected_ids` (the user's checkbox selection) and `source="dashboard"`
+    so the resulting commit message distinguishes UI runs from cron runs.
+
+    Idempotency: if `selected_ids` references entries that are no longer due
+    (e.g. the cron already fired between preview and run), they are silently
+    filtered out and reported in `skipped_ids`.
+    """
+    today = today or date.today()
+    scheduled = tx_engine.load_scheduled()
+    accounts = tx_engine.load_accounts()
+    categories = tx_engine.load_categories()
+    existing_ids = tx_engine.load_existing_import_ids()
+
+    due, warnings = _filter_due(scheduled, today)
+    if selected_ids is not None:
+        sel = set(selected_ids)
+        skipped_ids = [sid for sid in selected_ids if not any(e.get("sched_id") == sid for e in due)]
+        due = [e for e in due if e.get("sched_id", "") in sel]
+    else:
+        skipped_ids = []
 
     if not due:
-        print(f"  No scheduled transactions due today ({today.isoformat()}).")
-        return 0
+        return {
+            "today": today.isoformat(),
+            "booked": 0,
+            "tx_ids": [],
+            "skipped_ids": skipped_ids,
+            "commit_ok": True,
+            "commit_msg": "",
+            "warnings": warnings,
+        }
 
-    print(f"  Found {len(due)} due entry/entries.")
-
-    if dry_run:
-        print("  [DRY RUN] Would execute:")
-        for entry in due:
-            print(f"    {entry['sched_id']}: {entry['name']} — {entry['amount']} {entry['currency']} to {entry['payee']}")
-        return 0
-
-    # ── Backup before writing (mandatory) ──────────────────────────────
     backup_file("transactions", BACKUP_TARGETS["transactions"])
     backup_file("scheduled", BACKUP_TARGETS["scheduled"])
 
-    # ── Build transaction lines from due entries ────────────────────────
-    all_tx_lines = []
-    summaries = []
-
+    all_tx_lines: list[dict] = []
+    summaries: list[str] = []
     for entry in due:
-        # Build the primary expense line from the scheduled template
-        account_alias = entry.get("account", "")
-        amount_str = entry.get("amount", "0")
-        currency = entry.get("currency", "")
-        payee = entry.get("payee", "")
-        category = entry.get("category", "")
-        note = entry.get("note", "")
+        primary = _build_primary_line(entry, accounts, categories, today, existing_ids)
+        existing_ids.add(primary["import_id"])
+        all_tx_lines.append(primary)
 
-        # Fall back to account's default currency if not explicitly set
-        if not currency and account_alias in accounts:
-            currency = accounts[account_alias]["currency"]
-
-        # Merge explicit tags from the scheduled template with auto-tags
-        manual_tags = [t.strip() for t in entry.get("manual_tags", "").split(";") if t.strip()]
-        all_tags = tx_engine.apply_auto_tags(account_alias, payee, manual_tags)
-
-        # Derive TX type from the category's declared type. Scheduled templates
-        # are most commonly expenses (bills, subscriptions), but income
-        # templates like monthly salary also need to book as income — the
-        # category_type drives the direction.
-        cat_info = categories.get(category, {})
-        tx_type = cat_info.get("type", "expense")
-        if tx_type not in ("income", "expense"):
-            tx_type = "expense"
-
-        line = {
-            "date": today.isoformat(),
-            "account": account_alias,
-            "type": tx_type,
-            "amount": amount_str,
-            "currency": currency,
-            "payee": payee,
-            "category": category,
-            "note": note,
-            "raw_note": "",
-            "transfer_to_account": "",
-            "transfer_to_amount": "",
-            "receipt_group": "",
-            "receipt_url": "",
-            "tags": ";".join(all_tags),
-            "third_party_id": "",
-        }
-
-        line["import_id"] = tx_engine.generate_import_id(
-            line["date"], line["account"], float(line["amount"]),
-            line["payee"], line["category"], line["note"], existing_ids,
-        )
-        existing_ids.add(line["import_id"])
-        all_tx_lines.append(line)
-
-        # Generate automatic income counter-entry for pass-through accounts.
-        # Only applies to expense templates — income on a pass-through is an
-        # unusual setup and would otherwise double-count as income.
-        acc_info = accounts.get(account_alias, {})
-        if acc_info.get("pass_through_payee") and tx_type == "expense":
-            pt_line = tx_engine.generate_pass_through_line(line, acc_info, existing_ids)
+        acc_info = accounts.get(entry.get("account", ""), {})
+        if acc_info.get("pass_through_payee") and primary["type"] == "expense":
+            pt_line = tx_engine.generate_pass_through_line(primary, acc_info, existing_ids)
             if pt_line:
                 existing_ids.add(pt_line["import_id"])
-                # Remove is_auto_generated flag (internal only, not a CSV column)
                 pt_line.pop("is_auto_generated", None)
                 all_tx_lines.append(pt_line)
 
-        summaries.append(f"{entry['name']} ({payee})")
+        summaries.append(f"{entry.get('name', '?')} ({entry.get('payee', '?')})")
 
-        # Roll the scheduled entry forward to its next occurrence
         entry["last_run"] = today.isoformat()
         try:
-            entry["next_run"] = calculate_next_run(entry["frequency"], today).isoformat()
+            entry["next_run"] = calculate_next_run(entry.get("frequency", ""), today).isoformat()
         except ValueError as e:
-            print(f"  [warn] Could not calculate next_run for {entry['sched_id']}: {e}")
-            # Fallback: advance by ~30 days to avoid re-firing immediately
+            warnings.append(f"Could not calculate next_run for {entry.get('sched_id', '?')}: {e}")
             entry["next_run"] = (today + timedelta(days=30)).isoformat()
 
-    # ── Write results ─────────────────────────────────────────────────
     tx_engine.append_transactions(all_tx_lines)
-
-    # Save scheduled.csv with updated last_run and next_run dates
     tx_engine.save_scheduled(scheduled)
 
-    # Single atomic git commit for both changed files
     n_booked = len(due)
     summary_str = ", ".join(summaries[:5])
     if len(summaries) > 5:
         summary_str += f" +{len(summaries) - 5} more"
-    commit_msg = f"SCHED cron: {n_booked} Buchungen ({summary_str})"
+    commit_msg = f"SCHED {source}: {n_booked} Buchungen ({summary_str})"
 
-    # Force synchronous git commit+push so a silent push-fail is visible
-    # to cron (non-zero exit) instead of leaving the appended TXs in a
-    # mid-state where transactions.csv and scheduled.csv are written but
-    # the commit/push never lands. The dashboard's interactive path keeps
-    # the async default; this opt-in is per-process via env var.
-    os.environ["GIT_COMMIT_SYNC"] = "1"
+    # Cron path forces sync git commit+push so push-fails surface as non-zero
+    # exit codes; the dashboard path stays async (default) for snappy UX.
+    if source == "cron":
+        os.environ["GIT_COMMIT_SYNC"] = "1"
     commit_ok = tx_engine.git_commit(commit_msg, files=[
         "data/transactions.csv",
         "data/scheduled.csv",
     ])
 
-    # Report
-    print(f"  Executed {n_booked} scheduled transaction(s):")
-    for line in all_tx_lines:
-        direction = "+" if line["type"] == "income" else "-"
-        print(f"    {direction} {line['amount']} {line['currency']} | {line['payee']} | {line['category']} | ID: {line['import_id']}")
-    if commit_ok:
-        print(f"  Committed: {commit_msg}")
+    return {
+        "today": today.isoformat(),
+        "booked": n_booked,
+        "tx_ids": [l["import_id"] for l in all_tx_lines],
+        "skipped_ids": skipped_ids,
+        "commit_ok": bool(commit_ok),
+        "commit_msg": commit_msg,
+        "warnings": warnings,
+    }
+
+
+def main() -> int:
+    """Thin CLI wrapper. Honours --dry for preview-only.
+
+    Returns 0 on success (including 'nothing due'), 1 if TXs were written but
+    git_commit failed, 2 on unhandled exception (caught by the __main__ wrapper).
+    """
+    dry_run = "--dry" in sys.argv
+    now = datetime.now()
+    today = date.today()
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] cron_sched: checking for due scheduled transactions...")
+
+    if dry_run:
+        preview = build_preview(today)
+        for w in preview["warnings"]:
+            print(f"  [warn] {w}")
+        if preview["due_count"] == 0:
+            print(f"  No scheduled transactions due today ({today.isoformat()}).")
+            return 0
+        print(f"  Found {preview['due_count']} due entry/entries.")
+        print("  [DRY RUN] Would execute:")
+        for e in preview["entries"]:
+            p = e["primary"]
+            print(f"    {e['sched_id']}: {e['name']} — {p['amount']} {p['currency']} to {p['payee']}")
+        return 0
+
+    summary = run_due(today, source="cron")
+    for w in summary["warnings"]:
+        print(f"  [warn] {w}")
+    if summary["booked"] == 0:
+        print(f"  No scheduled transactions due today ({today.isoformat()}).")
+        return 0
+    print(f"  Executed {summary['booked']} scheduled transaction(s):")
+    for tx_id in summary["tx_ids"]:
+        print(f"    Booked: {tx_id}")
+    if summary["commit_ok"]:
+        print(f"  Committed: {summary['commit_msg']}")
         return 0
     print(f"  [error] git_commit returned False — TXs appended but not pushed.", file=sys.stderr)
     return 1

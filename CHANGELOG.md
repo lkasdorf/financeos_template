@@ -18,6 +18,21 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.12] - 2026-05-07
+
+### Added
+
+- **"Run due scheduled" button on the Dashboard.** When at least one entry in `data/scheduled.csv` has `next_run <= today`, a "Run N due now" button appears in the Upcoming Payments section header. Click → modal with full TX preview: every due entry as a checked-by-default row showing primary line, optional pass-through counter-entry, and the `next_run` date set after booking. Uncheck what you want to skip → "Book selected" fires the atomic backup + append + git-commit flow. **This unblocks local Windows / Linux deployments** — previously you had to either run the Pi cron, or shell into the repo and run `python scripts/cron_sched.py`. Now it's a button click.
+- **Two new API endpoints** behind the widget: `POST /api/scheduled/preview-due` (read-only preview) and `POST /api/scheduled/run-due` (atomic write, optional `selected_ids` filter). Returns HTTP 207 if TXs were appended but git commit failed (partial-success state, surfaces clearly to the UI).
+
+### Changed
+
+- **`scripts/cron_sched.py` refactored** to expose `build_preview()` and `run_due()` as importable helpers. CLI behaviour (`python scripts/cron_sched.py [--dry]`) is unchanged — the cron job still runs the way it always did.
+
+### Why this matters for local-only setups
+
+Until rc.11 the only way to fire due scheduled transactions was the Pi cron at `0 6 * * *`. If you run FinanceOS only on your laptop, scheduled entries never fired automatically. The rc.12 widget gives you a one-click daily ritual that's idempotent (safe to click twice — second click finds nothing due) and atomic (single git commit per batch, both `transactions.csv` and `scheduled.csv` updated together).
+
 ## [1.3.0-rc.11] - 2026-05-07
 
 ### Fixed

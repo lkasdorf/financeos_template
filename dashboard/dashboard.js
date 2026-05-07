@@ -195,17 +195,146 @@ async function loadScheduledPreview() {
     </div>`;
   };
 
+  // Render the "Run due now" CTA only when at least one entry is overdue.
+  // The button opens a modal with the full TX preview from the API.
+  const runDueBtn = overdue.length > 0
+    ? `<button id="dash-sched-run-due" class="btn-primary" style="margin-left:auto;font-size:12px;padding:4px 10px;">${t('dashboard.upcoming.run_due', { n: overdue.length }, `Run ${overdue.length} due now`)}</button>`
+    : '';
+
   container.innerHTML = `
     <section class="section">
-      <div class="section-title">${t('dashboard.upcoming.title', {}, 'Upcoming Payments')} <span class="hint">${overdue.length > 0
-        ? t('dashboard.upcoming.overdue_count', { n: overdue.length }, `${overdue.length} overdue`)
-        : t('dashboard.upcoming.next_week', {}, 'next 7 days')}</span></div>
+      <div class="section-title" style="display:flex;align-items:center;gap:8px;">
+        <span>${t('dashboard.upcoming.title', {}, 'Upcoming Payments')}</span>
+        <span class="hint">${overdue.length > 0
+          ? t('dashboard.upcoming.overdue_count', { n: overdue.length }, `${overdue.length} overdue`)
+          : t('dashboard.upcoming.next_week', {}, 'next 7 days')}</span>
+        ${runDueBtn}
+      </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;box-shadow:var(--shadow);">
         ${overdue.map(s => renderItem(s, true)).join('')}
         ${upcoming.map(s => renderItem(s, false)).join('')}
       </div>
     </section>
   `;
+
+  const cta = document.getElementById('dash-sched-run-due');
+  if (cta) cta.addEventListener('click', () => openSchedRunDueModal());
+}
+
+// ── Run Due Scheduled — modal with full TX preview + per-row checkboxes ──
+//
+// Two-step flow: POST /api/scheduled/preview-due → render rows with
+// checkboxes → user selects which to book → POST /api/scheduled/run-due
+// with selected_ids. The preview includes pass-through counter-lines so
+// the user sees the full set of TXs that would land in transactions.csv.
+async function openSchedRunDueModal() {
+  let preview;
+  try {
+    const res = await fetch('/api/scheduled/preview-due', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    preview = await res.json();
+  } catch (e) {
+    const msg = t('sched.preview.error', { msg: e.message }, `Could not load preview: ${e.message}`);
+    if (window.uiAlert) uiAlert(msg, { type: 'error' }); else alert(msg);
+    return;
+  }
+
+  if (!preview.entries || preview.entries.length === 0) {
+    const msg = t('sched.preview.none', {}, 'No scheduled transactions are due today.');
+    if (window.uiAlert) uiAlert(msg, { type: 'info' });
+    return;
+  }
+
+  const rowHtml = preview.entries.map((e) => {
+    const p = e.primary;
+    const pt = e.pass_through;
+    const direction = p.type === 'income' ? '+' : '-';
+    const ptHtml = pt
+      ? `<div class="hint-sm" style="margin-top:4px;color:var(--muted-soft);">↳ ${t('sched.modal.auto_reimbursement', {}, 'auto reimbursement')}: + ${escapeHtml(pt.amount)} ${escapeHtml(pt.currency)} | ${escapeHtml(pt.payee)} | ${escapeHtml(pt.category)}</div>`
+      : '';
+    return `<label style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border-soft);cursor:pointer;">
+      <input type="checkbox" class="sched-run-due-row" data-sched-id="${escapeHtml(e.sched_id)}" checked style="margin-top:4px;flex-shrink:0;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(e.name)} <span class="hint-sm" style="font-weight:400;">(${escapeHtml(e.frequency || '')})</span></div>
+        <div class="hint-sm" style="margin-top:2px;">${direction} ${escapeHtml(p.amount)} ${escapeHtml(p.currency)} | ${escapeHtml(p.payee)} | ${escapeHtml(p.category)} | ${escapeHtml(p.account)}</div>
+        ${ptHtml}
+        <div class="hint-sm" style="margin-top:2px;color:var(--muted-soft);">${t('sched.modal.next_run_after', { date: e.next_run_after }, `next run after booking: ${e.next_run_after}`)}</div>
+      </div>
+    </label>`;
+  }).join('');
+
+  const warningsHtml = (preview.warnings && preview.warnings.length)
+    ? `<div style="background:var(--warning-bg, #fff3cd);color:var(--warning-fg, #664d03);border:1px solid var(--warning-border, #ffe69c);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;">${preview.warnings.map(w => `⚠ ${escapeHtml(w)}`).join('<br>')}</div>`
+    : '';
+
+  const body = `
+    ${warningsHtml}
+    <p class="hint" style="margin:0 0 12px;">${t('sched.modal.intro', { date: preview.today, n: preview.entries.length }, `${preview.entries.length} scheduled entries are due as of ${preview.today}. Uncheck any you want to skip — selected entries will be booked atomically with a single git commit.`)}</p>
+    <div style="max-height:50vh;overflow-y:auto;border-top:1px solid var(--border-soft);">${rowHtml}</div>
+  `;
+
+  // Build the modal using the project's inline-overlay pattern (matches
+  // pages-debts.js / forms-edit-tx.js). closeModal() is the global helper
+  // from forms-edit-tx.js — it removes the overlay element.
+  const existing = document.querySelector('.modal-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:760px;">
+      <h3>${t('sched.modal.title', {}, 'Run Due Scheduled Transactions')}</h3>
+      ${body}
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <button id="sched-run-due-cancel" class="btn-secondary">${t('common.cancel', {}, 'Cancel')}</button>
+        <button id="sched-run-due-confirm" class="btn-primary">${t('sched.modal.confirm', {}, 'Book selected')}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Esc key closes the modal — matches the pattern in forms-edit-tx.js.
+  const escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
+  document.addEventListener('keydown', escHandler);
+  overlay._escHandler = escHandler;
+
+  const cancelBtn = overlay.querySelector('#sched-run-due-cancel');
+  const confirmBtn = overlay.querySelector('#sched-run-due-confirm');
+  if (cancelBtn) cancelBtn.addEventListener('click', () => closeModal());
+  if (confirmBtn) confirmBtn.addEventListener('click', async () => {
+    const selected = Array.from(overlay.querySelectorAll('.sched-run-due-row:checked'))
+      .map(cb => cb.getAttribute('data-sched-id'));
+    if (selected.length === 0) {
+      const msg = t('sched.modal.none_selected', {}, 'Select at least one entry, or cancel.');
+      if (window.uiAlert) uiAlert(msg, { type: 'warning' });
+      return;
+    }
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = t('sched.modal.booking', {}, 'Booking…');
+    try {
+      const res = await fetch('/api/scheduled/run-due', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_ids: selected }),
+      });
+      const summary = await res.json();
+      if (!res.ok && res.status !== 207) throw new Error(summary.error || `HTTP ${res.status}`);
+      closeModal();
+      const msg = summary.commit_ok
+        ? t('sched.modal.success', { n: summary.booked }, `Booked ${summary.booked} scheduled transaction(s).`)
+        : t('sched.modal.partial', { n: summary.booked }, `Booked ${summary.booked} TX(s) but git commit failed — check logs.`);
+      if (window.uiAlert) uiAlert(msg, { type: summary.commit_ok ? 'info' : 'warning' });
+      // Refresh the dashboard so the upcoming-payments widget updates and
+      // any new TXs appear in recent-transactions and balance summaries.
+      if (typeof boot === 'function') boot();
+    } catch (e) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = t('sched.modal.confirm', {}, 'Book selected');
+      const msg = t('sched.modal.error', { msg: e.message }, `Booking failed: ${e.message}`);
+      if (window.uiAlert) uiAlert(msg, { type: 'error' });
+    }
+  });
 }
 
 async function renderDebtsPage() {

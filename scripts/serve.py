@@ -77,6 +77,8 @@ FEATURE_GATED_ROUTES = {
     "/api/scheduled/add": "scheduled_tx",
     "/api/scheduled/update": "scheduled_tx",
     "/api/scheduled/delete": "scheduled_tx",
+    "/api/scheduled/preview-due": "scheduled_tx",
+    "/api/scheduled/run-due": "scheduled_tx",
     "/api/quickexp/list": "quick_expenses",
     "/api/quickexp/add": "quick_expenses",
     "/api/quickexp/update": "quick_expenses",
@@ -352,6 +354,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/scheduled/add": self.handle_scheduled_add,
             "/api/scheduled/update": self.handle_scheduled_update,
             "/api/scheduled/delete": self.handle_scheduled_delete,
+            "/api/scheduled/preview-due": self.handle_scheduled_preview_due,
+            "/api/scheduled/run-due": self.handle_scheduled_run_due,
             "/api/debts/list": self.handle_debts_list,
             "/api/debts/add": self.handle_debts_add,
             "/api/debts/update": self.handle_debts_update,
@@ -928,6 +932,59 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             return
         tx_engine.git_commit(f"Scheduled delete: {sched_id}", ["data/scheduled.csv"])
         self._respond_json(200, {"success": True})
+
+    def handle_scheduled_preview_due(self):
+        """Return what would be booked if SCHED ran today, without writing.
+
+        Body (optional): {"date": "YYYY-MM-DD"} to override today (used for
+        backdated previews). Response mirrors cron_sched.build_preview().
+        """
+        from datetime import date as _date
+        import cron_sched
+        body = self._read_json_body() or {}
+        target = body.get("date", "").strip()
+        try:
+            today = _date.fromisoformat(target) if target else _date.today()
+        except ValueError:
+            self._respond_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+        try:
+            preview = cron_sched.build_preview(today)
+        except Exception as exc:
+            self._respond_json(500, {"error": f"build_preview failed: {exc}"})
+            return
+        self._respond_json(200, preview)
+
+    def handle_scheduled_run_due(self):
+        """Book due scheduled entries (optionally filtered to selected_ids).
+
+        Body: {"selected_ids": ["sched-001", ...]} (omit or null to book all
+        due). Response mirrors cron_sched.run_due() with HTTP 207 if TXs were
+        written but the git commit failed (partial-success state).
+        """
+        from datetime import date as _date
+        import cron_sched
+        body = self._read_json_body() or {}
+        selected = body.get("selected_ids", None)
+        if selected is not None and not isinstance(selected, list):
+            self._respond_json(400, {"error": "selected_ids must be an array of sched_id strings"})
+            return
+        target = body.get("date", "").strip()
+        try:
+            today = _date.fromisoformat(target) if target else _date.today()
+        except ValueError:
+            self._respond_json(400, {"error": "date must be YYYY-MM-DD"})
+            return
+        try:
+            summary = cron_sched.run_due(today, selected_ids=selected, source="dashboard")
+        except Exception as exc:
+            self._respond_json(500, {"error": f"run_due failed: {exc}"})
+            return
+        # Partial success: TXs were appended but git_commit returned False.
+        # 207 Multi-Status surfaces the write to the frontend without burying it
+        # behind a generic 500.
+        status = 200 if summary.get("commit_ok", False) or summary.get("booked", 0) == 0 else 207
+        self._respond_json(status, summary)
 
     # ── API: /api/debts ─────────────────────────────────────────────────
 
