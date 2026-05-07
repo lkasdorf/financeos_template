@@ -108,7 +108,11 @@ function renderExpenseReport(opts) {
 // 'cd', 'automobile', 'fixedvar') — used both for the REPORTS_CONFIG
 // lookup and the deep-link target.
 function renderReportEmptyState(opts) {
-  const container = document.getElementById('re-content');
+  // opts.containerId defaults to 're-content' (the renderExpenseReport target)
+  // but bucket-style and bespoke reports (Bills, Automobile, Discretionary,
+  // Cash Discrepancy) pass their own container ID so the empty-state can
+  // land inside their existing layout.
+  const container = document.getElementById(opts.containerId || 're-content');
   if (!container) return;
 
   const reportId = opts.filterId || '';

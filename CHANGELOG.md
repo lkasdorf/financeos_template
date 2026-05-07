@@ -18,6 +18,23 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.17] - 2026-05-08
+
+### Added
+
+- **Empty-state extended to Bills Overview, Automobile, and Cash Discrepancy.** rc.16 introduced the actionable empty state on the four simple category-driven reports (AI / Dining / Vice / Bank Fees). rc.17 brings the same treatment to the three remaining cat-driven reports with their own render paths:
+  - **Bills Overview** (bucket-based, container `bl-content`)
+  - **Automobile** (bucket-based, container `au-content`)
+  - **Cash Discrepancy** (single-shot render, falls into `report-output`)
+
+  Every category-driven report on the dashboard now shows an actionable panel with the configured categories, the user's actual categories, and a deep link to Settings → Reports when the report has zero matches across the dataset.
+
+- **Discretionary vs. Fixed** is intentionally NOT wired up — its semantics work fine with zero `fixed_prefixes` matches (everything renders as "discretionary"), so an empty state would be misleading.
+
+### Why this completes Punkt 4
+
+After the rc.10 testing pass we identified four findings, the last of which was "every report should function out-of-the-box". rc.15 dropped the upstream-private House 4C report. rc.16 + rc.17 close the remaining gap: when a report can't show data because category names differ, the user sees an actionable fix path instead of an empty chart. That converts "this report is broken" into "click here to map your categories" — a single click away from working data.
+
 ## [1.3.0-rc.16] - 2026-05-08
 
 ### Added

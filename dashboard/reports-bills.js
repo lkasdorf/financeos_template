@@ -100,6 +100,16 @@ function renderBillsReport() {
     const filtered = state.tx.filter(tx =>
       tx.type === 'expense' && tx.category && billsCats.has(tx.category)
     ).map(tx => ({ ...tx, amount: convertTo(tx.amount, tx.currency, cur) }));
+    // rc.17 — actionable empty state when no TX in the entire dataset match
+    // any of the configured Bills bucket categories.
+    if (filtered.length === 0) {
+      renderReportEmptyState({
+        containerId: 'bl-content',
+        filterId: 'bills',
+        filterLabel: t('reports.bills.title', {}, 'Bills Overview'),
+      });
+      return;
+    }
     if (modeEl.value === 'monthly') renderBillsMonthly(filtered, yearEl.value, cur);
     else renderBillsYearly(filtered, cur);
   }
@@ -382,6 +392,17 @@ function renderAutomobileReport() {
   const allAutoTx = state.tx.filter(tx =>
     tx.type === 'expense' && tx.category && allAutoCats.has(tx.category) && !custodyAliases.has(tx.account)
   ).map(tx => ({ ...tx, amount: convertToTZS(tx.amount, tx.currency) }));
+
+  // rc.17 — actionable empty state when no TX in the entire dataset match
+  // any of the configured Automobile bucket categories.
+  if (allAutoTx.length === 0) {
+    renderReportEmptyState({
+      containerId: 'au-content',
+      filterId: 'automobile',
+      filterLabel: t('reports.automobile.title', {}, 'Automobile'),
+    });
+    return;
+  }
 
   function update() {
     out.setAttribute('data-auto-mode', modeEl.value);

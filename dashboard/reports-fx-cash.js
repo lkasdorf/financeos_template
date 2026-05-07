@@ -795,6 +795,18 @@ function renderCashDiscrepancyReport() {
     expCats.has(t.category) || incCats.has(t.category)
   ).map(t => ({ ...t, amountConv: convertToTZS(t.amount, t.currency) }));
 
+  // rc.17 — actionable empty state when no TX in the entire dataset match
+  // the configured Cash Discrepancy expense / income categories.
+  if (discTx.length === 0) {
+    out.innerHTML = '<div class="report-view"><div class="report-section" id="cd-empty-host"></div></div>';
+    renderReportEmptyState({
+      containerId: 'cd-empty-host',
+      filterId: 'cash_discrepancy',
+      filterLabel: t('reports.cashdisc.title', {}, 'Cash Discrepancy'),
+    });
+    return;
+  }
+
   // Group by year
   const byYear = {};
   for (const t of discTx) {
