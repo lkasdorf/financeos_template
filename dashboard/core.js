@@ -53,6 +53,21 @@ window.REPORTS_CONFIG = {
   discretionary_fixed: {
     fixed_prefixes: ['Rent', 'Bills:', 'Subscriptions:', 'Insurance:', 'Fees:'],
   },
+  // Income Sources Breakdown bucket mapping. Per-business rules in
+  // config/businesses.json (when configured) take precedence; this is the
+  // generic fallback for everyone else. An empty `salary` bucket means the
+  // report has no Salary column in the public template by default — users
+  // configure their salary category via Settings → Reports so it gets its
+  // own column instead of disappearing into "Other".
+  income_sources: {
+    buckets: {
+      salary:            { categories: [] },
+      interest:          { categories: ['Income:Interest'] },
+      investments_sales: { categories: ['Income:Investments', 'Income:Sales'] },
+      reimbursement:     { categories: ['Income:Reimbursement'] },
+      refunds:           { categories: ['Income:Refund'] },
+    },
+  },
 };
 async function loadReportsConfig() {
   try {
@@ -142,6 +157,13 @@ function applyBranding() {
   document.title = name;
   document.querySelectorAll('[data-brand]').forEach(el => { el.textContent = name; });
   document.querySelectorAll('[data-brand-html]').forEach(el => { el.innerHTML = nameHtml; });
+  // Accent color — propagated as both --accent-color (legacy) and --accent
+  // (newer chart/report styles) on :root so every consumer picks it up
+  // without a per-component opt-in. Falls back to the hardcoded default if
+  // branding.json doesn't ship one.
+  const accent = window.BRANDING.accent_color || '#1e40af';
+  document.documentElement.style.setProperty('--accent-color', accent);
+  document.documentElement.style.setProperty('--accent', accent);
 }
 async function loadSmartDefaults() {
   try {

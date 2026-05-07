@@ -77,6 +77,19 @@ function _reportTabSections() {
       get hint()  { return t('settings.reports.disc_fixed.hint', {}, 'Prefixes that mark a category as a fixed cost. Anything else is discretionary. Use exact name or trailing colon for a prefix (e.g. "Bills:").'); },
       shape: 'prefixes',
     },
+    {
+      key: 'income_sources',
+      get title() { return t('settings.reports.income_sources.title', {}, 'Income Sources Breakdown'); },
+      get hint()  { return t('settings.reports.income_sources.hint', {}, 'Lift each kind of income out of the catch-all "Other" column. Map your salary categories to the Salary bucket so they get their own column. Per-business salary/dividend/reimbursement classification still comes from config/businesses.json.'); },
+      shape: 'buckets',
+      buckets: [
+        { id: 'salary',            get label() { return t('settings.reports.income_sources.salary',            {}, 'Salary'); } },
+        { id: 'interest',          get label() { return t('settings.reports.income_sources.interest',          {}, 'Interest'); } },
+        { id: 'investments_sales', get label() { return t('settings.reports.income_sources.investments_sales', {}, 'Investments & Sales'); } },
+        { id: 'reimbursement',     get label() { return t('settings.reports.income_sources.reimbursement',     {}, 'Reimbursement'); } },
+        { id: 'refunds',           get label() { return t('settings.reports.income_sources.refunds',           {}, 'Refunds'); } },
+      ],
+    },
   ];
 }
 

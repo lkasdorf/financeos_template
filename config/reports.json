@@ -118,5 +118,15 @@
       "Insurance:",
       "Fees:"
     ]
+  },
+  "income_sources": {
+    "label": "Income Sources Breakdown",
+    "buckets": {
+      "salary":            { "label": "Salary",            "categories": [] },
+      "interest":          { "label": "Interest",          "categories": ["Income:Interest"] },
+      "investments_sales": { "label": "Investments & Sales", "categories": ["Income:Investments", "Income:Sales"] },
+      "reimbursement":     { "label": "Reimbursement",     "categories": ["Income:Reimbursement"] },
+      "refunds":           { "label": "Refunds",           "categories": ["Income:Refund"] }
+    }
   }
 }

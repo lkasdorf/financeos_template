@@ -23,85 +23,52 @@ A self-hosted, CSV-based personal finance system. Runs as a single-file dashboar
 
 ---
 
-## Booking Transactions (TX)
+## Booking Transactions
 
 ### How do I book a transaction?
-A message starting with `TX` → the engine parses the free-text, shows a preview, you confirm with `y`. Example: `TX 45 Whole Foods cash` → 45.00 USD expense, Cash account, payee "Whole Foods", category `Food:Groceries`.
+Open the dashboard, click **+ Add Transaction** (or press the `+` floating button on mobile). Fill in date, amount, account, payee, category, optional tags + note, click **Save**. The CSV plumbing — backup, atomic write, git-commit when a remote is configured — happens behind the scenes.
 
-### Which amount shorthands exist?
-- `45k` → 45,000
-- `2.5m` → 2,500,000
-- `15 eur` → 15 EUR (currency explicit)
-- Without a currency marker → derived from the account context
+The free-text terminal `TX ...` flow that earlier versions of this template advertised was removed in v1.2.0. Manual entry through the form is now the only supported path.
 
-### Which account aliases exist?
-The aliases live in `data/accounts.csv`. The empty-start template ships with `cash`, `checking`, `savings`, `credit`. Add more via Settings → Accounts.
-
-### Smart defaults — no account needed
-For certain payees a default account can kick in. Configure rules in `config/smart_defaults.json` (`prompt_rules`). Empty-start template ships with no rules — add what you find recurring.
-
-An explicit account always overrides the default.
+### Smart defaults — what auto-fills?
+- **Currency** is inherited from the chosen account (`data/accounts.csv` row).
+- **Category** suggestions come from the payee history (`data/payees.json`) — book the same payee twice with the same category and the third entry pre-fills.
+- **Auto-tags** trigger when you configure rules in `config/defaults.json` (`auto_tag.by_account` and `auto_tag.by_payee`). The template ships without auto-tag rules — add the ones that recur in your data.
 
 ### How do I make a transfer?
-`TX transfer 500 checking to savings` → `type=transfer`, amount 500.00 USD, Checking → Savings.
+Set the type to **Transfer**, pick source and destination accounts, enter the amount. One row, no double-booking.
 
-### How do I split a receipt?
-`TX 45 Whole Foods cash: 30 groceries, 15 household` → two rows, same `receipt_group` + `receipt_url`, different categories.
+### How do I split a receipt across categories?
+Click **Add split line** in the form for as many sub-lines as you need. Each line gets its own category and amount; the live-sum badge turns green when the splits add up to the typed total. Save writes one row per split, all sharing the same `receipt_group` and (if attached) `receipt_url`.
 
 ### How do I add tags?
-`TX 250 HVAC Service cash #HouseRepairs` → the tag attaches to the row. Multiple tags are separated by `;` in the `tags` field.
-
-### Are there auto-tags?
-Yes — if you configure rules in `config/defaults.json` (`auto_tag.by_account` and `auto_tag.by_payee`). The empty-start template ships without auto-tag rules.
-
-### How do I correct the preview?
-Instead of `y` → send a free-text correction (e.g. `mpesa instead of cash`). The engine rebuilds the preview.
-
-### What happens after `y`?
-1. `python scripts/backup.py transactions` (mandatory)
-2. Append the row(s) to `data/transactions.csv`
-3. Generate the `import_id` (SHA1 of the core fields, 12 chars)
-4. Git commit + push (when a remote is configured)
+Pick from the multi-select tag chip in the form, or type a new tag name and confirm to create it. New tags get added to `data/tags.csv` automatically.
 
 ---
 
 ## Pass-Through & Custody
 
 ### What does a pass-through account do?
-Accounts with `type=pass_through` (configured via `accounts.csv` with a `pass_through_payee`) generate **two rows** for every booking:
-1. The normal expense (with the real category, e.g. `Bills:Electricity`)
-2. The auto income counter-booking (`Income:<payee> Reimbursement`)
+An account marked `type=pass_through` in `data/accounts.csv` (with a `pass_through_payee` column populated) automatically generates **two rows** for every booking:
 
-The pass-through balance therefore stays at 0. Useful for accounts that hold someone else's money you spend on their behalf — e.g. an employer-funded prepaid card.
+1. The actual expense (with the real category, e.g. `Bills:Electricity`)
+2. An income counter-booking (`Income:<payee> Reimbursement`)
+
+The pass-through balance therefore stays at 0. Useful for accounts that hold someone else's money you spend on their behalf — e.g. an employer-funded prepaid card. **The Setup wizard ships without pass-through accounts;** add them via Settings → Accounts after install.
 
 ### What is a custody account?
-Accounts with `owner != self`. Normal bookings, **no** auto counter-booking. The balance shows up in the dashboard under "Custody", **not** in net worth. Useful for money you administer for somebody else (a partner's savings, a child's allowance).
+An account with `owner != self`. Normal bookings, **no** automatic counter-booking. The balance shows under "Custody" on the dashboard, **not** in Net Worth. Useful for money you administer for someone else (a partner's savings, a child's allowance).
+
+### Private vs Business — how does the dashboard distinguish?
+Two ways:
+
+1. **Account-driven** — when an account is marked `type=pass_through` with the appropriate `pass_through_payee`, every booking on it is implicitly business-side, and the auto-tag system (`config/defaults.json` `auto_tag.by_account`) can stamp a `BUSINESS_<entity>` tag on it.
+2. **Tag-driven** — manually attach a `BUSINESS_<entity>` tag to a booking. Used when a private account paid for a business expense (you'll be reimbursed later).
+
+The "Business vs. Personal" report and the per-business Reimbursement reports rely on **`config/businesses.json`**. Each entity declares its tags (`tag: 'BUSINESS_Acme'`), accounts (the pass-through aliases), and income categories (`{salary: 'Income:Acme Salary', reimbursement: 'Income:Acme Reimbursement'}`). The template ships with `entities: []` so the business reports gracefully degrade to "no entities configured" — fork-side users add their own.
 
 ### Reimbursement rule
-Pass-through reimbursement income (e.g. `Income:Employer Inc. Reimbursement`) counts **everywhere as regular income** — dashboard, cashflow chart, reports. Don't filter it out. The Income report additionally shows the split "Real Income" vs. "Reimbursements" as info tiles.
-
----
-
-## Batch TX (multiple bookings at once)
-
-### How?
-Multiple TX in a single message — multi-line or semicolon-separated:
-```
-TX 45 Whole Foods cash
-TX 8 Starbucks credit
-TX 250 Electric Co reimburse
-```
-
-### Confirmation variants
-- `y` = all
-- `y 1,3` = subset
-- `y 2-4` = range
-- `drop 2` = remove a line from the batch
-- `2: credit instead of cash` = correct line 2
-- `n` = discard everything
-
-### Atomicity
-One backup before the write, one git commit for the whole batch. Open follow-up questions only block the affected line.
+Pass-through reimbursement income (e.g. `Income:Employer Inc. Reimbursement`) counts **everywhere as regular income** — dashboard, cashflow chart, reports. Don't filter it out. The Income report shows the split "Real Income" vs. "Reimbursements" as info tiles when business entities are configured.
 
 ---
 

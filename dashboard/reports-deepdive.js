@@ -860,8 +860,15 @@ function renderIncomeSourcesReport() {
     // so all of one business's income reads as one cluster in the chart.
     const businessEntities = getBusinessEntities();
 
+    // Generic income-source buckets from config/reports.json. Defaults match
+    // the canonical category set; users with renamed/added categories map
+    // them in Settings → Reports. The `salary` bucket is empty by default —
+    // configure it to lift your salary out of the "Other" column.
+    const incBuckets = (window.REPORTS_CONFIG?.income_sources?.buckets) || {};
+
     function classifySource(tx) {
       const cat = tx.category || '';
+      // Per-business rules win over generic buckets when configured.
       for (const e of businessEntities) {
         const ic = e.income_categories || {};
         if (ic.salary && cat === ic.salary) return `${e.id}_salary`;
@@ -872,10 +879,13 @@ function renderIncomeSourcesReport() {
         if (e.income_prefix && cat.startsWith(e.income_prefix + ':')) return `${e.id}_income`;
         if (e.income_prefix && cat === e.income_prefix) return `${e.id}_income`;
       }
-      if (cat === 'Income:Interest') return 'interest';
-      if (cat === 'Income:Investments' || cat === 'Income:Sales') return 'investments_sales';
-      if (cat === 'Income:Reimbursement') return 'reimbursement';
-      if (cat === 'Income:Refund') return 'refunds';
+      // Generic-bucket lookup (config-driven). Iterate buckets in a fixed
+      // priority order so a category mapped to multiple buckets resolves
+      // deterministically.
+      for (const bid of ['salary', 'interest', 'investments_sales', 'reimbursement', 'refunds']) {
+        const cats = (incBuckets[bid] && incBuckets[bid].categories) || [];
+        if (cats.includes(cat)) return bid;
+      }
       return 'other';
     }
 
@@ -896,6 +906,7 @@ function renderIncomeSourcesReport() {
     }
 
     const staticColors = {
+      salary: '#22c55e',
       reimbursement: '#a3e635',
       refunds: '#94a3b8',
       interest: '#10b981',
@@ -903,6 +914,7 @@ function renderIncomeSourcesReport() {
       other: '#6b7280',
     };
     const staticFallback = {
+      salary: 'Salary',
       reimbursement: 'Reimbursement',
       refunds: 'Refunds',
       interest: 'Interest',
@@ -910,7 +922,13 @@ function renderIncomeSourcesReport() {
       other: 'Other Income',
     };
     const sourceColors = { ...businessColors, ...staticColors };
-    const sourceOrder = [...businessKeys, 'reimbursement', 'refunds', 'interest', 'investments_sales', 'other'];
+    // The Salary column only shows up when at least one user category is mapped
+    // to it (otherwise it would be a blank column for default empty-start
+    // installs that haven't gone through the wizard's income-classification step).
+    const salaryHasCategories = ((incBuckets.salary && incBuckets.salary.categories) || []).length > 0;
+    const genericOrder = (salaryHasCategories ? ['salary'] : [])
+      .concat(['reimbursement', 'refunds', 'interest', 'investments_sales', 'other']);
+    const sourceOrder = [...businessKeys, ...genericOrder];
     const sourceFallback = { ...businessFallbacks, ...staticFallback };
     const sourceLabel = (k) => t(`reports.incsrc.source.${k}`, {}, sourceFallback[k] || k);
 

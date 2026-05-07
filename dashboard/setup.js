@@ -15,6 +15,15 @@ const DEFAULT_REPORTS_CONFIG = {
   ai_costs:      { match: 'prefix', categories: ['Subscriptions:AI'] },
   vice_spending: { categories: ['Leisure:Alcohol', 'Leisure:Smoking', 'Leisure:Vaping'] },
   bank_fees:     { match: 'prefix', categories: ['Fees:'] },
+  income_sources: {
+    buckets: {
+      salary:            { categories: [] },
+      interest:          { categories: ['Income:Interest'] },
+      investments_sales: { categories: ['Income:Investments', 'Income:Sales'] },
+      reimbursement:     { categories: ['Income:Reimbursement'] },
+      refunds:           { categories: ['Income:Refund'] },
+    },
+  },
   cash_discrepancy: {
     expense_categories: ['Other Expenses:Cash Discrepancy'],
     income_categories:  ['Income:Cash Discrepancy'],
@@ -73,6 +82,7 @@ const state = {
 // ── Boot ─────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
+  bindLocalePicker();
   bindStepNav();
   bindStep1();
   bindStep2();
@@ -114,6 +124,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   showStep(1);
 });
+
+// ── Locale picker ────────────────────────────────────────────────────────
+// The wizard itself is hardcoded English (translating every label is on the
+// v1.3.x backlog), but the picker still has value: the dashboard reads the
+// `lp-locale` localStorage key on first boot, so the post-setup landing page
+// is in the chosen language. Default = English.
+
+function bindLocalePicker() {
+  const sel = document.getElementById('setup-locale');
+  if (!sel) return;
+  const stored = localStorage.getItem('lp-locale');
+  if (stored) sel.value = stored;
+  sel.addEventListener('change', () => {
+    localStorage.setItem('lp-locale', sel.value);
+  });
+}
 
 // ── Step navigation ──────────────────────────────────────────────────────
 
@@ -421,6 +447,14 @@ const REPORTS_STEP_SECTIONS = [
     ],
   },
   { key: 'discretionary_fixed', title: 'Discretionary vs. Fixed', shape: 'prefixes' },
+  {
+    key: 'income_sources', title: 'Income Sources Breakdown', shape: 'buckets',
+    buckets: [
+      { id: 'salary', label: 'Salary' }, { id: 'interest', label: 'Interest' },
+      { id: 'investments_sales', label: 'Investments & Sales' },
+      { id: 'reimbursement', label: 'Reimbursement' }, { id: 'refunds', label: 'Refunds' },
+    ],
+  },
 ];
 
 function renderReportsStep() {

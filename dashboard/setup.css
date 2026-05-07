@@ -53,6 +53,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+.setup-locale {
+  margin-left: auto;
+  margin-right: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 /* ── Stepper ────────────────────────────────────────────────────────────── */
 
 .setup-stepper {

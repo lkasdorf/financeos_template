@@ -137,6 +137,15 @@ _REPORTS_FALLBACK: dict = {
     "discretionary_fixed": {
         "fixed_prefixes": ["Rent", "Bills:", "Subscriptions:", "Insurance:", "Fees:"],
     },
+    "income_sources": {
+        "buckets": {
+            "salary":            {"categories": []},
+            "interest":          {"categories": ["Income:Interest"]},
+            "investments_sales": {"categories": ["Income:Investments", "Income:Sales"]},
+            "reimbursement":     {"categories": ["Income:Reimbursement"]},
+            "refunds":           {"categories": ["Income:Refund"]},
+        },
+    },
 }
 
 

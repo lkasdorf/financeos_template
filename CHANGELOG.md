@@ -18,6 +18,29 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.5] - 2026-05-07
+
+Continuous user-test sweep. Combines what would have been rc.4 (income-bucket configurability + FAQ rewrite + setup locale picker) with rc.5 (report-title i18n + accent color + dashboard favicon).
+
+### Added
+
+- **All 37 report list titles + descriptions are now i18n-aware.** New `_r(id, category, render, title, desc)` helper builds REPORTS array entries with getters that route through `t()`. Locale switch re-translates the list immediately. 74 new keys per locale.
+- **Income Sources Breakdown is configurable.** New `income_sources.buckets` section in `config/reports.json` covers salary / interest / investments_sales / reimbursement / refunds. The Salary column auto-appears once you map a category to it (Settings → Reports or Setup wizard step 6). Per-business salary classification still wins via `config/businesses.json`.
+- **Setup wizard locale picker.** Top-bar `<select>` lets users pick `en` / `de` during install. Saves to `localStorage:lp-locale` so the dashboard boots in the chosen language. Wizard's own labels stay English for now (full wizard i18n is on the v1.3.x backlog).
+
+### Fixed
+
+- **Accent color from the setup wizard wasn't applied to the dashboard.** `applyBranding` updated text content only; the `accent_color` from `branding.json` was loaded into `window.BRANDING.accent_color` but never propagated to CSS. Now sets `--accent-color` and `--accent` on `:root` so every consumer picks it up.
+- **Dashboard favicon was the "LP" wordmark.** Replaced with the same generic three-bar chart icon used in the setup wizard.
+- **Income Sources Breakdown classifier** reads category buckets from `REPORTS_CONFIG.income_sources` instead of the hard-coded set, so users with renamed `Income:*` categories see them in the right column instead of dumped into "Other Income".
+- **FAQ "Booking Transactions" / "Batch TX" sections rewritten** to match the public template's actual UX. Free-text `TX ...` references removed (manual entry form has been the only path since v1.2.0). Pass-Through & Custody section adds an explicit "Private vs Business — how does the dashboard distinguish?" block.
+
+### Still in v1.3.x backlog
+
+- Full wizard-string i18n (every label in setup.html via `t()`).
+- FAQ German twin (`docs/faq.de.md`) — currently the FAQ tab loader falls back to English for DE locale.
+- Step 6 dropdowns may still miss MMEX-imported categories that have no transactions — the importer is parent-only filtered for those; a follow-up will re-include all leaf categories.
+
 ## [1.3.0-rc.3] - 2026-05-07
 
 Setup-wizard MMEX staging-payload completion. Caught when rc.2 testing showed the Currency column was *still* empty and the Step-6 dropdowns *still* didn't have the user's MMEX categories.
