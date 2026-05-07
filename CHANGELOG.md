@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.3] - 2026-05-07
+
+Setup-wizard MMEX staging-payload completion. Caught when rc.2 testing showed the Currency column was *still* empty and the Step-6 dropdowns *still* didn't have the user's MMEX categories.
+
+### Fixed
+
+- **MMEX staging account currency was never sent to the frontend.** Root cause was in `serve.py` — `accounts_preview` did `acc.get("currency", "")` but the importer returns `currency_code`. The earlier rc.2 fix on the JS side (`acc.currency_code || acc.currency`) was a no-op because the server already stripped the value before the JS could read it. Now the response carries both `currency` and `currency_code` with the same value.
+- **Setup step 6 dropdowns showed the empty-start canonical categories instead of the user's MMEX categories.** `accounts_preview` was the only collection echoed back; `categories` was never in the staging response, so `state.staging.categories` was `undefined` on the frontend, and `reportsWizardCategories()` correctly fell back to `EMPTY_START_CATEGORIES`. Now the response carries `categories: [{id, name, path}, …]` mirroring the importer's `full_path` so the dropdowns offer the user's real categories.
+
+### Still in v1.3.x backlog (not in rc.3)
+
+Same as rc.2: Setup wizard locale picker, report-title i18n, FAQ German twin, FAQ TX-command cleanup. Each gets its own focused rc to keep testable.
+
 ## [1.3.0-rc.2] - 2026-05-07
 
 Bug sweep from the rc.1 user test on Windows 11. Same scope as 1.3.0, three blockers fixed.

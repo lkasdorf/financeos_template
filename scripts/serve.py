@@ -1728,14 +1728,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         )
 
         # Light-weight account preview for the alias-override UI in step 6.
+        # Importer returns `currency_code`; expose under both keys so the
+        # frontend keeps working whether it reads `currency_code` or `currency`.
         accounts_preview = []
         for acc in staging.get("accounts", []):
+            cur_code = acc.get("currency_code", "") or acc.get("currency", "")
             accounts_preview.append({
                 "id": acc.get("id"),
                 "name": acc.get("name", ""),
-                "currency": acc.get("currency", ""),
+                "currency": cur_code,
+                "currency_code": cur_code,
                 "type": acc.get("type", ""),
                 "status": acc.get("status", ""),
+            })
+
+        # Categories preview for the new step-6 reports-config mapping. The
+        # importer flattens parent/child via `full_path`; expose as `path` so
+        # the frontend (reportsWizardCategories()) shows the user's actual
+        # category names instead of falling back to EMPTY_START_CATEGORIES.
+        categories_preview = []
+        for cat in staging.get("categories", []):
+            categories_preview.append({
+                "id": cat.get("id"),
+                "name": cat.get("name", ""),
+                "path": cat.get("full_path") or cat.get("name", ""),
             })
 
         stats = staging.get("stats", {})
@@ -1752,6 +1768,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 "date_range": stats.get("date_range"),
             },
             "accounts": accounts_preview,
+            "categories": categories_preview,
             "warnings": staging.get("warnings", []),
         })
 
