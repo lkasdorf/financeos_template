@@ -18,6 +18,22 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.16] - 2026-05-08
+
+### Added
+
+- **Actionable empty-state for category-driven reports.** When a report (AI Costs, Dining Out, Vice Spending, Bank Fees) has zero matching transactions across your entire dataset — almost always because your category names differ from the report's defaults — you now see an actionable panel instead of a blank chart:
+  - Title: "No matching transactions"
+  - List of the categories the report is currently configured for
+  - List of your own expense categories (top 30) for quick reference
+  - "Fix in Settings → Reports" button that deep-links to the right tab
+
+  Replaces the previous "empty chart that looks like the app crashed" behaviour. Bills Overview, Automobile, Discretionary vs. Fixed and Cash Discrepancy share the same root cause but use bespoke render paths — they get the same treatment in a follow-up rc.
+
+### Why this matters
+
+Until rc.15 you'd open a report after MMEX import, see nothing, and have no clue whether the report was broken or your data was wrong. Now you see exactly which categories the report wants vs. which categories you actually have, and one click takes you to the mapping UI. Closes the long-standing UX gap "I installed it and Reports look broken".
+
 ## [1.3.0-rc.15] - 2026-05-08
 
 ### Removed

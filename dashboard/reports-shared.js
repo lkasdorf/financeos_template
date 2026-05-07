@@ -72,6 +72,19 @@ function renderExpenseReport(opts) {
       ...tx, amount: convertTo(tx.amount, tx.currency, currency)
     }));
 
+    // rc.16 — when this report has no matches AT ALL across the entire TX
+    // dataset (not just the current year/currency view), the user almost
+    // certainly has different category names than the report defaults.
+    // Render an actionable empty state with a deep link to Settings →
+    // Reports instead of an empty chart that looks like a dead app.
+    if (filtered.length === 0) {
+      const allTimeMatches = state.tx.filter(tx => opts.filterFn(tx) && isOperationalTx(tx, custodyAliases, nonPnl));
+      if (allTimeMatches.length === 0) {
+        renderReportEmptyState(opts);
+        return;
+      }
+    }
+
     if (modeEl.value === 'monthly') {
       renderExpenseMonthly(filtered, yearEl.value, currency, opts);
     } else {
@@ -83,6 +96,77 @@ function renderExpenseReport(opts) {
   yearEl.addEventListener('change', update);
   curEl.addEventListener('change', update);
   update();
+}
+
+// Renders an actionable empty state when a category-driven report has zero
+// matches in the entire TX dataset. Lists the categories the report is
+// currently configured to look for (from window.REPORTS_CONFIG) plus a
+// scrollable list of category names the user actually has in their data,
+// with a CTA button that navigates to Settings → Reports for one-click fix.
+//
+// `opts.filterId` is the report ID (e.g. 'bills', 'ai', 'dining', 'vice',
+// 'cd', 'automobile', 'fixedvar') — used both for the REPORTS_CONFIG
+// lookup and the deep-link target.
+function renderReportEmptyState(opts) {
+  const container = document.getElementById('re-content');
+  if (!container) return;
+
+  const reportId = opts.filterId || '';
+  const cfg = (window.REPORTS_CONFIG && window.REPORTS_CONFIG[reportId]) || {};
+
+  // Flatten the configured-categories list across the various shapes
+  // (flat: cfg.categories, buckets: cfg.buckets[*].categories, two-set:
+  // cfg.expense_categories + cfg.income_categories).
+  const configuredCats = [];
+  if (Array.isArray(cfg.categories)) configuredCats.push(...cfg.categories);
+  if (cfg.buckets && typeof cfg.buckets === 'object') {
+    for (const b of Object.values(cfg.buckets)) {
+      if (b && Array.isArray(b.categories)) configuredCats.push(...b.categories);
+    }
+  }
+  if (Array.isArray(cfg.expense_categories)) configuredCats.push(...cfg.expense_categories);
+  if (Array.isArray(cfg.income_categories)) configuredCats.push(...cfg.income_categories);
+  if (Array.isArray(cfg.fixed_prefixes)) configuredCats.push(...cfg.fixed_prefixes);
+
+  // Distinct categories the user actually has on expense rows — gives them
+  // a quick reference for which of their names to map.
+  const userCats = new Set();
+  for (const tx of state.tx) {
+    if (tx.type === 'expense' && tx.category) userCats.add(tx.category);
+  }
+  const userCatList = [...userCats].sort();
+
+  const configuredHtml = configuredCats.length > 0
+    ? configuredCats.map(c => `<code style="background:var(--surface-soft, rgba(0,0,0,0.04));padding:2px 6px;border-radius:3px;font-size:12px;">${escapeHtml(c)}</code>`).join(' ')
+    : `<span class="hint-sm">${escapeHtml(t('reports.empty.no_config', {}, '(none configured)'))}</span>`;
+
+  const userHtml = userCatList.length > 0
+    ? userCatList.slice(0, 30).map(c => `<code style="background:var(--surface-soft, rgba(0,0,0,0.04));padding:2px 6px;border-radius:3px;font-size:12px;">${escapeHtml(c)}</code>`).join(' ')
+      + (userCatList.length > 30 ? ` <span class="hint-sm">+${userCatList.length - 30} ${t('reports.empty.more', {}, 'more')}</span>` : '')
+    : `<span class="hint-sm">${escapeHtml(t('reports.empty.no_user_cats', {}, '(no expense categories in your data yet)'))}</span>`;
+
+  container.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;box-shadow:var(--shadow);max-width:780px;">
+      <h3 style="margin-top:0;">${escapeHtml(t('reports.empty.title', {}, 'No matching transactions'))}</h3>
+      <p style="margin:0 0 16px;line-height:1.55;">
+        ${escapeHtml(t('reports.empty.intro', { label: opts.filterLabel || reportId }, `This report (“${opts.filterLabel || reportId}”) filters expenses by category, but none of your transactions match the categories it is currently configured to look for. The category names in your data are different from the defaults.`))}
+      </p>
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;margin-bottom:6px;font-size:13px;">${escapeHtml(t('reports.empty.configured', {}, 'Currently configured for'))}:</div>
+        <div style="line-height:2;">${configuredHtml}</div>
+      </div>
+      <div style="margin-bottom:20px;">
+        <div style="font-weight:600;margin-bottom:6px;font-size:13px;">${escapeHtml(t('reports.empty.your_cats', {}, 'Your expense categories'))}:</div>
+        <div style="line-height:2;">${userHtml}</div>
+      </div>
+      <a href="#settings/reports" class="btn-primary" style="display:inline-block;text-decoration:none;padding:10px 20px;border-radius:var(--radius-xs);font-weight:600;">
+        ${escapeHtml(t('reports.empty.cta', {}, 'Fix in Settings → Reports'))}
+      </a>
+      <p class="hint-sm" style="margin:14px 0 0;">
+        ${escapeHtml(t('reports.empty.cta_hint', {}, 'Or build a Custom Report from scratch with the exact filter you want.'))}
+      </p>
+    </div>
+  `;
 }
 
 function renderExpenseMonthly(filtered, year, currency, opts) {
