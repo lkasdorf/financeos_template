@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.15] - 2026-05-08
+
+### Removed
+
+- **"House 4C Costs" / "Household Costs" report dropped from the template.** Until rc.14 the public template shipped a renamed version of the upstream's "House 4C Costs" report — a tag-filtered view of expenses tagged `Household_costs`. In practice, fork users always landed on an empty report because the default tag name almost never matched their own data, and the only fix was a manual Settings → Reports tag remap. The report is now stripped from the public template entirely. If you want a similar view for your own house / project / tag, build a Custom Report with a `tag equals "<your-tag>"` filter and save it.
+
+### Migration note
+
+If you're upgrading from rc.{1..14} and were already using the report (unlikely without manual setup): your tag column in `tags.csv` and your tagged transactions are untouched. Open Custom Reports → New, pick your tag, and you reproduce what the report did in 30 seconds.
+
 ## [1.3.0-rc.14] - 2026-05-08
 
 ### Fixed

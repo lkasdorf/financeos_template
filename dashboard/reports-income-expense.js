@@ -312,19 +312,6 @@ function renderIncomeYearly(currency) {
     reportCharts.push(chart);
   }
 }
-// ─── Household Report ─────────────────────────────────────────────────────
-
-function renderHouseholdReport() {
-  renderExpenseReport({
-    filterId: 'household',
-    filterLabel: t('reports.filter_label.household', {}, 'Household Costs'),
-    filterFn: (tx) => tx.type === 'expense' && tx.tags && tx.tags.split(';').includes('Household_costs'),
-    colorMain: '#f0a060',
-    showTransactions: true,
-    showCategoryBreakdown: true,
-    sinceDate: '2024-04-01',
-  });
-}
 
 
 // ─── AI Costs Report ─────────────────────────────────────────────────────
