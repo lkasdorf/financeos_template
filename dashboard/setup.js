@@ -552,9 +552,11 @@ function renderReview() {
     for (const acc of state.staging.accounts) {
       const tr = document.createElement('tr');
       const slug = autoSlug(acc.name);
+      // MMEX staging payload uses currency_code; older paths used currency.
+      const cur = acc.currency_code || acc.currency || '—';
       tr.innerHTML = `
         <td>${escapeHtml(acc.name)}</td>
-        <td>${escapeHtml(acc.currency || '—')}</td>
+        <td>${escapeHtml(cur)}</td>
         <td><input type="text" data-acc-id="${acc.id}" placeholder="${slug}" pattern="[a-z0-9_]+" maxlength="40"></td>
       `;
       tbody.appendChild(tr);

@@ -87,6 +87,91 @@ python scripts/serve.py                  # → http://localhost:8080/dashboard/
 
 Requires Python 3.10+. No external services or API keys to start.
 
+## Test drive (5 minutes)
+
+Want to kick the tyres before committing to a host? Run a throwaway local
+install in a sandbox folder, walk through the wizard, and delete it again.
+Works on Windows, macOS, and Linux without Docker.
+
+### Windows (PowerShell)
+
+```powershell
+# 1. Sandbox outside OneDrive (avoids file-lock surprises)
+$test = "$env:USERPROFILE\financeos-test"
+Remove-Item $test -Recurse -Force -ErrorAction Ignore
+git clone --branch v1.3.0-rc.1 https://github.com/lkasdorf/financeos_template.git $test
+Set-Location $test
+
+# 2. venv + dependencies
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# 3. Start the server — opens the setup wizard in your default browser
+python scripts\serve.py
+```
+
+If the browser doesn't open automatically, visit
+`http://localhost:8080/dashboard/setup.html`.
+
+### macOS / Linux (bash / zsh)
+
+```bash
+test=~/financeos-test
+rm -rf "$test"
+git clone --branch v1.3.0-rc.1 https://github.com/lkasdorf/financeos_template.git "$test"
+cd "$test"
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python scripts/serve.py
+```
+
+### Docker Desktop variant (also tests the container path)
+
+```bash
+test=~/financeos-test-docker
+rm -rf "$test"
+git clone --branch v1.3.0-rc.1 https://github.com/lkasdorf/financeos_template.git "$test"
+cd "$test"
+cp .env.example .env
+docker compose up -d --build
+docker compose logs --tail 30 financeos    # confirm the container actually booted
+```
+
+### What to verify
+
+1. **Setup wizard, steps 1–5** — pick a brand name, currency, auth=none, "Empty start" or upload an MMEX `.mmb` file, toggle features.
+2. **Step 6 (Reports)** — first leave on "Use defaults", click *Next*. Then go back, switch to "Customize now", confirm the multi-select fields populate with the categories that will be created. *AI Costs / Vice / Cash Discrepancy section* should appear even if your category set doesn't include the canonical names — those fields just stay empty until you map them.
+3. **Step 7 (Review)** — brand name and currency should appear correctly; the imported-account table should show your real currency codes (TZS, EUR, USD, …).
+4. **Confirm** → land in the dashboard. Header / sidebar / footer should display **your brand name**, not "FinanceOS".
+5. **Settings → Reports** — your Step 6 mapping is preserved, you can edit and **Save** with a green "✓ Saved" confirmation.
+6. **Settings → Language** — switching to *Deutsch* translates the Settings tab labels and most dashboard strings (some report titles still translate via `t()` over time — see [`docs/ROADMAP.md`](docs/ROADMAP.md)).
+
+### Cleanup
+
+```powershell
+# Windows — IMPORTANT: leave the test directory before removing it,
+# otherwise Windows holds a file-lock on the venv and the remove fails
+# with "Cannot remove the item ... because it is in use".
+deactivate
+Set-Location $env:USERPROFILE
+Start-Sleep -Seconds 1
+Remove-Item "$env:USERPROFILE\financeos-test" -Recurse -Force
+```
+
+```bash
+# macOS / Linux
+deactivate
+cd ~
+rm -rf ~/financeos-test
+# or for the docker variant:
+cd ~ && docker compose -f ~/financeos-test-docker/docker-compose.yml down -v
+rm -rf ~/financeos-test-docker
+```
+
 ## Where to host it
 
 | Platform | Recommended path | Detail |

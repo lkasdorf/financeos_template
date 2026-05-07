@@ -642,11 +642,18 @@ def run_setup(
 
     check_not_initialized(data_dir)
 
-    write_branding(
-        config_dir,
-        config["brand"],
-        config.get("accent_color", "#1e40af"),
-    )
+    # Accept either {brand: "name", accent_color: "#hex"} (CLI shape) or
+    # {brand: {display_name, accent_color}} (web wizard shape). The web
+    # wizard nests them inside `brand`, the CLI keeps them flat — both
+    # call run_setup with their native config dict, so normalise here.
+    brand_cfg = config["brand"]
+    if isinstance(brand_cfg, dict):
+        display_name = brand_cfg.get("display_name") or "FinanceOS"
+        accent_color = brand_cfg.get("accent_color") or config.get("accent_color", "#1e40af")
+    else:
+        display_name = str(brand_cfg) or "FinanceOS"
+        accent_color = config.get("accent_color", "#1e40af")
+    write_branding(config_dir, display_name, accent_color)
     write_auth(
         config_dir,
         config["auth_mode"],

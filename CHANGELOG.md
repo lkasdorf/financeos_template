@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.2] - 2026-05-07
+
+Bug sweep from the rc.1 user test on Windows 11. Same scope as 1.3.0, three blockers fixed.
+
+### Fixed
+
+- **Setup wizard brand name was never persisted to the dashboard.** Pre-existing bug since v1.0: the web wizard ships `brand: {display_name, accent_color}` (nested object) but `setup_core.run_setup` only knew the CLI's flat shape (`brand: "name"` plus a separate top-level `accent_color`). Result: `branding.json` got `display_name: <object>`, the dashboard rendered `[object Object]` everywhere. Now `run_setup` accepts either shape and normalises before calling `write_branding`.
+- **Review screen "Currency" column showed `—` for every imported MMEX account.** The MMEX staging payload uses `currency_code`, the JS read `acc.currency`. Now reads `acc.currency_code || acc.currency || '—'`.
+- **Setup wizard logo was an opinionated "LP" wordmark** (visible in the favicon and the in-page header). Replaced both with a generic three-bar chart icon that inherits the active accent colour via `currentColor`.
+
+### Added
+
+- **Test-drive section** in `README.md` and `README.de.md` — PowerShell + bash recipes for a sandbox local install, Docker variant, 6-step verification checklist, and cleanup. Pulls `v1.3.0-rc.1` so users running the README straight from `main` get a known-good tag.
+
+### Known limitations / v1.3.x backlog (not in rc.2)
+
+- Setup wizard itself is English-only; the locale picker is in `Settings → Language` after install. Picking the locale during setup is on the v1.3.x backlog.
+- Some report titles (Income Analysis, Bills Overview, …) and the FAQ content stay English when the locale switches to DE — i18n key migration for report names is on the backlog.
+- FAQ still references the `TX` free-text command path that the public template removed in v1.2.0; cleanup is on the backlog.
+- Setup step 6 dropdown lists may not show every MMEX-imported category when the staging payload is large; under investigation.
+
 ## [1.3.0] - 2026-05-07
 
 Reports become user-configurable, the public template ships bilingual (EN + DE), the README and deployment guide get serious treatment, and the long-standing Docker bug is fixed.
