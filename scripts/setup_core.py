@@ -24,7 +24,7 @@ from typing import Any
 
 # Schema version for ``data/.setup_state.json`` — bump when fields change.
 SETUP_STATE_SCHEMA_VERSION = 1
-WIZARD_VERSION = "1.3.0-rc.13"
+WIZARD_VERSION = "1.3.0-rc.14"
 
 # CSV headers — must match data/*.csv exactly. Single source of truth lives
 # in docs/schema.md; these constants mirror it.
@@ -350,8 +350,26 @@ def _generate_import_id(
 
 
 def _format_amount(value: float) -> str:
-    """MMEX amounts are floats; FOS stores 2 decimals as plain text."""
+    """MMEX amounts are floats; FOS stores 2 decimals as plain text.
+
+    Always positive — the transaction `type` column carries the direction
+    (expense / income / transfer). Use _format_signed_amount when the sign
+    itself is meaningful (e.g. account opening balances, where negative
+    means debt on credit cards or loans).
+    """
     return f"{abs(float(value)):.2f}"
+
+
+def _format_signed_amount(value: float) -> str:
+    """Like _format_amount but preserves the sign.
+
+    Used for accounts.csv `initial_balance` where MMEX stores negative
+    values for credit-card debt or outstanding loans. rc.14 fix: previous
+    versions called _format_amount on initial_balance, stripping the sign
+    so credit cards started life as positive assets and Net Worth /
+    account balances were off by 2 × |initial_balance|.
+    """
+    return f"{float(value):.2f}"
 
 
 def _convert_accounts(
@@ -383,7 +401,7 @@ def _convert_accounts(
             "owner": owner,
             "status": _map_account_status(acc.get("status", "")),
             "pass_through_payee": acc.get("preferred_pass_through_payee", ""),
-            "initial_balance": _format_amount(acc.get("initial_balance", 0.0)),
+            "initial_balance": _format_signed_amount(acc.get("initial_balance", 0.0)),
             "initial_balance_date": acc.get("initial_date") or "",
             "notes": acc.get("notes", "") or "",
         })

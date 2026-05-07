@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.14] - 2026-05-08
+
+### Fixed
+
+- **Setup-Wizard preserved sign on `initial_balance`.** Until rc.13, the wizard's MMEX importer wrote `accounts.csv initial_balance` through a helper that strips the sign (correct for transaction amounts, wrong for opening balances where negative means debt on credit cards or outstanding loans). Fork users with MMEX files containing negative-balance accounts saw the dashboard balance for those accounts off by **2 × |initial_balance|** — a credit card with a `-885.44 EUR` MMEX opening showed `+1,770.88 EUR` after wizard setup. rc.14 introduces `_format_signed_amount()` and uses it for `initial_balance` only. Re-run the setup wizard on a fresh fork to apply, or hand-edit `data/accounts.csv` to flip the sign on any affected account.
+- **Footer version matches the wizard label.** Until rc.13 the template's dashboard footer showed `vYYYY-MM-DD.NN` — Leon's private version scheme. Pipeline now reads `WIZARD_VERSION` from `setup_core.py` and substitutes it into the footer during export (`v1.3.0-rc.14` for this release). The wizard label upper-right and the footer lower-left now agree, which makes "what version am I on?" a one-glance answer.
+
+### Upgrading from rc.13
+
+For fresh installs: just clone v1.3.0-rc.14 and run the wizard normally.
+
+For instances already initialised on rc.{1..13}: the only data fix needed is for accounts where `initial_balance` was negative in MMEX. Open Settings → Accounts and check whether your credit-card / loan accounts show the right opening (negative for debt) — if not, flip the sign manually. This affects exactly the accounts where you provided a negative opening balance during MMEX import.
+
 ## [1.3.0-rc.13] - 2026-05-07
 
 ### Added
