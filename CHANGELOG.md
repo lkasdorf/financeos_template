@@ -18,6 +18,20 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.11] - 2026-05-07
+
+### Fixed
+
+- **Sidebar logo, mobile top-bar and page heading now follow your configured brand name.** After the Setup Wizard saved your brand (e.g. "MyMoney"), the browser tab updated correctly but the sidebar logo, mobile top-bar and page `<h1>` still said "FinanceOS" — the template default. Root cause: `config/branding.json` was being written with `display_name` only, no `display_name_html` — so anything bound via `[data-brand-html]` (sidebar / topbar / heading) fell back to the JS default in `core.js`.
+  - `scripts/setup_core.py write_branding()` now writes `display_name_html` alongside `display_name`.
+  - `scripts/serve.py handle_branding_save` (Settings → Branding) does the same.
+  - `dashboard/core.js loadBranding()` mirrors `display_name` into the html slot whenever the loaded config omits it — so existing rc.{1..10} forks self-heal on the next page load without a manual `branding.json` edit.
+- **Setup wizard version label** bumps to `1.3.0-rc.11` so testers can confirm at a glance they're running the brand-html fix.
+
+### Upgrading from rc.{1..10}
+
+`git pull origin main` → restart `python scripts/serve.py` → hard-refresh the browser (Ctrl+Shift+R / Cmd+Shift+R). Existing brand stays as you configured it — the JS-side fallback ensures the sidebar updates without you editing `config/branding.json`.
+
 ## [1.3.0-rc.10] - 2026-05-07
 
 ### Added

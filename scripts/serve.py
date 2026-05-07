@@ -1952,7 +1952,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             return
         target = REPO_ROOT / "config" / "branding.json"
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"display_name": name, "accent_color": accent}
+        # Mirror display_name into display_name_html so the sidebar logo
+        # (data-brand-html binding) updates in lockstep with the title.
+        payload = {"display_name": name, "display_name_html": name, "accent_color": accent}
         # Atomic write — temp + os.replace, mirrors save_reports_config.
         import tempfile
         tmp_fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")

@@ -24,7 +24,7 @@ from typing import Any
 
 # Schema version for ``data/.setup_state.json`` — bump when fields change.
 SETUP_STATE_SCHEMA_VERSION = 1
-WIZARD_VERSION = "1.3.0-rc.10"
+WIZARD_VERSION = "1.3.0-rc.11"
 
 # CSV headers — must match data/*.csv exactly. Single source of truth lives
 # in docs/schema.md; these constants mirror it.
@@ -183,7 +183,14 @@ def check_not_initialized(data_dir: Path) -> None:
 
 def write_branding(config_dir: Path, display_name: str, accent_color: str = "#1e40af") -> Path:
     target = config_dir / "branding.json"
-    _write_json(target, {"display_name": display_name, "accent_color": accent_color})
+    # Mirror display_name into display_name_html so the dashboard sidebar logo
+    # (which binds via [data-brand-html]) updates after the wizard finalizes.
+    # rc.11 fix — without this the sidebar kept showing the template default.
+    _write_json(target, {
+        "display_name": display_name,
+        "display_name_html": display_name,
+        "accent_color": accent_color,
+    })
     return target
 
 

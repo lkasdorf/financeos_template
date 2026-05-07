@@ -116,7 +116,7 @@
   "reports.incexp.title": "Income vs. Expense Summary",
   "reports.incexp.desc": "Side-by-side comparison of income and expenses with net balance — monthly and yearly",
   "reports.house4c.title": "Household Costs",
-  "reports.house4c.desc": "All expenses tagged House_A_costs (SBR rental house District) — monthly and yearly",
+  "reports.house4c.desc": "All expenses tagged Household_costs — monthly and yearly",
   "reports.bills.title": "Bills Overview",
   "reports.bills.desc": "Rent, electricity, water & internet — total and per category breakdown",
   "reports.ai.title": "AI Costs",

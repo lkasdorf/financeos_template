@@ -148,7 +148,17 @@ window.BRANDING = {
 async function loadBranding() {
   try {
     const res = await fetch('../config/branding.json', { cache: 'no-store' });
-    if (res.ok) Object.assign(window.BRANDING, await res.json());
+    if (res.ok) {
+      const data = await res.json();
+      Object.assign(window.BRANDING, data);
+      // Sidebar logo + mobile-topbar + page heading bind via [data-brand-html],
+      // which reads display_name_html. Older config files (and the CLI/web
+      // wizard before rc.11) only wrote display_name. Mirror it here so the
+      // sidebar updates without requiring a manual config-file edit.
+      if (data.display_name && !data.display_name_html) {
+        window.BRANDING.display_name_html = data.display_name;
+      }
+    }
   } catch { /* keep defaults */ }
 }
 function applyBranding() {
