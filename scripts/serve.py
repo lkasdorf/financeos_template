@@ -89,6 +89,9 @@ FEATURE_GATED_ROUTES = {
     "/api/custom-reports/delete": "custom_reports",
     "/api/custom-reports/duplicate": "custom_reports",
     "/api/vehicles/list": "vehicles",
+    "/api/vehicles/add": "vehicles",
+    "/api/vehicles/update": "vehicles",
+    "/api/vehicles/delete": "vehicles",
     "/api/fuel/list": "vehicles",
     "/api/fuel/add": "vehicles",
     "/api/fuel/update": "vehicles",
@@ -393,6 +396,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/recon/suggestions": self.handle_recon_suggestions,
             "/api/recon/adapters": self.handle_recon_adapters,
             "/api/vehicles/list": self.handle_vehicles_list,
+            "/api/vehicles/add": self.handle_vehicles_add,
+            "/api/vehicles/update": self.handle_vehicles_update,
+            "/api/vehicles/delete": self.handle_vehicles_delete,
             "/api/fuel/list": self.handle_fuel_list,
             "/api/fuel/add": self.handle_fuel_add,
             "/api/fuel/update": self.handle_fuel_update,
@@ -1590,6 +1596,61 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         """Return all vehicles from data/vehicles.csv."""
         vehicles = list(fuel.load_vehicles().values())
         self._respond_json(200, {"vehicles": vehicles})
+
+    def handle_vehicles_add(self):
+        """Create a new vehicle row. Returns the assigned vehicle_id.
+
+        Atomic: backup → rewrite vehicles.csv → git commit. Validates name +
+        currency on the backend so a malformed POST cannot leave the file in
+        a partially-written state.
+        """
+        body = self._read_json_body()
+        try:
+            vid = fuel.add_vehicle(body)
+        except ValueError as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            self._respond_json(500, {"error": f"add_vehicle failed: {exc}"})
+            return
+        tx_engine.git_commit(f"Vehicle add: {body.get('name', vid)}", ["data/vehicles.csv"])
+        self._respond_json(200, {"success": True, "vehicle_id": vid})
+
+    def handle_vehicles_update(self):
+        """Patch fields on an existing vehicle row. `vehicle_id` is required."""
+        body = self._read_json_body()
+        vid = body.get("vehicle_id", "")
+        if not vid:
+            self._respond_json(400, {"error": "vehicle_id is required"})
+            return
+        try:
+            ok = fuel.update_vehicle(vid, body)
+        except Exception as exc:
+            self._respond_json(500, {"error": f"update_vehicle failed: {exc}"})
+            return
+        if not ok:
+            self._respond_json(404, {"error": f"Vehicle '{vid}' not found"})
+            return
+        tx_engine.git_commit(f"Vehicle edit: {vid}", ["data/vehicles.csv"])
+        self._respond_json(200, {"success": True})
+
+    def handle_vehicles_delete(self):
+        """Remove a vehicle. Orphan fuel_log entries keep their vehicle_id ref."""
+        body = self._read_json_body()
+        vid = body.get("vehicle_id", "")
+        if not vid:
+            self._respond_json(400, {"error": "vehicle_id is required"})
+            return
+        try:
+            ok = fuel.delete_vehicle(vid)
+        except Exception as exc:
+            self._respond_json(500, {"error": f"delete_vehicle failed: {exc}"})
+            return
+        if not ok:
+            self._respond_json(404, {"error": f"Vehicle '{vid}' not found"})
+            return
+        tx_engine.git_commit(f"Vehicle delete: {vid}", ["data/vehicles.csv"])
+        self._respond_json(200, {"success": True})
 
     def handle_fuel_list(self):
         """Return fuel entries with computed per-row metrics + summary totals

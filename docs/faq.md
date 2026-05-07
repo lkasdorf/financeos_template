@@ -78,9 +78,12 @@ Pass-through reimbursement income (e.g. `Income:Employer Inc. Reimbursement`) co
 Recurring booking templates in `data/scheduled.csv`. The engine does **not** run them automatically — only on request.
 
 ### Commands
-- `SCHED` → due entries as a batch preview, book on `y`
+- `SCHED` → due entries as a batch preview, book on `y` (Claude Code terminal)
 - `SCHED LIST` → all active scheduled entries
 - `SCHED ALL` → including `active=false`
+
+### Dashboard button (rc.12+)
+On the Dashboard, when at least one entry has `next_run <= today`, a "Run N due now" button appears in the Upcoming Payments section header. Click → modal with the full TX preview (every due entry as a checked-by-default row, including pass-through counter-entries). Uncheck rows you want to skip → "Book selected" fires the atomic backup + append + git-commit flow. Idempotent (clicking twice in a row finds nothing due the second time). Backed by `POST /api/scheduled/preview-due` and `POST /api/scheduled/run-due` — see "Running locally vs always-on" below for why the button matters when there's no Pi cron.
 
 ### Frequency format
 - `monthly:15` → on the 15th of every month
@@ -410,6 +413,40 @@ The repo ships with several cron scripts that you wire up via crontab on your al
 - `cron_integrity.py` — daily schema/balance check
 
 See `docs/deployment.md` for the full crontab + systemd unit + sudoers snippet.
+
+---
+
+## Running locally vs always-on
+
+### What works without an always-on host?
+Everything in the dashboard runs entirely client-side once `serve.py` is up. Add transactions, edit categories, view reports, run reconciliations, export PDFs — all of this works when you start `python scripts/serve.py` on demand and stop it when you're done. No background worker is required.
+
+### What needs an always-on host or a daily ritual?
+Three things rely on time-based events that don't happen unless something is running at the right moment:
+
+| Feature | Always-on behaviour | Local-only impact | Workaround |
+|---|---|---|---|
+| **Scheduled transactions** | `cron_sched.py` fires daily at the configured time and books due entries automatically | If the laptop is off when an entry comes due, it stays "overdue" until you next click the Dashboard's **Run N due now** button | Click the dashboard button when you start work each day. Idempotent + atomic. |
+| **FX-rate history** | `cron_fx.py` snapshots rates daily into `data/fx_rates_history.csv` | Days when your laptop is off get no snapshot → time-series reports show gaps for those dates | Either accept the gaps (current rate is still live-fetched on every page load), or schedule `python scripts/cron_fx.py` via Windows Task Scheduler / cron / launchd |
+| **Integrity checks** | `cron_integrity.py` runs nightly, surfaces schema/balance drift to the Alerts page | No alerts unless you run it manually | Run `python scripts/cron_integrity.py` after major edits, or schedule it locally |
+
+### What about the live FX rate (currency switcher)?
+That works locally without any cron. The dashboard fetches the current rate from the configured FX provider (`config/defaults.json` → `currency.fx_api_url`) on every page load. As long as you have internet, the conversion is fresh. The history CSV is the only thing the cron is responsible for, and it only matters for time-series charts that span multiple days.
+
+### Recommended setup for laptop-only users
+1. Start `python scripts/serve.py` when you sit down to work (or set up a desktop shortcut).
+2. Click **Run N due now** on the Dashboard once a day if you have scheduled entries — this replaces the Pi cron.
+3. Don't worry about FX history unless the FX-Exposure / time-series reports actively bother you. If they do, set up Windows Task Scheduler:
+   ```
+   schtasks /create /tn "FinanceOS FX snapshot" /tr "python C:\path\to\financeos\scripts\cron_fx.py" /sc DAILY /st 08:00
+   ```
+   or on Linux/macOS add to crontab:
+   ```
+   0 8 * * * cd /path/to/financeos && /path/to/.venv/bin/python scripts/cron_fx.py >> logs/cron_fx.log 2>&1
+   ```
+
+### Why doesn't `serve.py` just run the crons internally?
+That's on the v1.4.0 roadmap (`apscheduler` thread inside the process). Until then the cron scripts stay external so the server stays simple and a crash in the cron logic can't take down the dashboard. Also lets users mix-and-match (e.g. cron on the Pi, dashboard on the laptop pointing at the same `data/` over a shared volume).
 
 ---
 

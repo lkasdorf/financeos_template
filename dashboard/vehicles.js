@@ -153,7 +153,10 @@ function renderVehicleControls() {
   return `
     <div class="report-section" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${tabs}</div>
-      <button id="vh-add-btn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_button', {}, 'Add Fuel Entry')}</button>
+      <div style="display:flex;gap:8px;">
+        <button id="vh-add-vehicle-btn" style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_vehicle_button', {}, 'Add Vehicle')}</button>
+        <button id="vh-add-btn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_button', {}, 'Add Fuel Entry')}</button>
+      </div>
     </div>
   `;
 }
@@ -685,6 +688,8 @@ function bindVehicleControls() {
   });
   const addBtn = document.getElementById('vh-add-btn');
   if (addBtn) addBtn.addEventListener('click', () => openFuelModal());
+  const addVehicleBtn = document.getElementById('vh-add-vehicle-btn');
+  if (addVehicleBtn) addVehicleBtn.addEventListener('click', () => openVehicleModal());
   document.querySelectorAll('.vh-del-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteFuelEntry(btn.dataset.fuelId));
   });
@@ -1088,4 +1093,121 @@ async function deleteFuelEntry(fuelId) {
   } catch (e) {
     uiAlert(String(e));
   }
+}
+
+// ─── Add Vehicle Modal (rc.13) ────────────────────────────────────────
+//
+// Vehicles are stored in data/vehicles.csv with columns: vehicle_id, name,
+// license_plate, currency, default_account, default_payee,
+// default_category, tracking_start_date, active, notes. Until rc.13 the only
+// way to add a new vehicle was to hand-edit the CSV; this modal POSTs to
+// /api/vehicles/add and re-renders the page on success.
+function openVehicleModal() {
+  const accounts = (state.accounts || []).filter(a => a.status === 'active');
+  const accountOptions = accounts.map(a => `<option value="${escapeHtml(a.alias)}">${escapeHtml(a.alias)} — ${escapeHtml(a.name || '')}</option>`).join('');
+
+  // Common currency options — covers the canonical FinanceOS set. Users on
+  // exotic currencies can still type into the input (it falls back to a text
+  // input when "Other…" is chosen).
+  const currencyOptions = ['TZS', 'EUR', 'USD', 'PLN', 'GBP', 'CHF']
+    .map(c => `<option value="${c}">${c}</option>`).join('');
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const existing = document.querySelector('.modal-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:640px;">
+      <h3>${t('page.vehicles.vehicle_modal.title', {}, 'Add')} <span class="accent">${t('page.vehicles.vehicle_modal.title_noun', {}, 'Vehicle')}</span></h3>
+      <div class="atx-row">
+        <div class="atx-field fx2"><label>${t('page.vehicles.vehicle_modal.name', {}, 'Name')}</label>
+          <input type="text" id="vm-name" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.name_placeholder', {}, 'Toyota Vehicle'))}" required>
+        </div>
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.plate', {}, 'License plate')}</label>
+          <input type="text" id="vm-plate" placeholder="ABC 123">
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.currency', {}, 'Currency')}</label>
+          <select id="vm-currency" required>${currencyOptions}</select>
+        </div>
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_account', {}, 'Default account')}</label>
+          <select id="vm-account"><option value="">—</option>${accountOptions}</select>
+        </div>
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.tracking_start', {}, 'Tracking start')}</label>
+          <input type="date" id="vm-track-start" value="${todayIso}">
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_payee', {}, 'Default payee')}</label>
+          <input type="text" id="vm-payee" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.payee_placeholder', {}, 'Petrol station name'))}">
+        </div>
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_category', {}, 'Default category')}</label>
+          <input type="text" id="vm-category" value="Automobile:Petrol" placeholder="Automobile:Petrol">
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field fx2"><label>${t('page.vehicles.vehicle_modal.notes', {}, 'Notes')}</label>
+          <input type="text" id="vm-notes" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.notes_placeholder', {}, 'Optional — e.g. company car, lease end Aug 2027'))}">
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+        <button id="vm-cancel" class="btn-secondary">${t('common.cancel', {}, 'Cancel')}</button>
+        <button id="vm-save" class="btn-primary">${t('page.vehicles.vehicle_modal.save', {}, 'Save vehicle')}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
+  document.addEventListener('keydown', escHandler);
+  overlay._escHandler = escHandler;
+
+  overlay.querySelector('#vm-cancel').addEventListener('click', () => closeModal());
+  overlay.querySelector('#vm-save').addEventListener('click', async () => {
+    const payload = {
+      name: overlay.querySelector('#vm-name').value.trim(),
+      license_plate: overlay.querySelector('#vm-plate').value.trim(),
+      currency: overlay.querySelector('#vm-currency').value,
+      default_account: overlay.querySelector('#vm-account').value,
+      default_payee: overlay.querySelector('#vm-payee').value.trim(),
+      default_category: overlay.querySelector('#vm-category').value.trim(),
+      tracking_start_date: overlay.querySelector('#vm-track-start').value,
+      notes: overlay.querySelector('#vm-notes').value.trim(),
+      active: 'true',
+    };
+    if (!payload.name) {
+      uiAlert(t('page.vehicles.vehicle_modal.err_name', {}, 'Name is required.'), { type: 'warning' });
+      return;
+    }
+    const saveBtn = overlay.querySelector('#vm-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = t('page.vehicles.vehicle_modal.saving', {}, 'Saving…');
+    try {
+      const res = await fetch('/api/vehicles/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      closeModal();
+      uiAlert(t('page.vehicles.vehicle_modal.success', { id: data.vehicle_id }, `Vehicle saved (${data.vehicle_id}).`), { type: 'info' });
+      // Reload vehicle list + re-render so the new vehicle shows up in
+      // any subsequent fuel-entry dropdown.
+      await loadVehiclesData();
+      renderVehiclesPage();
+    } catch (e) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = t('page.vehicles.vehicle_modal.save', {}, 'Save vehicle');
+      uiAlert(t('page.vehicles.vehicle_modal.err_save', { msg: e.message }, `Save failed: ${e.message}`), { type: 'error' });
+    }
+  });
+
+  setTimeout(() => overlay.querySelector('#vm-name')?.focus(), 50);
 }

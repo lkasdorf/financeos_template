@@ -270,6 +270,97 @@ def write_fuel_log(rows: list[dict]) -> None:
             writer.writerow({c: row.get(c, "") for c in FUEL_LOG_COLUMNS})
 
 
+def _next_vehicle_id(existing: dict[str, dict]) -> str:
+    """Return the next free `v-NNN` id, scanning existing vehicle_ids."""
+    max_n = 0
+    for vid in existing.keys():
+        if vid.startswith("v-"):
+            try:
+                max_n = max(max_n, int(vid[2:]))
+            except ValueError:
+                pass
+    return f"v-{max_n + 1:03d}"
+
+
+def save_vehicles(vehicles_dict: dict[str, dict]) -> None:
+    """Atomically rewrite vehicles.csv from a {vehicle_id: row} dict.
+
+    Uses tx_engine._atomic_csv_rewrite so a crash mid-write cannot leave
+    a truncated file (matches the data/ atomic-write rule). Callers should
+    always pass the full vehicle set, not a delta.
+    """
+    import tx_engine
+    rows = [
+        {col: v.get(col, "") for col in VEHICLE_COLUMNS}
+        for v in vehicles_dict.values()
+    ]
+    tx_engine._atomic_csv_rewrite(VEHICLES_CSV, VEHICLE_COLUMNS, rows)
+
+
+def add_vehicle(row: dict) -> str:
+    """Append a new vehicle to vehicles.csv. Returns the assigned vehicle_id.
+
+    Auto-generates `vehicle_id` (v-NNN) if not provided. Validates that the
+    minimum required fields (name, currency) are present and non-empty —
+    optional fields default to "".
+    """
+    name = (row.get("name") or "").strip()
+    if not name:
+        raise ValueError("name is required")
+    currency = (row.get("currency") or "").strip()
+    if not currency:
+        raise ValueError("currency is required")
+
+    vehicles = load_vehicles()
+    vid = (row.get("vehicle_id") or "").strip() or _next_vehicle_id(vehicles)
+    if vid in vehicles:
+        raise ValueError(f"vehicle_id '{vid}' already exists")
+
+    new_row = {}
+    for col in VEHICLE_COLUMNS:
+        v = row.get(col, "")
+        new_row[col] = v.strip() if isinstance(v, str) else (v or "")
+    new_row["vehicle_id"] = vid
+    new_row["name"] = name
+    new_row["currency"] = currency
+    if not new_row.get("active"):
+        new_row["active"] = "true"
+    vehicles[vid] = new_row
+    save_vehicles(vehicles)
+    return vid
+
+
+def update_vehicle(vehicle_id: str, updates: dict) -> bool:
+    """Patch a vehicle row in place. Returns True if found, False otherwise."""
+    vehicles = load_vehicles()
+    if vehicle_id not in vehicles:
+        return False
+    row = vehicles[vehicle_id]
+    for col in VEHICLE_COLUMNS:
+        if col == "vehicle_id":
+            continue
+        if col in updates:
+            val = updates[col]
+            row[col] = val.strip() if isinstance(val, str) else (val or "")
+    vehicles[vehicle_id] = row
+    save_vehicles(vehicles)
+    return True
+
+
+def delete_vehicle(vehicle_id: str) -> bool:
+    """Remove a vehicle from vehicles.csv. Returns True if found, False otherwise.
+
+    Does NOT cascade-delete fuel_log entries — those keep the orphan
+    `vehicle_id` reference so historical aggregates stay intact.
+    """
+    vehicles = load_vehicles()
+    if vehicle_id not in vehicles:
+        return False
+    del vehicles[vehicle_id]
+    save_vehicles(vehicles)
+    return True
+
+
 def append_fuel_log(row: dict) -> None:
     """Append a single fuel entry to fuel_log.csv (creates header if missing)."""
     new_file = not FUEL_LOG_CSV.exists() or FUEL_LOG_CSV.stat().st_size == 0

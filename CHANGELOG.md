@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.13] - 2026-05-07
+
+### Added
+
+- **Add Vehicle dialog on the Vehicles page.** A new **"+ Add Vehicle"** button next to "+ Add Fuel Entry" opens a form modal (name, license plate, currency, default account, default payee, default category, tracking start date, notes). Save persists atomically to `data/vehicles.csv` with a git commit, then re-renders the page. Until rc.13 the only way to add a vehicle was hand-editing the CSV.
+- **Three new vehicle CRUD endpoints**: `POST /api/vehicles/{add,update,delete}`. Atomic via `tx_engine._atomic_csv_rewrite`. Delete leaves orphan `vehicle_id` references in `fuel_log.csv` so historical aggregates stay intact.
+- **German FAQ.** `docs/faq.de.md` shipping alongside the existing `docs/faq.md`. The dashboard's FAQ loader already tried `/docs/faq.{locale}.md` first with an EN fallback — until rc.13 the DE locale silently fell back to English because no DE file existed. Full ~600-line translation covering every section: overview, transactions, pass-through/custody, scheduled, ATM, accounts, categories, reports, updates, PDF export, dashboard, reconciliation, debts, payees, quick expenses, budgets, deployment, hard rules, feature flags, defaults, smart defaults, i18n, setup wizard, authentication, changelog.
+- **New FAQ section "Running locally vs always-on"** in both EN and DE. Documents which features need a 24/7 host (scheduled transactions, FX-rate history, integrity checks) vs. which work fine on a laptop you stop/start. Concrete Windows Task Scheduler / cron snippets for users who want the FX-rate snapshot to keep running while they sleep. Answers the recurring question: "I run this only on my laptop — what breaks?"
+
+### Changed
+
+- **`scripts/fuel.py` exposes vehicle CRUD helpers** (`add_vehicle`, `update_vehicle`, `delete_vehicle`, `save_vehicles`). Used by the new API handlers; the existing `load_vehicles()` consumers are untouched.
+
+### Why this matters
+
+Two of the three remaining "found by Leon during rc.10 testing" findings get cleared:
+- "Vehicles modul ist da, aber ich kann kein Auto hinzufügen" → the Add Vehicle dialog ships.
+- "FAQ lässt sich nicht auf deutsch einstellen" → real German content under the locale-aware loader.
+
+The third (FX-rate-history scheduling on local-only setups) is now documented end-to-end. The integrated `apscheduler` thread that would obviate Task-Scheduler entirely stays on the v1.4.0 list.
+
 ## [1.3.0-rc.12] - 2026-05-07
 
 ### Added
