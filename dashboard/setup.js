@@ -526,21 +526,20 @@ const REPORTS_STEP_SECTIONS = [
 // the dropdown options so users can always pick whatever they need,
 // even if MMEX category parsing returned nothing.
 const _extraStepCats = new Set();
+// Live filter string from the step-6 filter input. Empty = show all.
+let _stepCatsFilter = '';
 
 function renderReportsStep() {
   const wrap = document.getElementById('reports-step-sections');
   if (!wrap) return;
-  // Diagnostic banner: tell the user how many categories we detected from MMEX.
-  // 0 means staging didn't ship any — they can still proceed with the canonical
-  // defaults and fix things in Settings → Reports later.
-  const det = document.getElementById('reports-step-detection');
-  if (det) {
-    const mmexCount = (state.config.datasource === 'mmex' && state.staging?.categories?.length) || 0;
-    det.innerHTML = mmexCount
-      ? `<span style="color:var(--positive);">✓ Detected ${mmexCount} categories from your MMEX file.</span>`
-      : (state.config.datasource === 'mmex'
-          ? `<span style="color:var(--warn);">⚠ No categories detected from your MMEX file. The dropdowns below show the canonical default set instead. You can edit everything later in Settings → Reports.</span>`
-          : `<span class="c-mut">Empty start: showing the canonical default category set.</span>`);
+  // Wire the filter input + "Add to options" textarea once.
+  const filterInp = document.getElementById('reports-step-filter');
+  if (filterInp && !filterInp.dataset.bound) {
+    filterInp.dataset.bound = '1';
+    filterInp.addEventListener('input', () => {
+      _stepCatsFilter = filterInp.value || '';
+      renderReportsStep();
+    });
   }
   // Wire the "Add to options" textarea once.
   const applyBtn = document.getElementById('reports-step-extra-apply');
@@ -570,7 +569,28 @@ function renderReportsStep() {
     if (node.buckets) Object.values(node.buckets).forEach(b => collectSelections(b));
   };
   Object.values(cfg).forEach(collectSelections);
-  const cats = [...new Set([...baseCats, ..._extraStepCats, ...allSelected])].filter(Boolean).sort();
+  const allCats = [...new Set([...baseCats, ..._extraStepCats, ...allSelected])].filter(Boolean).sort();
+  // Apply the step-6 filter input. Always keep already-selected entries
+  // visible (otherwise the user couldn't unselect them while filtering).
+  const filterLc = _stepCatsFilter.trim().toLowerCase();
+  const cats = filterLc
+    ? allCats.filter(c => c.toLowerCase().includes(filterLc) || allSelected.has(c))
+    : allCats;
+  // Also surface the count so the user knows how many options exist.
+  const det = document.getElementById('reports-step-detection');
+  if (det) {
+    const mmexCount = (state.config.datasource === 'mmex' && state.staging?.categories?.length) || 0;
+    const visibleNote = filterLc
+      ? ` · showing ${cats.length} of ${allCats.length} (filtered)`
+      : ` · ${allCats.length} total options`;
+    if (mmexCount) {
+      det.innerHTML = `<span style="color:var(--positive);">✓ Detected ${mmexCount} categories from your MMEX file${visibleNote}.</span>`;
+    } else if (state.config.datasource === 'mmex') {
+      det.innerHTML = `<span style="color:var(--warn);">⚠ No MMEX categories reached the frontend — using canonical defaults${visibleNote}. Open browser DevTools → Console for the upload diagnostic.</span>`;
+    } else {
+      det.innerHTML = `<span class="c-mut">Empty start: showing canonical default category set${visibleNote}.</span>`;
+    }
+  }
   const optionsHtml = (selected) => {
     const sel = new Set(selected || []);
     return cats.map(c => `<option value="${escapeHtml(c)}"${sel.has(c) ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
@@ -582,7 +602,7 @@ function renderReportsStep() {
       return `
         <div class="setup-card-block" data-section="${sec.key}">
           <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
-          <select multiple size="4" name="${sec.key}.categories" style="width:100%;padding:6px;margin-top:4px;">${optionsHtml(cur)}</select>
+          <select multiple size="10" name="${sec.key}.categories" style="width:100%;padding:6px;margin-top:4px;">${optionsHtml(cur)}</select>
         </div>`;
     }
     if (sec.shape === 'buckets') {
@@ -592,7 +612,7 @@ function renderReportsStep() {
         return `
           <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:start;margin-bottom:6px;">
             <div style="padding-top:4px;font-weight:500;">${escapeHtml(b.label)}</div>
-            <select multiple size="3" name="${sec.key}.${b.id}.categories" style="width:100%;padding:4px;">${optionsHtml(cur)}</select>
+            <select multiple size="8" name="${sec.key}.${b.id}.categories" style="width:100%;padding:4px;">${optionsHtml(cur)}</select>
           </div>`;
       }).join('');
       return `
@@ -609,11 +629,11 @@ function renderReportsStep() {
           <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
           <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;margin-bottom:6px;">
             <div style="padding-top:4px;">Expense side</div>
-            <select multiple size="3" name="${sec.key}.expense" style="width:100%;padding:4px;">${optionsHtml(exp)}</select>
+            <select multiple size="8" name="${sec.key}.expense" style="width:100%;padding:4px;">${optionsHtml(exp)}</select>
           </div>
           <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;">
             <div style="padding-top:4px;">Income side</div>
-            <select multiple size="3" name="${sec.key}.income" style="width:100%;padding:4px;">${optionsHtml(inc)}</select>
+            <select multiple size="8" name="${sec.key}.income" style="width:100%;padding:4px;">${optionsHtml(inc)}</select>
           </div>
         </div>`;
     }

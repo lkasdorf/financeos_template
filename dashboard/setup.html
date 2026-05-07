@@ -182,8 +182,12 @@
         </label>
       </div>
       <div id="reports-step-form" hidden>
-        <p class="setup-hint" style="margin-top:0;">Pick from the categories that will be created. You can still change everything later in <code>Settings → Reports</code>.</p>
+        <p class="setup-hint" style="margin-top:0;">Pick from the categories that will be created. <strong>Tip:</strong> hold Ctrl / ⌘ to multi-select, type a letter to jump to the first match, scroll inside each box to see all options. Change everything later in <code>Settings → Reports</code>.</p>
         <div id="reports-step-detection" class="setup-hint" style="margin:0 0 8px;font-size:12px;"></div>
+        <label style="display:block;margin-bottom:10px;font-size:12px;color:var(--muted);">
+          Filter the dropdown options:
+          <input type="text" id="reports-step-filter" placeholder="Type to filter all dropdowns (e.g. 'Income' or 'Bills')" style="width:100%;margin-top:4px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);">
+        </label>
         <details style="margin-bottom:12px;">
           <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Don't see one of your categories? Add it manually</summary>
           <div style="margin-top:8px;">

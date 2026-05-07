@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.10] - 2026-05-07
+
+### Added
+
+- **Setup wizard now shows a meaningful version label.** `WIZARD_VERSION` bumps per public-template rc (`1.3.0-rc.10`). Look at the upper-right corner of the wizard — if it says `v1.3.0-rc.10`, you're on the new code. If it still says `vc.3`, your browser cached the old setup.html — hard-refresh (Ctrl+Shift+R / Cmd+Shift+R).
+- **Filter input on Step 6.** "Type to filter all dropdowns" — applies live to every multi-select on the page. Already-selected entries always stay visible so you can unselect while filtering. The banner now shows total count + filtered count.
+- **Bigger Step 6 dropdowns.** `<select multiple size="3">` was too cramped for 100+ category options. Bumped to `size="8"` for buckets / `size="10"` for flat reports.
+
+### Fixed
+
+- **Duplicate diagnostic banner** on Step 6 (rc.9 accidentally rendered the count message twice). Now rendered once with total + filtered note.
+
+### If you're testing and Step 6 is still wrong
+
+1. Stop the running `serve.py` (Ctrl+C in the terminal — Python doesn't reload Python files automatically).
+2. `git pull origin main`.
+3. Restart: `python scripts/serve.py`.
+4. **Hard-refresh** the browser tab: Ctrl+Shift+R on Windows/Linux, Cmd+Shift+R on Mac.
+5. Confirm the upper-right of the wizard shows `v1.3.0-rc.10`.
+6. Open browser DevTools (F12) → Console tab. Upload your MMEX file and look for `[setup] MMEX upload OK — accounts:N categories:N tx:N`. Share the numbers if categories is still 0; that pins the bug to the server side.
+
 ## [1.3.0-rc.9] - 2026-05-07
 
 ### Fixed

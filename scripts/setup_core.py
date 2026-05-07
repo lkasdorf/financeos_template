@@ -24,7 +24,7 @@ from typing import Any
 
 # Schema version for ``data/.setup_state.json`` — bump when fields change.
 SETUP_STATE_SCHEMA_VERSION = 1
-WIZARD_VERSION = "c.3"
+WIZARD_VERSION = "1.3.0-rc.10"
 
 # CSV headers — must match data/*.csv exactly. Single source of truth lives
 # in docs/schema.md; these constants mirror it.
