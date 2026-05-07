@@ -364,6 +364,14 @@ async function uploadMmex() {
       warnings: data.warnings || [],
       filename: data.filename,
     };
+    // Diagnostic: surface in browser DevTools so users can verify the
+    // upload response actually carried categories. If the count is 0
+    // here the bug is server-side; if non-zero but step 6 falls back,
+    // it's frontend.
+    console.log('[setup] MMEX upload OK —',
+      'accounts:', state.staging.accounts.length,
+      'categories:', state.staging.categories.length,
+      'tx:', state.staging.summary?.transactions);
     status.textContent = `Parsed ${file.name} successfully.`;
     renderMmexSummary(data.summary, data.warnings || []);
   } catch (e) {
@@ -445,11 +453,39 @@ const EMPTY_START_CATEGORIES = [
   'Other Expenses',
 ];
 
+// Union of every category source we know about so the user always sees
+// something to pick from, even if MMEX category parsing failed or the
+// staging payload didn't include them. Canonical-default categories
+// (Income:Salary, Bills:Rent, etc.) act as a safety net so the new
+// wizard step never lands a user on an empty dropdown.
 function reportsWizardCategories() {
-  if (state.config.datasource === 'mmex' && state.staging?.categories?.length) {
-    return [...new Set(state.staging.categories.map(c => c.path || c.name).filter(Boolean))].sort();
+  const set = new Set();
+  // 1. MMEX staging — first-class source when datasource=mmex
+  if (state.config.datasource === 'mmex' && Array.isArray(state.staging?.categories)) {
+    for (const c of state.staging.categories) {
+      const v = c?.path || c?.name;
+      if (v) set.add(v);
+    }
   }
-  return [...EMPTY_START_CATEGORIES].sort();
+  // 2. Empty-start canonical (always included as a safety net)
+  for (const c of EMPTY_START_CATEGORIES) set.add(c);
+  // 3. Default bucket categories — guarantees the bucket-mapping
+  //    work even if the user is on an MMEX import where the staging
+  //    payload happened to drop them.
+  const cfg = DEFAULT_REPORTS_CONFIG;
+  for (const k of Object.keys(cfg)) {
+    const node = cfg[k];
+    if (Array.isArray(node?.categories)) node.categories.forEach(v => set.add(v));
+    if (Array.isArray(node?.expense_categories)) node.expense_categories.forEach(v => set.add(v));
+    if (Array.isArray(node?.income_categories)) node.income_categories.forEach(v => set.add(v));
+    if (node?.buckets) {
+      for (const b of Object.values(node.buckets)) {
+        if (Array.isArray(b?.categories)) b.categories.forEach(v => set.add(v));
+      }
+    }
+  }
+  // Strip empty + sort.
+  return [...set].filter(Boolean).sort();
 }
 
 const REPORTS_STEP_SECTIONS = [
@@ -486,11 +522,55 @@ const REPORTS_STEP_SECTIONS = [
   },
 ];
 
+// User-typed extra categories from the textarea on step 6. Merged into
+// the dropdown options so users can always pick whatever they need,
+// even if MMEX category parsing returned nothing.
+const _extraStepCats = new Set();
+
 function renderReportsStep() {
   const wrap = document.getElementById('reports-step-sections');
   if (!wrap) return;
-  const cats = reportsWizardCategories();
+  // Diagnostic banner: tell the user how many categories we detected from MMEX.
+  // 0 means staging didn't ship any — they can still proceed with the canonical
+  // defaults and fix things in Settings → Reports later.
+  const det = document.getElementById('reports-step-detection');
+  if (det) {
+    const mmexCount = (state.config.datasource === 'mmex' && state.staging?.categories?.length) || 0;
+    det.innerHTML = mmexCount
+      ? `<span style="color:var(--positive);">✓ Detected ${mmexCount} categories from your MMEX file.</span>`
+      : (state.config.datasource === 'mmex'
+          ? `<span style="color:var(--warn);">⚠ No categories detected from your MMEX file. The dropdowns below show the canonical default set instead. You can edit everything later in Settings → Reports.</span>`
+          : `<span class="c-mut">Empty start: showing the canonical default category set.</span>`);
+  }
+  // Wire the "Add to options" textarea once.
+  const applyBtn = document.getElementById('reports-step-extra-apply');
+  const extraTa = document.getElementById('reports-step-extra-cats');
+  if (applyBtn && extraTa && !applyBtn.dataset.bound) {
+    applyBtn.dataset.bound = '1';
+    applyBtn.addEventListener('click', () => {
+      const lines = (extraTa.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+      lines.forEach(l => _extraStepCats.add(l));
+      extraTa.value = '';
+      renderReportsStep(); // re-render with the new options
+    });
+  }
+  // Categories from every known source (MMEX staging if present + canonical
+  // empty-start + bucket defaults + user-typed). Union ensures the list is
+  // never empty.
+  const baseCats = reportsWizardCategories();
   const cfg = state.config.reports_config || DEFAULT_REPORTS_CONFIG;
+  // Pre-expand current selections so categories the user typed previously
+  // (or an MMEX category that fell out of the union) stay visible & selected.
+  const allSelected = new Set();
+  const collectSelections = (node) => {
+    if (!node) return;
+    if (Array.isArray(node.categories)) node.categories.forEach(v => allSelected.add(v));
+    if (Array.isArray(node.expense_categories)) node.expense_categories.forEach(v => allSelected.add(v));
+    if (Array.isArray(node.income_categories)) node.income_categories.forEach(v => allSelected.add(v));
+    if (node.buckets) Object.values(node.buckets).forEach(b => collectSelections(b));
+  };
+  Object.values(cfg).forEach(collectSelections);
+  const cats = [...new Set([...baseCats, ..._extraStepCats, ...allSelected])].filter(Boolean).sort();
   const optionsHtml = (selected) => {
     const sel = new Set(selected || []);
     return cats.map(c => `<option value="${escapeHtml(c)}"${sel.has(c) ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');

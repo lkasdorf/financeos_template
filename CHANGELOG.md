@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.9] - 2026-05-07
+
+### Fixed
+
+- **Setup Step 6 dropdowns never show an unusably-small list anymore.** Previous rcs returned only the MMEX staging categories OR only the empty-start canonical set — when staging arrived empty for any reason (importer mismatch, schema variant, …), the dropdowns regressed and the user couldn't pick their actual category names. `reportsWizardCategories()` now returns a UNION of every known source (MMEX staging + empty-start canonical + bucket defaults + user-typed extras + already-selected entries from the running config).
+- **Diagnostic banner at top of Step 6** tells you whether MMEX category parsing actually reached the frontend: green "✓ Detected N categories" when it worked, yellow "⚠ No categories detected …" with a clear "you can fix this in Settings → Reports later" message when it didn't. `console.log('[setup] MMEX upload OK — accounts:N categories:N tx:N')` in DevTools confirms the upload response payload count.
+- **"Add categories manually" escape hatch.** Collapsible textarea on Step 6 — type any missing category names (one per line), click "Add to options", and they merge into every report's pickers. Stored in a module-level Set so they survive re-renders within the same wizard run. Useful when the importer happened to drop something or when the user knows a category name they want to create.
+
 ## [1.3.0-rc.8] - 2026-05-07
 
 Closing-out sweep before next testing session: setup wizard becomes bilingual, accent color derives its variants from your chosen color, Settings → Branding sub-tab lands.
