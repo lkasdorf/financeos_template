@@ -14,6 +14,81 @@ async function loadFeatures() {
 }
 function isFeatureEnabled(key) { return window.FEATURES[key] !== false; }
 
+// Reports config — maps the 8 category-driven reports to user-chosen category names.
+// Defaults match the canonical category set shipped with the template.
+// Overwritten by loadReportsConfig() if config/reports.json is present.
+// Match modes: "exact" (default) — tx.category equals one of categories;
+// "prefix" — tx.category.startsWith one of categories.
+window.REPORTS_CONFIG = {
+  dining_out:    { categories: ['Food:Dining out'] },
+  ai_costs:      { match: 'prefix', categories: ['Subscriptions:AI'] },
+  vice_spending: { categories: ['Leisure:Alcohol', 'Leisure:Smoking', 'Leisure:Vaping'] },
+  bank_fees:     { match: 'prefix', categories: ['Fees:'] },
+  cash_discrepancy: {
+    expense_categories: ['Other Expenses:Cash Discrepancy'],
+    income_categories:  ['Income:Cash Discrepancy'],
+  },
+  bills: {
+    buckets: {
+      rent:        { categories: ['Bills:Rent'] },
+      electricity: { categories: ['Bills:Electricity'] },
+      water:       { categories: ['Bills:Water'] },
+      internet:    { categories: ['Bills:Internet'] },
+    },
+  },
+  automobile: {
+    buckets: {
+      purchase:     { categories: ['Automobile:Purchase'] },
+      petrol:       { categories: ['Automobile:Petrol'] },
+      maintenance:  { categories: ['Automobile:Maintenance'] },
+      toll:         { categories: ['Automobile:Toll'] },
+      parking:      { categories: ['Automobile:Parking'] },
+      insurance:    { categories: ['Automobile:Insurance'] },
+      registration: { categories: ['Automobile:Registration'] },
+      accessories:  { categories: ['Automobile:Accessories'] },
+      car_rental:   { categories: ['Automobile:Car Rental'] },
+      other:        { categories: ['Automobile'] },
+    },
+  },
+  discretionary_fixed: {
+    fixed_prefixes: ['Rent', 'Bills:', 'Subscriptions:', 'Insurance:', 'Fees:'],
+  },
+};
+async function loadReportsConfig() {
+  try {
+    const res = await fetch('../config/reports.json', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      // Strip _comment if present, deep-merge top-level keys.
+      delete data._comment;
+      Object.assign(window.REPORTS_CONFIG, data);
+    }
+  } catch { /* keep defaults */ }
+}
+// Returns true if tx.category matches one of the categories in the given report (or bucket).
+// reportKey: e.g. "dining_out", "bills". bucketKey (optional): e.g. "rent" for bills.rent.
+function matchesReportCategory(tx, reportKey, bucketKey) {
+  if (!tx || !tx.category) return false;
+  const cfg = window.REPORTS_CONFIG[reportKey];
+  if (!cfg) return false;
+  const node = bucketKey ? (cfg.buckets && cfg.buckets[bucketKey]) : cfg;
+  if (!node || !node.categories) return false;
+  const mode = node.match || cfg.match || 'exact';
+  if (mode === 'prefix') {
+    return node.categories.some(p => tx.category.startsWith(p));
+  }
+  return node.categories.includes(tx.category);
+}
+// Returns the flat list of categories for a report (or bucket). Useful for filter UIs.
+function getReportCategories(reportKey, bucketKey) {
+  const cfg = window.REPORTS_CONFIG[reportKey];
+  if (!cfg) return [];
+  if (bucketKey) {
+    return (cfg.buckets && cfg.buckets[bucketKey] && cfg.buckets[bucketKey].categories) || [];
+  }
+  return cfg.categories || [];
+}
+
 // System defaults — fallback values match config/defaults.json so the app works if the file is missing.
 // Object.assign is shallow merge: defaults.json must contain complete sub-objects (currency, server, etc.).
 window.DEFAULTS = {
@@ -1764,7 +1839,7 @@ async function boot() {
   try {
     // Load feature flags + system/UX defaults + locale strings in parallel before first render.
     // Defaults overrides re-sync state values that were initialized from window.DEFAULTS placeholders.
-    await Promise.all([loadFeatures(), loadDefaults(), loadSmartDefaults(), loadBranding(), loadBusinesses(), loadLocale()]);
+    await Promise.all([loadFeatures(), loadDefaults(), loadSmartDefaults(), loadBranding(), loadBusinesses(), loadLocale(), loadReportsConfig()]);
     applyFeatureFlags();
     applyBranding();
     applyI18n();

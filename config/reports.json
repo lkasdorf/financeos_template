@@ -1,0 +1,122 @@
+{
+  "_comment": "Maps category strings to report filters. Edit via Settings → Reports or the Setup wizard. match=exact (default) means the tx category must equal one of categories. match=prefix means tx.category.startsWith(one_of_categories). buckets are sub-groupings (e.g. Bills.electricity).",
+  "dining_out": {
+    "categories": [
+      "Food:Dining out"
+    ]
+  },
+  "ai_costs": {
+    "match": "prefix",
+    "categories": [
+      "Subscriptions:AI"
+    ]
+  },
+  "vice_spending": {
+    "categories": [
+      "Leisure:Alcohol",
+      "Leisure:Smoking",
+      "Leisure:Vaping"
+    ]
+  },
+  "bank_fees": {
+    "match": "prefix",
+    "categories": [
+      "Fees:"
+    ]
+  },
+  "cash_discrepancy": {
+    "expense_categories": [
+      "Other Expenses:Cash Discrepancy"
+    ],
+    "income_categories": [
+      "Income:Cash Discrepancy"
+    ]
+  },
+  "bills": {
+    "buckets": {
+      "rent": {
+        "categories": [
+          "Bills:Rent"
+        ]
+      },
+      "electricity": {
+        "categories": [
+          "Bills:Electricity"
+        ]
+      },
+      "water": {
+        "categories": [
+          "Bills:Water"
+        ]
+      },
+      "internet": {
+        "categories": [
+          "Bills:Internet"
+        ]
+      }
+    }
+  },
+  "automobile": {
+    "buckets": {
+      "purchase": {
+        "categories": [
+          "Automobile:Purchase"
+        ]
+      },
+      "petrol": {
+        "categories": [
+          "Automobile:Petrol"
+        ]
+      },
+      "maintenance": {
+        "categories": [
+          "Automobile:Maintenance"
+        ]
+      },
+      "toll": {
+        "categories": [
+          "Automobile:Toll"
+        ]
+      },
+      "parking": {
+        "categories": [
+          "Automobile:Parking"
+        ]
+      },
+      "insurance": {
+        "categories": [
+          "Automobile:Insurance"
+        ]
+      },
+      "registration": {
+        "categories": [
+          "Automobile:Registration"
+        ]
+      },
+      "accessories": {
+        "categories": [
+          "Automobile:Accessories"
+        ]
+      },
+      "car_rental": {
+        "categories": [
+          "Automobile:Car Rental"
+        ]
+      },
+      "other": {
+        "categories": [
+          "Automobile"
+        ]
+      }
+    }
+  },
+  "discretionary_fixed": {
+    "fixed_prefixes": [
+      "Rent",
+      "Bills:",
+      "Subscriptions:",
+      "Insurance:",
+      "Fees:"
+    ]
+  }
+}

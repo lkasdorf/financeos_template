@@ -2,15 +2,58 @@
 
 // ─── Bills Report ────────────────────────────────────────────────────────
 
-// Label getters are evaluated at render time so they pick up the active
-// locale. Keep the English words in the fallback so a missing translation
-// still produces a readable column.
-const BILLS_CATEGORIES = [
-  { key: 'Bills:Rent', get label() { return t('reports.bills.cat.rent', {}, 'Rent'); }, color: '#f07070' },
-  { key: 'Bills:Electricity', get label() { return t('reports.bills.cat.electricity', {}, 'Electricity'); }, color: '#f0a060' },
-  { key: 'Bills:Water', get label() { return t('reports.bills.cat.water', {}, 'Water'); }, color: '#5eb8e0' },
-  { key: 'Bills:Internet', get label() { return t('reports.bills.cat.internet', {}, 'Internet'); }, color: '#5dd4a0' },
+// Bills bucket metadata. The category list per bucket comes from
+// config/reports.json (window.REPORTS_CONFIG.bills.buckets) so users with
+// renamed categories can still drive the report — see Settings → Reports.
+// Color + i18n label keys stay here. Getters re-read REPORTS_CONFIG every
+// call so a Settings save takes effect on the next render without a reload.
+const BILLS_BUCKET_META = [
+  { id: 'rent',        get label() { return t('reports.bills.cat.rent', {}, 'Rent'); },               color: '#f07070' },
+  { id: 'electricity', get label() { return t('reports.bills.cat.electricity', {}, 'Electricity'); }, color: '#f0a060' },
+  { id: 'water',       get label() { return t('reports.bills.cat.water', {}, 'Water'); },             color: '#5eb8e0' },
+  { id: 'internet',    get label() { return t('reports.bills.cat.internet', {}, 'Internet'); },       color: '#5dd4a0' },
 ];
+function billsBuckets() {
+  return BILLS_BUCKET_META.map(meta => ({
+    ...meta,
+    categories: getReportCategories('bills', meta.id),
+  }));
+}
+function billsAllCategories() {
+  return billsBuckets().flatMap(b => b.categories);
+}
+
+// Automobile bucket metadata. Same pattern as BILLS_BUCKET_META — colors and
+// localized labels live here, the actual category list per bucket lives in
+// config/reports.json (window.REPORTS_CONFIG.automobile.buckets). 'purchase'
+// is the one-off bucket; everything else is a "running" cost bucket.
+const AUTO_BUCKET_META = [
+  { id: 'purchase',     get label() { return t('reports.auto.cat.purchase',     {}, 'Purchase');     }, color: '#dc2626', running: false },
+  { id: 'petrol',       get label() { return t('reports.auto.cat.petrol',       {}, 'Petrol');       }, color: '#ef4444', running: true  },
+  { id: 'toll',         get label() { return t('reports.auto.cat.toll',         {}, 'Toll');         }, color: '#f59e0b', running: true  },
+  { id: 'parking',      get label() { return t('reports.auto.cat.parking',      {}, 'Parking');      }, color: '#8b5cf6', running: true  },
+  { id: 'maintenance',  get label() { return t('reports.auto.cat.maintenance',  {}, 'Maintenance');  }, color: '#3b82f6', running: true  },
+  { id: 'insurance',    get label() { return t('reports.auto.cat.insurance',    {}, 'Insurance');    }, color: '#10b981', running: true  },
+  { id: 'registration', get label() { return t('reports.auto.cat.registration', {}, 'Registration'); }, color: '#06b6d4', running: true  },
+  { id: 'accessories',  get label() { return t('reports.auto.cat.accessories',  {}, 'Accessories');  }, color: '#84cc16', running: true  },
+  { id: 'car_rental',   get label() { return t('reports.auto.cat.car_rental',   {}, 'Car Rental');   }, color: '#ec4899', running: true  },
+  { id: 'other',        get label() { return t('reports.auto.cat.other',        {}, 'Other');        }, color: '#6b7280', running: true  },
+];
+function autoBuckets() {
+  return AUTO_BUCKET_META.map(meta => ({
+    ...meta,
+    categories: getReportCategories('automobile', meta.id),
+  }));
+}
+function autoRunningBuckets() {
+  return autoBuckets().filter(b => b.running);
+}
+function autoPurchaseCategories() {
+  return new Set(getReportCategories('automobile', 'purchase'));
+}
+function autoAllCategories() {
+  return autoBuckets().flatMap(b => b.categories);
+}
 
 function renderBillsReport() {
   const out = document.getElementById('report-output');
@@ -53,9 +96,9 @@ function renderBillsReport() {
     yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
     destroyReportCharts();
     const cur = curEl.value;
+    const billsCats = new Set(billsAllCategories());
     const filtered = state.tx.filter(tx =>
-      tx.type === 'expense' &&
-      tx.category && BILLS_CATEGORIES.some(bc => tx.category === bc.key)
+      tx.type === 'expense' && tx.category && billsCats.has(tx.category)
     ).map(tx => ({ ...tx, amount: convertTo(tx.amount, tx.currency, cur) }));
     if (modeEl.value === 'monthly') renderBillsMonthly(filtered, yearEl.value, cur);
     else renderBillsYearly(filtered, cur);
@@ -70,16 +113,18 @@ function renderBillsReport() {
 function renderBillsMonthly(filtered, year, currency) {
   const englishMonthShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const names = englishMonthShort.map((en, i) => t(`common.months.short.${i + 1}`, {}, en));
+  const buckets = billsBuckets();
   const months = [];
   for (let m = 1; m <= 12; m++) {
     const ym = `${year}-${String(m).padStart(2, '0')}`;
     const row = { ym, label: monthLabel(ym), total: 0, count: 0 };
-    for (const bc of BILLS_CATEGORIES) row[bc.key] = 0;
+    for (const bc of buckets) row[bc.id] = 0;
     for (const tx of filtered) {
       if (tx.date && tx.date.startsWith(ym)) {
         row.total += tx.amount;
         row.count++;
-        if (row[tx.category] !== undefined) row[tx.category] += tx.amount;
+        const bucket = buckets.find(b => b.categories.includes(tx.category));
+        if (bucket) row[bucket.id] += tx.amount;
       }
     }
     months.push(row);
@@ -89,10 +134,10 @@ function renderBillsMonthly(filtered, year, currency) {
   const activeMonths = months.filter(m => m.total > 0).length;
   const avgPerMonth = activeMonths > 0 ? grandTotal / activeMonths : 0;
 
-  // Per-category totals
-  const catTotals = BILLS_CATEGORIES.map(bc => ({
+  // Per-bucket totals
+  const catTotals = buckets.map(bc => ({
     ...bc,
-    total: months.reduce((s, m) => s + m[bc.key], 0),
+    total: months.reduce((s, m) => s + m[bc.id], 0),
   }));
 
   const activeMonthsLabel = activeMonths === 1
@@ -125,7 +170,7 @@ function renderBillsMonthly(filtered, year, currency) {
           <div class="income-cell">
             <div class="ic-label">${m.label}</div>
             <div class="ic-value ${m.total === 0 ? 'zero' : ''}" style="color:${m.total > 0 ? 'var(--negative)' : 'var(--muted)'}">${formatCurrency(m.total, currency)}<span class="ic-cur">${currency}</span></div>
-            <div class="ic-count">${BILLS_CATEGORIES.map(bc => m[bc.key] > 0 ? `${bc.label.slice(0,4)} ${formatCurrency(m[bc.key], currency)}` : '').filter(Boolean).join(' · ')}</div>
+            <div class="ic-count">${buckets.map(bc => m[bc.id] > 0 ? `${bc.label.slice(0,4)} ${formatCurrency(m[bc.id], currency)}` : '').filter(Boolean).join(' · ')}</div>
           </div>
         `).join('')}
       </div>
@@ -151,9 +196,9 @@ function renderBillsMonthly(filtered, year, currency) {
       type: 'bar',
       data: {
         labels: names,
-        datasets: BILLS_CATEGORIES.map(bc => ({
+        datasets: buckets.map(bc => ({
           label: bc.label,
-          data: months.map(m => m[bc.key]),
+          data: months.map(m => m[bc.id]),
           backgroundColor: bc.color,
           borderWidth: 0,
         })),
@@ -201,24 +246,26 @@ function renderBillsMonthly(filtered, year, currency) {
 
 function renderBillsYearly(filtered, currency) {
   const years = getAvailableYears();
+  const buckets = billsBuckets();
   const data = [];
   for (const y of years) {
     const row = { year: y, total: 0, count: 0 };
-    for (const bc of BILLS_CATEGORIES) row[bc.key] = 0;
+    for (const bc of buckets) row[bc.id] = 0;
     for (const tx of filtered) {
       if (tx.date && tx.date.startsWith(y)) {
         row.total += tx.amount;
         row.count++;
-        if (row[tx.category] !== undefined) row[tx.category] += tx.amount;
+        const bucket = buckets.find(b => b.categories.includes(tx.category));
+        if (bucket) row[bucket.id] += tx.amount;
       }
     }
     data.push(row);
   }
 
   const grandTotal = data.reduce((s, d) => s + d.total, 0);
-  const catTotals = BILLS_CATEGORIES.map(bc => ({
+  const catTotals = buckets.map(bc => ({
     ...bc,
-    total: data.reduce((s, d) => s + d[bc.key], 0),
+    total: data.reduce((s, d) => s + d[bc.id], 0),
   }));
 
   const content = document.getElementById('bl-content');
@@ -242,7 +289,7 @@ function renderBillsYearly(filtered, currency) {
           <div class="income-cell">
             <div class="ic-label">${d.year}</div>
             <div class="ic-value ${d.total === 0 ? 'zero' : ''}" style="color:${d.total > 0 ? 'var(--negative)' : 'var(--muted)'}">${formatCurrency(d.total, currency)}<span class="ic-cur">${currency}</span></div>
-            <div class="ic-count">${BILLS_CATEGORIES.map(bc => d[bc.key] > 0 ? `${bc.label.slice(0,4)} ${formatCurrency(d[bc.key], currency)}` : '').filter(Boolean).join(' · ')}</div>
+            <div class="ic-count">${buckets.map(bc => d[bc.id] > 0 ? `${bc.label.slice(0,4)} ${formatCurrency(d[bc.id], currency)}` : '').filter(Boolean).join(' · ')}</div>
           </div>
         `).join('')}
       </div>
@@ -261,9 +308,9 @@ function renderBillsYearly(filtered, currency) {
       type: 'bar',
       data: {
         labels: data.map(d => d.year),
-        datasets: BILLS_CATEGORIES.map(bc => ({
+        datasets: buckets.map(bc => ({
           label: bc.label,
-          data: data.map(d => d[bc.key]),
+          data: data.map(d => d[bc.id]),
           backgroundColor: bc.color,
           borderWidth: 0,
         })),
@@ -312,37 +359,29 @@ function renderAutomobileReport() {
   const modeEl = document.getElementById('au-mode');
   const yearEl = document.getElementById('au-year');
 
-  // Running cost categories (exclude one-off Purchase)
-  const RUNNING_CATS = ['Automobile:Petrol', 'Automobile:Toll', 'Automobile:Parking', 'Automobile:Maintenance', 'Automobile:Insurance', 'Automobile:Registration', 'Automobile:Accessories', 'Automobile:Car Rental', 'Automobile'];
-  const CAT_COLORS = {
-    'Automobile:Petrol': '#ef4444',
-    'Automobile:Toll': '#f59e0b',
-    'Automobile:Parking': '#8b5cf6',
-    'Automobile:Maintenance': '#3b82f6',
-    'Automobile:Insurance': '#10b981',
-    'Automobile:Registration': '#06b6d4',
-    'Automobile:Accessories': '#84cc16',
-    'Automobile:Car Rental': '#ec4899',
-    'Automobile': '#6b7280',
-  };
-  // CAT_SHORT is a getter-object so labels pick up the active locale at
-  // render time without having to rebuild the map on setLocale.
-  const CAT_SHORT = {
-    get 'Automobile:Petrol'() { return t('reports.auto.cat.petrol', {}, 'Petrol'); },
-    get 'Automobile:Toll'() { return t('reports.auto.cat.toll', {}, 'Toll'); },
-    get 'Automobile:Parking'() { return t('reports.auto.cat.parking', {}, 'Parking'); },
-    get 'Automobile:Maintenance'() { return t('reports.auto.cat.maintenance', {}, 'Maintenance'); },
-    get 'Automobile:Insurance'() { return t('reports.auto.cat.insurance', {}, 'Insurance'); },
-    get 'Automobile:Registration'() { return t('reports.auto.cat.registration', {}, 'Registration'); },
-    get 'Automobile:Accessories'() { return t('reports.auto.cat.accessories', {}, 'Accessories'); },
-    get 'Automobile:Car Rental'() { return t('reports.auto.cat.car_rental', {}, 'Car Rental'); },
-    get 'Automobile'() { return t('reports.auto.cat.other', {}, 'Other'); },
-  };
+  // Bucket-based: running buckets exclude purchase, all categories driven by
+  // window.REPORTS_CONFIG.automobile.buckets so users with renamed categories
+  // (e.g. "Tankstelle" instead of "Automobile:Petrol") can still drive the
+  // report via Settings → Reports.
+  const runningBuckets = autoRunningBuckets();
+  const purchaseCats = autoPurchaseCategories();
+  const allAutoCats = new Set(autoAllCategories());
+
+  // Per-bucket lookups for chart colors and short labels (legacy cat-string
+  // keys are gone — buckets now map id → meta).
+  const BUCKET_BY_ID = Object.fromEntries(autoBuckets().map(b => [b.id, b]));
+  // Reverse lookup: for any tx category, return its bucket id (or null).
+  function bucketIdFor(category) {
+    for (const b of autoBuckets()) {
+      if (b.categories.includes(category)) return b.id;
+    }
+    return null;
+  }
 
   const custodyAliases = getCustodyAliases();
-  const allAutoTx = state.tx.filter(tx => tx.type === 'expense' && tx.category && tx.category.startsWith('Automobile') && !custodyAliases.has(tx.account)).map(tx => ({
-    ...tx, amount: convertToTZS(tx.amount, tx.currency)
-  }));
+  const allAutoTx = state.tx.filter(tx =>
+    tx.type === 'expense' && tx.category && allAutoCats.has(tx.category) && !custodyAliases.has(tx.account)
+  ).map(tx => ({ ...tx, amount: convertToTZS(tx.amount, tx.currency) }));
 
   function update() {
     out.setAttribute('data-auto-mode', modeEl.value);
@@ -356,40 +395,46 @@ function renderAutomobileReport() {
 
   function renderAutoMonthly(allTx, year) {
     const yearTx = allTx.filter(tx => tx.date && tx.date.startsWith(year));
-    const runningTx = yearTx.filter(tx => tx.category !== 'Automobile:Purchase');
-    const purchaseTx = yearTx.filter(tx => tx.category === 'Automobile:Purchase');
+    const runningTx = yearTx.filter(tx => !purchaseCats.has(tx.category));
+    const purchaseTx = yearTx.filter(tx => purchaseCats.has(tx.category));
     const purchaseTotal = purchaseTx.reduce((s, tx) => s + tx.amount, 0);
 
-    // Monthly data per category
+    // Monthly data per bucket
     const months = [];
     for (let m = 1; m <= 12; m++) {
       const ym = `${year}-${String(m).padStart(2, '0')}`;
       const row = { ym, label: monthLabel(ym) };
       let total = 0;
-      for (const cat of RUNNING_CATS) {
-        const sum = runningTx.filter(tx => tx.date && tx.date.startsWith(ym) && tx.category === cat).reduce((s, tx) => s + tx.amount, 0);
-        row[cat] = sum;
-        total += sum;
+      for (const bucket of runningBuckets) row[bucket.id] = 0;
+      for (const tx of runningTx) {
+        if (tx.date && tx.date.startsWith(ym)) {
+          const bid = bucketIdFor(tx.category);
+          if (bid && row[bid] !== undefined) {
+            row[bid] += tx.amount;
+            total += tx.amount;
+          }
+        }
       }
       row.total = total;
       row.count = runningTx.filter(tx => tx.date && tx.date.startsWith(ym)).length;
       months.push(row);
     }
 
-    // Petrol data for trend line
-    const petrolMonths = months.map(m => m['Automobile:Petrol'] || 0);
+    // Petrol data for trend line (bucket id 'petrol')
+    const petrolMonths = months.map(m => m.petrol || 0);
     const petrolTotal = petrolMonths.reduce((s, v) => s + v, 0);
-    const petrolCount = runningTx.filter(tx => tx.category === 'Automobile:Petrol' && tx.date.startsWith(year)).length;
+    const petrolCount = runningTx.filter(tx => bucketIdFor(tx.category) === 'petrol' && tx.date.startsWith(year)).length;
 
     const runningTotal = months.reduce((s, m) => s + m.total, 0);
     const activeMonths = months.filter(m => m.total > 0).length;
     const avgPerMonth = activeMonths > 0 ? runningTotal / activeMonths : 0;
     const grandTotal = runningTotal + purchaseTotal;
 
-    // Category totals for year
-    const catTotals = RUNNING_CATS.map(cat => ({
-      cat, label: CAT_SHORT[cat], total: runningTx.filter(tx => tx.category === cat).reduce((s, tx) => s + tx.amount, 0),
-      count: runningTx.filter(tx => tx.category === cat).length,
+    // Per-bucket totals for the year
+    const catTotals = runningBuckets.map(bucket => ({
+      cat: bucket.id, label: bucket.label,
+      total: runningTx.filter(tx => bucketIdFor(tx.category) === bucket.id).reduce((s, tx) => s + tx.amount, 0),
+      count: runningTx.filter(tx => bucketIdFor(tx.category) === bucket.id).length,
     })).filter(c => c.total > 0);
 
     const englishMonthShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -451,12 +496,12 @@ function renderAutomobileReport() {
           <tbody>
             ${months.map(m => `<tr>
               <td>${m.label}</td>
-              ${catTotals.map(c => `<td class="amt" style="color:${CAT_COLORS[c.cat]}">${formatCurrency(m[c.cat] || 0, 'TZS')}</td>`).join('')}
+              ${catTotals.map(c => `<td class="amt" style="color:${BUCKET_BY_ID[c.cat]?.color}">${formatCurrency(m[c.cat] || 0, 'TZS')}</td>`).join('')}
               <td class="amt fw-700">${formatCurrency(m.total, 'TZS')}</td>
             </tr>`).join('')}
             <tr style="font-weight:700;border-top:2px solid var(--border);">
               <td>${t('reports.shared.total_label', {}, 'Total')}</td>
-              ${catTotals.map(c => `<td class="amt" style="color:${CAT_COLORS[c.cat]}">${formatCurrency(c.total, 'TZS')}</td>`).join('')}
+              ${catTotals.map(c => `<td class="amt" style="color:${BUCKET_BY_ID[c.cat]?.color}">${formatCurrency(c.total, 'TZS')}</td>`).join('')}
               <td class="amt">${formatCurrency(runningTotal, 'TZS')}</td>
             </tr>
           </tbody>
@@ -475,7 +520,7 @@ function renderAutomobileReport() {
           datasets: activeCats.map(c => ({
             label: c.label,
             data: months.map(m => m[c.cat] || 0),
-            backgroundColor: CAT_COLORS[c.cat],
+            backgroundColor: BUCKET_BY_ID[c.cat]?.color,
             borderWidth: 0,
           })),
         },
@@ -501,7 +546,7 @@ function renderAutomobileReport() {
         type: 'doughnut',
         data: {
           labels: catTotals.map(c => c.label),
-          datasets: [{ data: catTotals.map(c => c.total), backgroundColor: catTotals.map(c => CAT_COLORS[c.cat]), borderWidth: 0 }],
+          datasets: [{ data: catTotals.map(c => c.total), backgroundColor: catTotals.map(c => BUCKET_BY_ID[c.cat]?.color), borderWidth: 0 }],
         },
         options: {
           responsive: true, maintainAspectRatio: false,
@@ -552,17 +597,18 @@ function renderAutomobileReport() {
     const allYears = getAvailableYears();
     const data = allYears.map(y => {
       const yearTx = allTx.filter(tx => tx.date && tx.date.startsWith(y));
-      const running = yearTx.filter(tx => tx.category !== 'Automobile:Purchase').reduce((s, tx) => s + tx.amount, 0);
-      const purchase = yearTx.filter(tx => tx.category === 'Automobile:Purchase').reduce((s, tx) => s + tx.amount, 0);
-      const petrol = yearTx.filter(tx => tx.category === 'Automobile:Petrol').reduce((s, tx) => s + tx.amount, 0);
+      const running = yearTx.filter(tx => !purchaseCats.has(tx.category)).reduce((s, tx) => s + tx.amount, 0);
+      const purchase = yearTx.filter(tx => purchaseCats.has(tx.category)).reduce((s, tx) => s + tx.amount, 0);
+      const petrol = yearTx.filter(tx => bucketIdFor(tx.category) === 'petrol').reduce((s, tx) => s + tx.amount, 0);
       const byCat = {};
-      for (const cat of RUNNING_CATS) {
-        byCat[cat] = yearTx.filter(tx => tx.category === cat).reduce((s, tx) => s + tx.amount, 0);
+      for (const bucket of runningBuckets) {
+        byCat[bucket.id] = yearTx.filter(tx => bucketIdFor(tx.category) === bucket.id).reduce((s, tx) => s + tx.amount, 0);
       }
       return { year: y, running, purchase, petrol, total: running + purchase, count: yearTx.length, byCat };
     });
 
-    const activeCats = RUNNING_CATS.filter(cat => data.some(d => d.byCat[cat] > 0));
+    // Active buckets = those with non-zero spend in at least one year.
+    const activeBuckets = runningBuckets.filter(b => data.some(d => d.byCat[b.id] > 0));
 
     const content = document.getElementById('au-content');
     content.innerHTML = `
@@ -571,7 +617,7 @@ function renderAutomobileReport() {
         <div class="table-scroll-wrapper"><table class="tx-table nowrap">
           <thead><tr>
             <th>${t('reports.toolbar.year', {}, 'Year')}</th>
-            ${activeCats.map(cat => `<th class="t-right">${escapeHtml(CAT_SHORT[cat])}</th>`).join('')}
+            ${activeBuckets.map(b => `<th class="t-right">${escapeHtml(b.label)}</th>`).join('')}
             <th class="t-right">${t('reports.auto.col_running', {}, 'Running')}</th>
             <th class="t-right">${t('reports.auto.purchase', {}, 'Purchase')}</th>
             <th class="num-right">${t('reports.shared.total_label', {}, 'Total')}</th>
@@ -579,7 +625,7 @@ function renderAutomobileReport() {
           <tbody>
             ${data.map(d => `<tr>
               <td style="font-weight:500;">${d.year}</td>
-              ${activeCats.map(cat => `<td class="amt" style="color:${CAT_COLORS[cat]}">${formatCurrency(d.byCat[cat] || 0, 'TZS')}</td>`).join('')}
+              ${activeBuckets.map(b => `<td class="amt" style="color:${b.color}">${formatCurrency(d.byCat[b.id] || 0, 'TZS')}</td>`).join('')}
               <td class="amt">${formatCurrency(d.running, 'TZS')}</td>
               <td class="amt c-mut">${formatCurrency(d.purchase, 'TZS')}</td>
               <td class="amt fw-700">${formatCurrency(d.total, 'TZS')}</td>
@@ -608,10 +654,10 @@ function renderAutomobileReport() {
         type: 'bar',
         data: {
           labels: data.map(d => d.year),
-          datasets: activeCats.map(cat => ({
-            label: CAT_SHORT[cat],
-            data: data.map(d => d.byCat[cat] || 0),
-            backgroundColor: CAT_COLORS[cat],
+          datasets: activeBuckets.map(b => ({
+            label: b.label,
+            data: data.map(d => d.byCat[b.id] || 0),
+            backgroundColor: b.color,
             borderWidth: 0,
           })),
         },

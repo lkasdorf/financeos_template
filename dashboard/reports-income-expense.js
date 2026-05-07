@@ -333,7 +333,7 @@ function renderAICostsReport() {
   renderExpenseReport({
     filterId: 'ai',
     filterLabel: t('reports.filter_label.ai', {}, 'AI Subscriptions'),
-    filterFn: (tx) => tx.type === 'expense' && tx.category && tx.category.startsWith('Subscriptions:AI'),
+    filterFn: (tx) => tx.type === 'expense' && matchesReportCategory(tx, 'ai_costs'),
     colorMain: '#1e40af',
     showTransactions: true,
   });
@@ -375,10 +375,10 @@ function renderDiningReport() {
     yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
     destroyReportCharts();
 
-    // Filter: Food:Dining out expenses (all currencies, convert to TZS)
+    // Filter: Dining-out expenses per config/reports.json (all currencies → TZS)
     const custodyAliases = getCustodyAliases();
     const diningTx = state.tx.filter(tx =>
-      tx.type === 'expense' && tx.category === 'Food:Dining out' && !custodyAliases.has(tx.account)
+      tx.type === 'expense' && matchesReportCategory(tx, 'dining_out') && !custodyAliases.has(tx.account)
     );
 
     if (modeEl.value === 'monthly') renderDiningMonthly(diningTx, yearEl.value);
@@ -949,11 +949,10 @@ function renderIncExpYearly(currency) {
 // ─── Vice Spending Report ───────────────────────────────────────────────
 
 function renderViceSpendingReport() {
-  const VICE_CATEGORIES = ['Leisure:Alcohol', 'Leisure:Smoking', 'Leisure:Vaping'];
   renderExpenseReport({
     filterId: 'vices',
     filterLabel: t('reports.filter_label.vices', {}, 'Vice Spending'),
-    filterFn: (tx) => tx.type === 'expense' && tx.category && VICE_CATEGORIES.includes(tx.category),
+    filterFn: (tx) => tx.type === 'expense' && matchesReportCategory(tx, 'vice_spending'),
     colorMain: '#dc2626',
     showTransactions: true,
     showCategoryBreakdown: true,
@@ -967,7 +966,7 @@ function renderBankFeesReport() {
   renderExpenseReport({
     filterId: 'bankfees',
     filterLabel: t('reports.filter_label.bankfees', {}, 'Bank Fees'),
-    filterFn: (tx) => tx.type === 'expense' && tx.category && tx.category.startsWith('Fees:'),
+    filterFn: (tx) => tx.type === 'expense' && matchesReportCategory(tx, 'bank_fees'),
     colorMain: '#6b7280',
     showTransactions: true,
     showCategoryBreakdown: true,

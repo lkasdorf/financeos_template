@@ -18,6 +18,35 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0] - 2026-05-07
+
+Reports become user-configurable, the public template ships bilingual (EN + DE), the README and deployment guide get serious treatment, and the long-standing Docker bug is fixed.
+
+### Added
+
+- **Configurable report → category mapping.** Eight reports (Dining Out, AI Costs, Vice Spending, Bank Fees, Cash Discrepancy, Bills Overview, Automobile Costs, Discretionary vs. Fixed) now read their category filters from `config/reports.json`. Forks that rename a category — e.g. "Restaurants" instead of "Food:Dining out" — keep working. The default mapping reproduces the pre-1.3 behaviour.
+- **`Settings → Reports` sub-tab.** Multi-select picker per report (or per bucket for Bills/Automobile); separate expense + income pickers for Cash Discrepancy; textarea for the Discretionary-vs-Fixed prefix list. Save persists to `config/reports.json`. Reset writes an empty object → server falls back to defaults.
+- **Setup wizard step 6 — "Map reports to your categories."** Two-radio chooser ("Use defaults" / "Customize now"); customise form mirrors the Settings tab, populated from the canonical empty-start category set or from the MMEX staging payload's category list. Selected mapping rides on `/api/setup/finalize` and is written via `config_loader.save_reports_config`.
+- **Bilingual delivery.** The template now ships `config/i18n/de.json` alongside `en.json`. The dashboard's locale picker offers both. The new Settings tab and report-config strings have full EN + DE parity (47 keys per locale).
+- **API endpoints:** `POST /api/reports-config/get` and `POST /api/reports-config/save`.
+- **Comprehensive bilingual README twin** — `README.md` (English, GitHub default) and `README.de.md` (German). Both link to each other. New sections: full sectioned reports list, deployment matrix with deep links to `docs/deployment.md`, "Reach it from outside your network" (Tailscale, Twingate, Cloudflare Tunnel), "Stay updated" (GitHub Watch + SemVer + per-platform pull workflow), configuration table covering `config/reports.json`.
+- **`docs/deployment.md` rewritten** — now covers Synology Container Manager (step-by-step), Unraid, generic Docker, Pi systemd, reverse proxy (Caddy / nginx / Traefik), remote access (Tailscale / Twingate / Cloudflare Tunnel), enabling auth, updating workflows per platform, backups, and recurring jobs (with explicit `docker exec` patterns for Synology Task Scheduler / Unraid User Scripts). Bilingual DE/EN per section.
+- **FAQ entries:** "Why is my Dining Out / Bills / Vice / AI Costs / etc. report empty?", "How do I rename categories without breaking reports?", "Which reports are NOT affected by renames?", schema for `config/reports.json`, and a full Updating section with notification, SemVer, per-platform workflows, backup advice, and rollback.
+
+### Changed
+
+- **Eight reports refactored to read `window.REPORTS_CONFIG`** instead of hard-coded category strings. Fallback values match the canonical category set, so default-category installs see no behavioural change.
+- **Bills + Automobile reports now bucket-keyed** (`row.rent`, `row.petrol`, …) instead of category-string-keyed (`row['Bills:Rent']`, `row['Automobile:Petrol']`, …). Bucket meta (label, color) lives in JS; per-bucket category lists come from config.
+
+### Fixed
+
+- **Public template Docker container previously crashed on startup.** The Dockerfile called `serve.py --host 0.0.0.0` but the script only knows `--bind`. Container exited immediately with `argparse: unrecognized arguments: --host`. Fixed by switching to `--bind 0.0.0.0 --port 8080 --no-open`. Verified by running `serve.py --help` against the new flags.
+
+### Roadmap notes for v1.4
+
+- **Built-in scheduler** so users on Docker / Synology / Unraid no longer have to wire up host-side cron entries for FX, metals, scheduled-tx, and integrity checks. Will run inside `serve.py` via apscheduler, auto-detected on container hosts. Until v1.4 ships, the host-cron / NAS-Task-Scheduler recipes in `docs/deployment.md#recurring-jobs` are the documented path.
+- **One-time migration banner** for installs that upgrade from 1.2.x without going through the new wizard step 6 — points to Settings → Reports.
+
 ## [1.2.1] - 2026-05-07
 
 UI design refresh — visible polish across Add-TX, Reports, Dashboard. Pure UI: no data-format, schema, or migration impact.

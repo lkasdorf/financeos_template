@@ -7,7 +7,7 @@
 // English string baked into the markup. Zero dependencies, zero build step.
 
 window.LOCALE = 'en';                 // Current active locale code (overwritten by loadLocale)
-window.AVAILABLE_LOCALES = ['en']; // Codes the dashboard knows about; extended as forks ship more files
+window.AVAILABLE_LOCALES = ['en', 'de']; // Codes the dashboard knows about; extended as forks ship more files
 window.STRINGS = {};                  // Flat key -> translated string map (loaded asynchronously)
 
 const I18N_STORAGE_KEY = 'lp-locale';

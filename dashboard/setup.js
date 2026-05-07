@@ -4,7 +4,47 @@
 
 'use strict';
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
+
+// Default reports config — mirrors window.REPORTS_CONFIG defaults in
+// dashboard/core.js. Used when the user picks "Use defaults" on step 6 or
+// skips the wizard entirely. The same defaults live in
+// scripts/config_loader.py so the server fallback matches.
+const DEFAULT_REPORTS_CONFIG = {
+  dining_out:    { categories: ['Food:Dining out'] },
+  ai_costs:      { match: 'prefix', categories: ['Subscriptions:AI'] },
+  vice_spending: { categories: ['Leisure:Alcohol', 'Leisure:Smoking', 'Leisure:Vaping'] },
+  bank_fees:     { match: 'prefix', categories: ['Fees:'] },
+  cash_discrepancy: {
+    expense_categories: ['Other Expenses:Cash Discrepancy'],
+    income_categories:  ['Income:Cash Discrepancy'],
+  },
+  bills: {
+    buckets: {
+      rent:        { categories: ['Bills:Rent'] },
+      electricity: { categories: ['Bills:Electricity'] },
+      water:       { categories: ['Bills:Water'] },
+      internet:    { categories: ['Bills:Internet'] },
+    },
+  },
+  automobile: {
+    buckets: {
+      purchase:     { categories: ['Automobile:Purchase'] },
+      petrol:       { categories: ['Automobile:Petrol'] },
+      maintenance:  { categories: ['Automobile:Maintenance'] },
+      toll:         { categories: ['Automobile:Toll'] },
+      parking:      { categories: ['Automobile:Parking'] },
+      insurance:    { categories: ['Automobile:Insurance'] },
+      registration: { categories: ['Automobile:Registration'] },
+      accessories:  { categories: ['Automobile:Accessories'] },
+      car_rental:   { categories: ['Automobile:Car Rental'] },
+      other:        { categories: ['Automobile'] },
+    },
+  },
+  discretionary_fixed: {
+    fixed_prefixes: ['Rent', 'Bills:', 'Subscriptions:', 'Insurance:', 'Fees:'],
+  },
+};
 
 const state = {
   step: 1,
@@ -24,6 +64,8 @@ const state = {
       custom_reports: true,
       scheduled_tx: true,
     },
+    reports_mode: 'defaults', // 'defaults' | 'customize'
+    reports_config: null,     // populated on Next from step 6 if customize
   },
   staging: null, // { id, summary, accounts, warnings, filename }
 };
@@ -38,6 +80,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindStep4();
   bindStep5();
   bindStep6();
+  bindStep7();
 
   // Setup-status gate: refuse to mount the wizard if the repo is initialized.
   try {
@@ -103,7 +146,8 @@ function showStep(n) {
   document.getElementById('btn-next').hidden = (n === TOTAL_STEPS);
   document.getElementById('btn-finish').hidden = (n !== TOTAL_STEPS);
 
-  if (n === 6) renderReview();
+  if (n === 6) renderReportsStep();
+  if (n === 7) renderReview();
 }
 
 function validateStep(n) {
@@ -155,6 +199,16 @@ function validateStep(n) {
     document.querySelectorAll('#features-list input[type="checkbox"]').forEach(cb => {
       state.config.features[cb.dataset.feature] = cb.checked;
     });
+    return true;
+  }
+  if (n === 6) {
+    const mode = (document.querySelector('input[name="reports-mode"]:checked') || {}).value || 'defaults';
+    state.config.reports_mode = mode;
+    if (mode === 'customize') {
+      state.config.reports_config = collectReportsStepForm();
+    } else {
+      state.config.reports_config = null; // server falls back to defaults
+    }
     return true;
   }
   return true;
@@ -306,9 +360,172 @@ function bindStep5() {
   // Nothing to wire — values read on validateStep(5).
 }
 
-// ── Step 6: review + alias overrides ─────────────────────────────────────
+// ── Step 6: report → category mapping ────────────────────────────────────
 
 function bindStep6() {
+  // Toggle the customize panel based on the radio choice. The actual form
+  // body is rendered by renderReportsStep() each time the step is shown
+  // (so it picks up the latest categories from staging on MMEX flow).
+  document.querySelectorAll('input[name="reports-mode"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const mode = document.querySelector('input[name="reports-mode"]:checked').value;
+      document.getElementById('reports-step-form').hidden = (mode !== 'customize');
+    });
+  });
+}
+
+// Categories visible to the wizard. Empty start: hard-coded canonical set
+// (mirror of EMPTY_SEED_CATEGORIES in scripts/setup_core.py). MMEX import:
+// the categories[] from the staging payload.
+const EMPTY_START_CATEGORIES = [
+  'Income', 'Income:Salary', 'Income:Bonus', 'Income:Investments', 'Income:Other',
+  'Bills', 'Bills:Electricity', 'Bills:Internet', 'Bills:Phone', 'Bills:Rent', 'Bills:Water',
+  'Food', 'Food:Groceries', 'Food:Dining out',
+  'Transport', 'Transport:Fuel', 'Transport:Public transit', 'Transport:Taxi',
+  'Healthcare', 'Healthcare:Doctor', 'Healthcare:Pharmacy',
+  'Leisure', 'Leisure:Entertainment', 'Leisure:Sports',
+  'Subscriptions', 'Subscriptions:Streaming', 'Subscriptions:Software',
+  'Travel', 'Travel:Flights', 'Travel:Accommodation',
+  'Fees', 'Fees:Bank Fees', 'Fees:ATM',
+  'Other Expenses',
+];
+
+function reportsWizardCategories() {
+  if (state.config.datasource === 'mmex' && state.staging?.categories?.length) {
+    return [...new Set(state.staging.categories.map(c => c.path || c.name).filter(Boolean))].sort();
+  }
+  return [...EMPTY_START_CATEGORIES].sort();
+}
+
+const REPORTS_STEP_SECTIONS = [
+  { key: 'dining_out',    title: 'Dining Out',         shape: 'flat' },
+  { key: 'ai_costs',      title: 'AI Costs',           shape: 'flat', mode: 'prefix' },
+  { key: 'vice_spending', title: 'Vice Spending',      shape: 'flat' },
+  { key: 'bank_fees',     title: 'Bank Fees',          shape: 'flat', mode: 'prefix' },
+  { key: 'cash_discrepancy', title: 'Cash Discrepancy', shape: 'cd_split' },
+  {
+    key: 'bills', title: 'Bills Overview', shape: 'buckets',
+    buckets: [
+      { id: 'rent', label: 'Rent' }, { id: 'electricity', label: 'Electricity' },
+      { id: 'water', label: 'Water' }, { id: 'internet', label: 'Internet' },
+    ],
+  },
+  {
+    key: 'automobile', title: 'Automobile Costs', shape: 'buckets',
+    buckets: [
+      { id: 'purchase', label: 'Purchase' }, { id: 'petrol', label: 'Petrol / Fuel' },
+      { id: 'maintenance', label: 'Maintenance' }, { id: 'toll', label: 'Toll' },
+      { id: 'parking', label: 'Parking' }, { id: 'insurance', label: 'Insurance' },
+      { id: 'registration', label: 'Registration' }, { id: 'accessories', label: 'Accessories' },
+      { id: 'car_rental', label: 'Car Rental' }, { id: 'other', label: 'Other' },
+    ],
+  },
+  { key: 'discretionary_fixed', title: 'Discretionary vs. Fixed', shape: 'prefixes' },
+];
+
+function renderReportsStep() {
+  const wrap = document.getElementById('reports-step-sections');
+  if (!wrap) return;
+  const cats = reportsWizardCategories();
+  const cfg = state.config.reports_config || DEFAULT_REPORTS_CONFIG;
+  const optionsHtml = (selected) => {
+    const sel = new Set(selected || []);
+    return cats.map(c => `<option value="${escapeHtml(c)}"${sel.has(c) ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  };
+  const html = REPORTS_STEP_SECTIONS.map(sec => {
+    const node = cfg[sec.key] || {};
+    if (sec.shape === 'flat') {
+      const cur = node.categories || [];
+      return `
+        <div class="setup-card-block" data-section="${sec.key}">
+          <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
+          <select multiple size="4" name="${sec.key}.categories" style="width:100%;padding:6px;margin-top:4px;">${optionsHtml(cur)}</select>
+        </div>`;
+    }
+    if (sec.shape === 'buckets') {
+      const buckets = node.buckets || {};
+      const inner = sec.buckets.map(b => {
+        const cur = (buckets[b.id] && buckets[b.id].categories) || [];
+        return `
+          <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:start;margin-bottom:6px;">
+            <div style="padding-top:4px;font-weight:500;">${escapeHtml(b.label)}</div>
+            <select multiple size="3" name="${sec.key}.${b.id}.categories" style="width:100%;padding:4px;">${optionsHtml(cur)}</select>
+          </div>`;
+      }).join('');
+      return `
+        <div class="setup-card-block" data-section="${sec.key}" data-shape="buckets">
+          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
+          ${inner}
+        </div>`;
+    }
+    if (sec.shape === 'cd_split') {
+      const exp = node.expense_categories || [];
+      const inc = node.income_categories || [];
+      return `
+        <div class="setup-card-block" data-section="${sec.key}" data-shape="cd_split">
+          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
+          <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;margin-bottom:6px;">
+            <div style="padding-top:4px;">Expense side</div>
+            <select multiple size="3" name="${sec.key}.expense" style="width:100%;padding:4px;">${optionsHtml(exp)}</select>
+          </div>
+          <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;">
+            <div style="padding-top:4px;">Income side</div>
+            <select multiple size="3" name="${sec.key}.income" style="width:100%;padding:4px;">${optionsHtml(inc)}</select>
+          </div>
+        </div>`;
+    }
+    if (sec.shape === 'prefixes') {
+      const prefixes = node.fixed_prefixes || [];
+      return `
+        <div class="setup-card-block" data-section="${sec.key}" data-shape="prefixes">
+          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
+          <textarea name="${sec.key}.fixed_prefixes" rows="5" style="width:100%;padding:6px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
+        </div>`;
+    }
+    return '';
+  }).join('');
+  wrap.innerHTML = html;
+  // Reflect current radio selection in form visibility.
+  const mode = (document.querySelector('input[name="reports-mode"]:checked') || {}).value || 'defaults';
+  document.getElementById('reports-step-form').hidden = (mode !== 'customize');
+}
+
+function collectReportsStepForm() {
+  const out = {};
+  for (const sec of REPORTS_STEP_SECTIONS) {
+    const root = document.querySelector(`[data-section="${sec.key}"]`);
+    if (!root) continue;
+    if (sec.shape === 'flat') {
+      const sel = root.querySelector('select');
+      const cats = sel ? Array.from(sel.selectedOptions).map(o => o.value) : [];
+      out[sec.key] = { categories: cats };
+      if (sec.mode) out[sec.key].match = sec.mode;
+    } else if (sec.shape === 'buckets') {
+      const buckets = {};
+      for (const b of sec.buckets) {
+        const sel = root.querySelector(`select[name="${sec.key}.${b.id}.categories"]`);
+        buckets[b.id] = { categories: sel ? Array.from(sel.selectedOptions).map(o => o.value) : [] };
+      }
+      out[sec.key] = { buckets };
+    } else if (sec.shape === 'cd_split') {
+      const expSel = root.querySelector(`select[name="${sec.key}.expense"]`);
+      const incSel = root.querySelector(`select[name="${sec.key}.income"]`);
+      out[sec.key] = {
+        expense_categories: expSel ? Array.from(expSel.selectedOptions).map(o => o.value) : [],
+        income_categories:  incSel ? Array.from(incSel.selectedOptions).map(o => o.value) : [],
+      };
+    } else if (sec.shape === 'prefixes') {
+      const ta = root.querySelector('textarea');
+      const lines = (ta?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+      out[sec.key] = { fixed_prefixes: lines };
+    }
+  }
+  return out;
+}
+
+// ── Step 7: review + alias overrides ─────────────────────────────────────
+
+function bindStep7() {
   // No bindings here; renderReview() runs each time the step is shown.
 }
 

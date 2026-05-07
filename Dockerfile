@@ -22,4 +22,5 @@ COPY . .
 EXPOSE 8080
 
 # Bind to 0.0.0.0 so the port is reachable through the published mapping.
-CMD ["python", "scripts/serve.py", "--host", "0.0.0.0", "--port", "8080"]
+# `--no-open` skips the auto browser launch (no display in a container).
+CMD ["python", "scripts/serve.py", "--bind", "0.0.0.0", "--port", "8080", "--no-open"]

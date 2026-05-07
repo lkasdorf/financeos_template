@@ -347,6 +347,7 @@ async function renderSettingsPage() {
     { id: 'fxrates', label: t('settings.tab.fxrates', {}, 'FX Rates') },
     { id: 'goals', label: t('settings.tab.goals', {}, 'Goals') },
     { id: 'budgets', label: t('settings.tab.budgets', {}, 'Budgets') },
+    { id: 'reports', label: t('settings.tab.reports', {}, 'Reports') },
     { id: 'backup', label: t('settings.tab.backup', {}, 'Backup') },
     { id: 'language', label: t('settings.tab.language', {}, 'Language') },
   ].filter(tab => !tab.feature || isFeatureEnabled(tab.feature));
@@ -367,6 +368,7 @@ async function renderSettingsPage() {
   else if (settingsTab === 'fxrates') renderFxRatesTab();
   else if (settingsTab === 'goals') renderGoalsTab();
   else if (settingsTab === 'budgets') renderBudgetsTab();
+  else if (settingsTab === 'reports') renderReportsConfigTab();
   else if (settingsTab === 'backup') renderBackupTab();
   else if (settingsTab === 'language') renderLanguageTab();
 }

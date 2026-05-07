@@ -220,6 +220,52 @@ User-defined reports via filter builder — savable, duplicable, with their own 
 ### Report consistency
 All expense reports use the same total logic as the dashboard (incl. reimbursements as income).
 
+### Why is my Dining Out / Bills / Vice / AI Costs / etc. report empty?
+Eight reports filter transactions by category and look for the canonical category strings (`Food:Dining out`, `Bills:Rent`, `Subscriptions:AI`, `Leisure:Alcohol|Smoking|Vaping`, `Fees:*`, `Other Expenses:Cash Discrepancy`, `Automobile:*`, plus the FIXED_PREFIXES list driving Discretionary vs. Fixed). If you renamed a category — e.g. "Restaurants" instead of "Food:Dining out" — the report sees no matching rows.
+
+**Fix:** open **Settings → Reports** and map your category names to the report buckets (multi-select per report or per bucket for Bills/Automobile). The Setup wizard step 6 asks the same questions on first run. Save persists to `config/reports.json`; reports re-render with the new mapping immediately.
+
+### How do I rename categories without breaking reports?
+Two options:
+
+1. **Rename in `data/categories.csv`, then update Settings → Reports.** The category-driven reports read the in-memory `REPORTS_CONFIG`, so once you list your new name in the affected report's bucket, things just work. Existing transactions keep their old category until you bulk-update them — Settings → Categories has a rename helper.
+2. **Build a Custom Report.** Settings → Custom Reports → Add report → filter `category equals "Restaurants"`. Save. The original "Dining Out" report shows zero for you (or stays as documentation), and your custom report does the right thing.
+
+### Which reports are NOT affected by renames?
+Net Worth Trend, Top Payees, Income vs. Expense Summary, Account Balances Over Time, Cashflow Forecast, Year-over-Year Comparison, Seasonal Heatmap, Monthly Comparison, Largest Transactions, FX Exposure, Cash vs. Digital, Weekday vs. Weekend, Savings Rate Trend, and most "Overview" reports — they aggregate by amount/account/date/payee, never by category string.
+
+### Schema of `config/reports.json`
+- **Flat reports** (Dining Out, AI Costs, Vice Spending, Bank Fees): `{ categories: [...], match?: 'exact' | 'prefix' }`. `match` defaults to `'exact'`. Multiple categories OR-match.
+- **Bucket reports** (Bills, Automobile): `{ buckets: { <bucketId>: { categories: [...] }, ... } }`. Bucket IDs are stable (rent / electricity / petrol / maintenance / …) — the report uses them for column names, colours, and i18n labels. Categories per bucket: OR-match.
+- **Cash Discrepancy:** `{ expense_categories: [...], income_categories: [...] }`. Two separate sets so the report can distinguish a "found money" income from a "lost money" expense.
+- **Discretionary vs. Fixed:** `{ fixed_prefixes: [...] }`. Plain prefix list. Anything starting with one of these is "fixed", everything else is "discretionary".
+
+---
+
+## Updating
+
+### How do I get notified about updates?
+On the GitHub repo page, top-right click `Watch` → *Custom* → tick *Releases*. You get an email for every new tag. RSS feed: `https://github.com/<owner>/financeos/releases.atom`.
+
+### What does each version bump mean?
+- **Patch** (`v1.2.x → v1.2.y`) — bugfixes only, just `git pull && restart`.
+- **Minor** (`v1.x.0 → v1.y.0`) — backwards-compatible new features. Read the release notes; usually you can pull straight away.
+- **Major** (`v1.x → v2.0.0`) — breaking changes. The release ships a migration script and the notes describe the steps.
+
+### How do I update without losing data?
+Bind-mounts (Docker) or `data/` and `config/` outside the install path (local Python) keep your state separate from app code. Update steps:
+
+- **Docker / Compose:** `git pull && docker compose down && docker compose up -d --build`
+- **Synology Container Manager:** click *Build* on the project — DSM pulls fresh code, rebuilds, restarts. Volumes untouched.
+- **Unraid:** *Force Update* on the container from the WebUI.
+- **Local Python:** `git pull && pip install -r requirements.txt && restart`
+
+### Should I back up before updating?
+For patch + minor updates: not strictly necessary, but cheap. **Settings → Backup → Export full data ZIP** is a one-click full snapshot. For major updates: yes, always.
+
+### What if a release breaks something?
+`git checkout <previous-tag>` and restart. Bind-mounted data stays intact.
+
 ---
 
 ## PDF Export

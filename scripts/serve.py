@@ -12,7 +12,7 @@ Architecture:
     - Data layer: delegates to tx_engine.py for all CSV read/write ops
     - Git integration: every data mutation triggers backup + git commit + push
 
-API endpoint groups (38 endpoints total):
+API endpoint groups (71 endpoints total):
     /api/tx/*          Transaction CRUD (context, parse, manual, confirm, update, delete)
     /api/payees/*      Payee registry management
     /api/categories/*  Category CRUD
@@ -59,7 +59,7 @@ import auth
 import backup
 import fuel
 import tx_engine
-from config_loader import get_default, is_enabled
+from config_loader import get_default, get_reports_config, is_enabled, save_reports_config
 
 # Map API paths to the feature flag that must be enabled to serve them.
 FEATURE_GATED_ROUTES = {
@@ -398,6 +398,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/setup/status": self.handle_setup_status,
             "/api/setup/mmex-upload": self.handle_setup_mmex_upload,
             "/api/setup/finalize": self.handle_setup_finalize,
+            "/api/reports-config/get": self.handle_reports_config_get,
+            "/api/reports-config/save": self.handle_reports_config_save,
             "/api/health": self.handle_health,
             "/api/metals/spot": self.handle_metals_spot,
         }
@@ -1851,6 +1853,38 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             pass
         return False
+
+    # ── API: Reports config (category mappings) ──────────────────────
+    # Maps the 8 category-driven reports (Dining Out, Bills, AI, Vice,
+    # Bank Fees, Cash Discrepancy, Automobile, Discretionary vs. Fixed)
+    # to user-chosen category names. Frontend reads at boot, persists
+    # edits via /save. Read returns the merged map (file overlay on
+    # hardcoded defaults) so the UI can show effective values without a
+    # second fetch.
+
+    def handle_reports_config_get(self):
+        """Return the effective reports config (file merged over defaults)."""
+        self._respond_json(200, {"config": get_reports_config()})
+
+    def handle_reports_config_save(self):
+        """Replace config/reports.json with the posted body. Body: {config: {...}}."""
+        body = self._read_json_body()
+        cfg = body.get("config")
+        if not isinstance(cfg, dict):
+            self._respond_json(400, {"error": "config must be an object"})
+            return
+        try:
+            save_reports_config(cfg)
+        except (OSError, ValueError) as e:
+            self._respond_json(500, {"error": f"failed to write reports config: {e}"})
+            return
+        # Best-effort git commit. Failure is non-fatal — the file is on
+        # disk and will be picked up by the dashboard reload.
+        try:
+            tx_engine.git_commit("Reports config updated", ["config/reports.json"])
+        except Exception:
+            pass
+        self._respond_json(200, {"ok": True, "config": get_reports_config()})
 
     # ── API: /api/metals/spot ─────────────────────────────────────────
     # Server-side proxy for goldprice.org. The dashboard previously fetched

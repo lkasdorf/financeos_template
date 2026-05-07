@@ -668,6 +668,14 @@ def run_setup(
     if features is not None:
         _write_json(config_dir / "features.json", features)
 
+    # config/reports.json — only written if the user picked "customize" in the
+    # wizard step. With "defaults" / no payload, the file stays absent and
+    # config_loader falls back to the canonical defaults.
+    reports_cfg = config.get("reports_config")
+    if reports_cfg:
+        from config_loader import save_reports_config
+        save_reports_config(reports_cfg)
+
     state_path = write_setup_state(
         data_dir,
         datasource=datasource,

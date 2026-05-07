@@ -786,9 +786,13 @@ function renderCashDiscrepancyReport() {
   const out = document.getElementById('report-output');
   const currency = state.primaryCurrency;
 
-  // All Cash Discrepancy transactions (both expense and income side)
+  // All Cash Discrepancy transactions (expense + income sides) per
+  // config/reports.json. Empty arrays → empty filter, report shows zeros.
+  const cdCfg = window.REPORTS_CONFIG?.cash_discrepancy || {};
+  const expCats = new Set(cdCfg.expense_categories || []);
+  const incCats = new Set(cdCfg.income_categories || []);
   const discTx = state.tx.filter(t =>
-    (t.category === 'Other Expenses:Cash Discrepancy' || t.category === 'Income:Cash Discrepancy')
+    expCats.has(t.category) || incCats.has(t.category)
   ).map(t => ({ ...t, amountConv: convertToTZS(t.amount, t.currency) }));
 
   // Group by year

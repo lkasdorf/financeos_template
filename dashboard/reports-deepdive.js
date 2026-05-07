@@ -1,8 +1,9 @@
 // ─── Discretionary vs. Fixed Report ─────────────────────────────────────
 
 function renderFixedVarReport() {
-  // Fixed categories: Rent, Bills:*, Subscriptions:*, Insurance:*, Fees:*
-  const FIXED_PREFIXES = ['Rent', 'Bills:', 'Subscriptions:', 'Insurance:', 'Fees:'];
+  // Fixed-cost prefixes pulled from config/reports.json. Defaults match the
+  // canonical category set: Rent, Bills:*, Subscriptions:*, Insurance:*, Fees:*.
+  const FIXED_PREFIXES = (window.REPORTS_CONFIG?.discretionary_fixed?.fixed_prefixes) || [];
   const isFixed = (cat) => {
     if (!cat) return false;
     return FIXED_PREFIXES.some(p => cat === p || cat.startsWith(p));
