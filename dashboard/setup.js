@@ -347,6 +347,11 @@ async function uploadMmex() {
       id: data.staging_id,
       summary: data.summary,
       accounts: data.accounts || [],
+      // categories was added to the upload response in rc.3 so the
+      // step-6 mapping form can show the user's actual MMEX category
+      // names instead of falling back to the empty-start canonical
+      // set. Server side ships {id, name, path} per entry.
+      categories: data.categories || [],
       warnings: data.warnings || [],
       filename: data.filename,
     };

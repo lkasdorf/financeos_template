@@ -2,13 +2,13 @@
 
 // Helper: build a report descriptor with i18n-aware getters for title and desc.
 // `t()` is called at render time so locale switches re-translate without
-// rebuilding the array. Keys: reports.list.<id>.{title,desc}. The English
+// rebuilding the array. Keys: reports.<id>.{title,desc}. The English
 // strings here are the fallback used when the key is missing.
 function _r(id, category, render, title, desc) {
   return {
     id, category, render,
-    get title() { return t(`reports.list.${id}.title`, {}, title); },
-    get desc()  { return t(`reports.list.${id}.desc`,  {}, desc); },
+    get title() { return t(`reports.${id}.title`, {}, title); },
+    get desc()  { return t(`reports.${id}.desc`,  {}, desc); },
   };
 }
 

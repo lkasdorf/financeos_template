@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.7] - 2026-05-07
+
+### Fixed
+
+- **Setup wizard step 6 dropdowns now show your real MMEX categories.** rc.3 added `categories` to the `/api/setup/mmex-upload` response, and rc.5 wired the report-config UI — but `setup.js` never copied `data.categories` into `state.staging`. `reportsWizardCategories()` therefore always saw `undefined` and fell back to the empty-start canonical category set. One-line fix in the upload handler.
+- **Report-list titles + descriptions translate when you switch locale.** rc.5 added 74 i18n keys per locale (`reports.list.<id>.{title,desc}`) and wired the REPORTS array via getters, but the renderer in `reports.js` used `t('reports.<id>.title', …)` without the `.list.` middle path — namespace mismatch, every key fell back to the English literal. Bulk-renamed all 74 keys + the two getter call sites so the namespace lines up.
+
+### Known limitations / still in v1.3.x backlog
+
+- Setup wizard's own labels (steppers, h2 headings, hints, button text) still hard-coded English. The locale picker only carries the choice into the dashboard.
+- Accent-color override via the wizard doesn't recompute `--accent-dim` / `--accent-glow` / `--accent-subtle`, so picking e.g. a green accent leaves blue glows on hover/focus.
+- "Accent color in Settings" — currently only writable during Setup; should also be editable in `Settings → Branding` after install.
+
 ## [1.3.0-rc.6] - 2026-05-07
 
 ### Added
