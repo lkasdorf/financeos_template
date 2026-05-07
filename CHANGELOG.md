@@ -18,6 +18,26 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.0-rc.8] - 2026-05-07
+
+Closing-out sweep before next testing session: setup wizard becomes bilingual, accent color derives its variants from your chosen color, Settings → Branding sub-tab lands.
+
+### Added
+
+- **Setup wizard is bilingual.** Step labels, h2 headings, hints, and Back / Next / Confirm buttons translate when you change the locale picker. 23 new keys per locale. `setup.html` loads `i18n.js`; the picker triggers `loadLocale()` + `applyI18n(document)` for live re-translation.
+- **Settings → Branding sub-tab.** Edit display name and accent color after install via `POST /api/branding/{get,save}`. Save calls `applyBranding()` immediately so the dashboard re-paints without a reload.
+- **Accent color now propagates to every variant.** `applyBranding` computes `--accent-glow` and `--accent-subtle` as rgba over the chosen color and `--accent-dim` as a 25% white blend, instead of leaving the hardcoded blue defaults. Pick a green accent and your hover glows / focus rings actually turn green too.
+
+### Changed
+
+- **Setup wizard step 6 hint text** updated from "Eight reports" to "Nine reports" — Income Sources Breakdown landed in rc.5 but the hint wasn't updated.
+
+### Still in v1.3.x backlog
+
+- FAQ German twin (`docs/faq.de.md`) — currently the FAQ tab loader falls back to English for DE locale.
+- MMEX importer including unused leaf categories — Step-6 dropdowns may still miss empty-leaf categories.
+- Form labels inside each setup-wizard step (Display name, Username, etc.) are not yet `data-i18n`-tagged. Next iteration.
+
 ## [1.3.0-rc.7] - 2026-05-07
 
 ### Fixed

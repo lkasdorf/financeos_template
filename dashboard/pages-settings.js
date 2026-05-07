@@ -348,6 +348,7 @@ async function renderSettingsPage() {
     { id: 'goals', label: t('settings.tab.goals', {}, 'Goals') },
     { id: 'budgets', label: t('settings.tab.budgets', {}, 'Budgets') },
     { id: 'reports', label: t('settings.tab.reports', {}, 'Reports') },
+    { id: 'branding', label: t('settings.tab.branding', {}, 'Branding') },
     { id: 'backup', label: t('settings.tab.backup', {}, 'Backup') },
     { id: 'language', label: t('settings.tab.language', {}, 'Language') },
   ].filter(tab => !tab.feature || isFeatureEnabled(tab.feature));
@@ -369,8 +370,76 @@ async function renderSettingsPage() {
   else if (settingsTab === 'goals') renderGoalsTab();
   else if (settingsTab === 'budgets') renderBudgetsTab();
   else if (settingsTab === 'reports') renderReportsConfigTab();
+  else if (settingsTab === 'branding') renderBrandingTab();
   else if (settingsTab === 'backup') renderBackupTab();
   else if (settingsTab === 'language') renderLanguageTab();
+}
+
+// ─── Settings: Branding (display name + accent color) ──────────────────
+// Editable post-install version of the setup-wizard's Step 1. Reads/writes
+// config/branding.json via /api/branding/{get,save}. applyBranding() is
+// called immediately on save so the new name + color show up without a
+// reload, including the derived --accent-dim/glow/subtle variables.
+
+async function renderBrandingTab() {
+  const container = document.getElementById('settings-tab-content');
+  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.branding.loading', {}, 'Loading branding...'))}</div>`;
+  let data = { display_name: window.BRANDING.display_name || 'FinanceOS', accent_color: window.BRANDING.accent_color || '#1e40af' };
+  try {
+    const res = await fetch('/api/branding/get', { method: 'POST' });
+    if (res.ok) data = await res.json();
+  } catch { /* fall back to in-memory */ }
+  container.innerHTML = `
+    <div style="max-width:560px;">
+      <h3 style="margin:0 0 6px;">${escapeHtml(t('settings.branding.heading', {}, 'Branding'))}</h3>
+      <p class="c-mut" style="margin:0 0 16px;">${escapeHtml(t('settings.branding.intro', {}, 'Display name + accent color. Both are written to config/branding.json and applied immediately to the dashboard (header, sidebar, footer, charts, hover glows).'))}</p>
+      <label style="display:block;margin-bottom:14px;">
+        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(t('settings.branding.name_label', {}, 'Display name'))}</div>
+        <input type="text" id="branding-name" maxlength="60" value="${escapeHtml(data.display_name)}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
+      </label>
+      <label style="display:block;margin-bottom:14px;">
+        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(t('settings.branding.accent_label', {}, 'Accent color'))}</div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <input type="color" id="branding-color" value="${escapeHtml(data.accent_color)}" style="width:60px;height:36px;padding:0;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
+          <input type="text" id="branding-color-hex" value="${escapeHtml(data.accent_color)}" pattern="#[0-9A-Fa-f]{6}" maxlength="7" style="width:100px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:monospace;">
+          <span class="c-mut" style="font-size:12px;">${escapeHtml(t('settings.branding.accent_hint', {}, 'Used for accents, hover glows, links.'))}</span>
+        </div>
+      </label>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:18px;">
+        <button class="btn btn-primary" id="branding-save">${escapeHtml(t('settings.branding.save', {}, 'Save'))}</button>
+        <span id="branding-status" class="c-mut" style="font-size:12px;"></span>
+      </div>
+    </div>
+  `;
+  const colorInp = document.getElementById('branding-color');
+  const hexInp = document.getElementById('branding-color-hex');
+  colorInp.addEventListener('input', () => { hexInp.value = colorInp.value; });
+  hexInp.addEventListener('input', () => {
+    if (/^#[0-9A-Fa-f]{6}$/.test(hexInp.value)) colorInp.value = hexInp.value;
+  });
+  document.getElementById('branding-save').addEventListener('click', async () => {
+    const status = document.getElementById('branding-status');
+    const name = document.getElementById('branding-name').value.trim();
+    const accent = hexInp.value.trim();
+    if (!name) { status.textContent = t('settings.branding.err_name', {}, 'Display name required'); return; }
+    if (!/^#[0-9A-Fa-f]{6}$/.test(accent)) { status.textContent = t('settings.branding.err_color', {}, 'Color must be #rrggbb'); return; }
+    status.textContent = t('settings.branding.saving', {}, 'Saving...');
+    try {
+      const res = await fetch('/api/branding/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: name, accent_color: accent }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const out = await res.json();
+      window.BRANDING.display_name = out.display_name;
+      window.BRANDING.accent_color = out.accent_color;
+      applyBranding();
+      status.textContent = t('settings.branding.saved', {}, '✓ Saved');
+      setTimeout(() => { if (status) status.textContent = ''; }, 2400);
+    } catch (e) {
+      status.textContent = t('settings.branding.save_failed', { err: String(e) }, `Save failed: ${e}`);
+    }
+  });
 }
 
 // ─── Settings: Language ──────────────────────────────────────────────────

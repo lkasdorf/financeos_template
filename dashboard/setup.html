@@ -7,6 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0d0a'/%3E%3Crect x='7' y='17' width='4' height='9' rx='1' fill='%23c8f060'/%3E%3Crect x='14' y='12' width='4' height='14' rx='1' fill='%23c8f060'/%3E%3Crect x='21' y='7' width='4' height='19' rx='1' fill='%23c8f060'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="setup.css">
+<script defer src="i18n.js"></script>
 </head>
 <body class="setup-body">
 
@@ -30,13 +31,13 @@
   </header>
 
   <ol class="setup-stepper" id="stepper">
-    <li data-step="1"><span class="dot">1</span><span class="label">Brand</span></li>
-    <li data-step="2"><span class="dot">2</span><span class="label">Currency</span></li>
-    <li data-step="3"><span class="dot">3</span><span class="label">Auth</span></li>
-    <li data-step="4"><span class="dot">4</span><span class="label">Data</span></li>
-    <li data-step="5"><span class="dot">5</span><span class="label">Features</span></li>
-    <li data-step="6"><span class="dot">6</span><span class="label">Reports</span></li>
-    <li data-step="7"><span class="dot">7</span><span class="label">Review</span></li>
+    <li data-step="1"><span class="dot">1</span><span class="label" data-i18n="setup.step.brand">Brand</span></li>
+    <li data-step="2"><span class="dot">2</span><span class="label" data-i18n="setup.step.currency">Currency</span></li>
+    <li data-step="3"><span class="dot">3</span><span class="label" data-i18n="setup.step.auth">Auth</span></li>
+    <li data-step="4"><span class="dot">4</span><span class="label" data-i18n="setup.step.data">Data</span></li>
+    <li data-step="5"><span class="dot">5</span><span class="label" data-i18n="setup.step.features">Features</span></li>
+    <li data-step="6"><span class="dot">6</span><span class="label" data-i18n="setup.step.reports">Reports</span></li>
+    <li data-step="7"><span class="dot">7</span><span class="label" data-i18n="setup.step.review">Review</span></li>
   </ol>
 
   <main class="setup-card">
@@ -50,8 +51,8 @@
 
     <!-- Step 1: Branding -->
     <section class="setup-step" data-step="1">
-      <h2>Brand your instance</h2>
-      <p class="setup-hint">A display name shown in the header. The accent color tints buttons and links.</p>
+      <h2 data-i18n="setup.s1.h">Brand your instance</h2>
+      <p class="setup-hint" data-i18n="setup.s1.hint">A display name shown in the header. The accent color tints buttons and links.</p>
       <label class="setup-field">
         <span>Display name</span>
         <input type="text" id="brand-name" placeholder="My FinanceOS" maxlength="60" required>
@@ -67,8 +68,8 @@
 
     <!-- Step 2: Currency -->
     <section class="setup-step" data-step="2" hidden>
-      <h2>Default currency</h2>
-      <p class="setup-hint">Used for the empty-start seed and as the dashboard fallback. Three-letter ISO code.</p>
+      <h2 data-i18n="setup.s2.h">Default currency</h2>
+      <p class="setup-hint" data-i18n="setup.s2.hint">Used for the empty-start seed and as the dashboard fallback. Three-letter ISO code.</p>
       <div class="setup-quickpicks" id="currency-picks">
         <button type="button" data-cur="EUR">EUR</button>
         <button type="button" data-cur="USD">USD</button>
@@ -84,8 +85,8 @@
 
     <!-- Step 3: Auth -->
     <section class="setup-step" data-step="3" hidden>
-      <h2>Authentication</h2>
-      <p class="setup-hint">FinanceOS does not enforce auth itself — the chosen mode is honoured by reverse-proxies and the optional Basic-Auth middleware.</p>
+      <h2 data-i18n="setup.s3.h">Authentication</h2>
+      <p class="setup-hint" data-i18n="setup.s3.hint">FinanceOS does not enforce auth itself — the chosen mode is honoured by reverse-proxies and the optional Basic-Auth middleware.</p>
       <div class="setup-radio-group">
         <label class="setup-radio">
           <input type="radio" name="auth-mode" value="basic" checked>
@@ -124,8 +125,8 @@
 
     <!-- Step 4: Datasource -->
     <section class="setup-step" data-step="4" hidden>
-      <h2>Starting data</h2>
-      <p class="setup-hint">Choose how the data folder gets seeded.</p>
+      <h2 data-i18n="setup.s4.h">Starting data</h2>
+      <p class="setup-hint" data-i18n="setup.s4.hint">Choose how the data folder gets seeded.</p>
       <div class="setup-radio-group">
         <label class="setup-radio">
           <input type="radio" name="datasource" value="empty" checked>
@@ -153,8 +154,8 @@
 
     <!-- Step 5: Optional features -->
     <section class="setup-step" data-step="5" hidden>
-      <h2>Optional features</h2>
-      <p class="setup-hint">Turn on extras that aren't core. Can be changed later in <code>config/features.json</code>.</p>
+      <h2 data-i18n="setup.s5.h">Optional features</h2>
+      <p class="setup-hint" data-i18n="setup.s5.hint">Turn on extras that aren't core. Can be changed later in <code>config/features.json</code>.</p>
       <div class="setup-toggle-list" id="features-list">
         <label><input type="checkbox" data-feature="debt_tracking"><span><strong>Debt tracking</strong> — money lent to or owed by third parties with payment history</span></label>
         <label><input type="checkbox" data-feature="metals"><span><strong>Precious metals</strong> — gold/silver portfolio with daily spot prices</span></label>
@@ -168,8 +169,8 @@
 
     <!-- Step 6: Report → category mapping -->
     <section class="setup-step" data-step="6" hidden>
-      <h2>Map reports to your categories</h2>
-      <p class="setup-hint">Eight reports filter by category — Dining Out, Bills, AI Costs, Vice Spending, Bank Fees, Cash Discrepancy, Automobile, and Discretionary vs. Fixed. Defaults match the canonical category set; customize now or later in <code>Settings → Reports</code>.</p>
+      <h2 data-i18n="setup.s6.h">Map reports to your categories</h2>
+      <p class="setup-hint" data-i18n="setup.s6.hint">Nine reports filter by category — Dining Out, Bills, AI Costs, Vice Spending, Bank Fees, Cash Discrepancy, Automobile, Discretionary vs. Fixed, and Income Sources. Defaults match the canonical category set; customize now or later in Settings → Reports.</p>
       <div id="reports-step-mode" class="setup-radio-group" style="margin-bottom:14px;">
         <label class="setup-radio">
           <input type="radio" name="reports-mode" value="defaults" checked>
@@ -188,8 +189,8 @@
 
     <!-- Step 7: Review -->
     <section class="setup-step" data-step="7" hidden>
-      <h2>Review &amp; confirm</h2>
-      <p class="setup-hint">Last check. Below is what will be written. Click <strong>Confirm</strong> to finalize.</p>
+      <h2 data-i18n="setup.s7.h">Review &amp; confirm</h2>
+      <p class="setup-hint" data-i18n="setup.s7.hint">Last check. Below is what will be written. Click <strong>Confirm</strong> to finalize.</p>
 
       <dl class="setup-review">
         <dt>Brand</dt><dd id="rv-brand"></dd>
@@ -216,9 +217,9 @@
   </main>
 
   <footer class="setup-actions">
-    <button type="button" id="btn-back" disabled>Back</button>
-    <button type="button" id="btn-next" class="setup-btn-primary">Next →</button>
-    <button type="button" id="btn-finish" class="setup-btn-primary" hidden>Confirm &amp; finalize</button>
+    <button type="button" id="btn-back" data-i18n="setup.btn.back" disabled>Back</button>
+    <button type="button" id="btn-next" class="setup-btn-primary" data-i18n="setup.btn.next">Next →</button>
+    <button type="button" id="btn-finish" class="setup-btn-primary" hidden data-i18n="setup.btn.finish">Confirm &amp; finalize</button>
   </footer>
 
 </div>

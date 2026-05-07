@@ -400,6 +400,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/setup/finalize": self.handle_setup_finalize,
             "/api/reports-config/get": self.handle_reports_config_get,
             "/api/reports-config/save": self.handle_reports_config_save,
+            "/api/branding/get": self.handle_branding_get,
+            "/api/branding/save": self.handle_branding_save,
             "/api/health": self.handle_health,
             "/api/metals/spot": self.handle_metals_spot,
         }
@@ -1918,6 +1920,58 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             pass
         self._respond_json(200, {"ok": True, "config": get_reports_config()})
+
+    # ── API: Branding (display name + accent color) ──────────────────
+    # Settings → Branding writes through here. The setup wizard populates
+    # the same file via setup_core.write_branding on first install; this
+    # endpoint lets users tweak the values later without re-running setup.
+
+    def handle_branding_get(self):
+        """Return the current config/branding.json content (or defaults)."""
+        path = REPO_ROOT / "config" / "branding.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        self._respond_json(200, {
+            "display_name": data.get("display_name", "FinanceOS"),
+            "accent_color": data.get("accent_color", "#1e40af"),
+        })
+
+    def handle_branding_save(self):
+        """Atomically rewrite config/branding.json from the posted body."""
+        import re
+        body = self._read_json_body()
+        name = (body.get("display_name") or "").strip()
+        accent = (body.get("accent_color") or "").strip()
+        if not name:
+            self._respond_json(400, {"error": "display_name is required"})
+            return
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
+            self._respond_json(400, {"error": "accent_color must be #rrggbb"})
+            return
+        target = REPO_ROOT / "config" / "branding.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"display_name": name, "accent_color": accent}
+        # Atomic write — temp + os.replace, mirrors save_reports_config.
+        import tempfile
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_name, target)
+        except Exception:
+            try: Path(tmp_name).unlink()
+            except OSError: pass
+            raise
+        try:
+            tx_engine.git_commit("Branding updated", ["config/branding.json"])
+        except Exception:
+            pass
+        self._respond_json(200, {"ok": True, **payload})
 
     # ── API: /api/metals/spot ─────────────────────────────────────────
     # Server-side proxy for goldprice.org. The dashboard previously fetched

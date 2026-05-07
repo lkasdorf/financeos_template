@@ -158,12 +158,46 @@ function applyBranding() {
   document.querySelectorAll('[data-brand]').forEach(el => { el.textContent = name; });
   document.querySelectorAll('[data-brand-html]').forEach(el => { el.innerHTML = nameHtml; });
   // Accent color — propagated as both --accent-color (legacy) and --accent
-  // (newer chart/report styles) on :root so every consumer picks it up
-  // without a per-component opt-in. Falls back to the hardcoded default if
-  // branding.json doesn't ship one.
+  // (newer chart/report styles) on :root, plus the derived variants so
+  // hover glows / subtle backgrounds / lighter accent recolor with the
+  // chosen accent instead of leaving residual blue everywhere.
   const accent = window.BRANDING.accent_color || '#1e40af';
-  document.documentElement.style.setProperty('--accent-color', accent);
-  document.documentElement.style.setProperty('--accent', accent);
+  const root = document.documentElement.style;
+  root.setProperty('--accent-color', accent);
+  root.setProperty('--accent', accent);
+  const rgb = _hexToRgb(accent);
+  if (rgb) {
+    root.setProperty('--accent-glow', `rgba(${rgb.r},${rgb.g},${rgb.b},0.07)`);
+    root.setProperty('--accent-subtle', `rgba(${rgb.r},${rgb.g},${rgb.b},0.04)`);
+    // Slightly lighter accent for "dim" usages — blend 25% with white.
+    const dim = _blendHex(accent, '#ffffff', 0.25);
+    if (dim) root.setProperty('--accent-dim', dim);
+  }
+}
+
+// Parse "#rrggbb" / "#rgb" into {r,g,b} 0..255. Returns null on bad input
+// so applyBranding can short-circuit the derived-variants block.
+function _hexToRgb(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  let s = hex.trim().replace(/^#/, '');
+  if (s.length === 3) s = s.split('').map(c => c + c).join('');
+  if (!/^[0-9a-fA-F]{6}$/.test(s)) return null;
+  return {
+    r: parseInt(s.slice(0, 2), 16),
+    g: parseInt(s.slice(2, 4), 16),
+    b: parseInt(s.slice(4, 6), 16),
+  };
+}
+
+// Linear blend between two hex colors. amount ∈ [0,1] is the weight of `b`.
+// Used to compute --accent-dim from --accent + a 25% white blend.
+function _blendHex(aHex, bHex, amount) {
+  const a = _hexToRgb(aHex), bb = _hexToRgb(bHex);
+  if (!a || !bb) return null;
+  const w = Math.max(0, Math.min(1, amount));
+  const mix = (x, y) => Math.round(x * (1 - w) + y * w);
+  const toHex = n => n.toString(16).padStart(2, '0');
+  return `#${toHex(mix(a.r, bb.r))}${toHex(mix(a.g, bb.g))}${toHex(mix(a.b, bb.b))}`;
 }
 async function loadSmartDefaults() {
   try {

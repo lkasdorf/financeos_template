@@ -141,18 +141,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // ── Locale picker ────────────────────────────────────────────────────────
-// The wizard itself is hardcoded English (translating every label is on the
-// v1.3.x backlog), but the picker still has value: the dashboard reads the
-// `lp-locale` localStorage key on first boot, so the post-setup landing page
-// is in the chosen language. Default = English.
+// Loads the chosen locale's strings via i18n.js (loadLocale) and walks the
+// DOM via applyI18n() to translate every [data-i18n] node. Selection
+// persists to localStorage as `lp-locale` so the post-setup dashboard
+// boots in the same language.
 
-function bindLocalePicker() {
+async function bindLocalePicker() {
   const sel = document.getElementById('setup-locale');
   if (!sel) return;
   const stored = localStorage.getItem('lp-locale');
   if (stored) sel.value = stored;
-  sel.addEventListener('change', () => {
+  // Initial paint — load the stored locale (or default 'en') and walk the DOM.
+  if (typeof loadLocale === 'function') {
+    try { await loadLocale(sel.value); } catch { /* fall back to baked-in EN */ }
+  }
+  if (typeof applyI18n === 'function') applyI18n(document);
+  sel.addEventListener('change', async () => {
     localStorage.setItem('lp-locale', sel.value);
+    if (typeof loadLocale === 'function') {
+      try { await loadLocale(sel.value); } catch { return; }
+    }
+    if (typeof applyI18n === 'function') applyI18n(document);
   });
 }
 
