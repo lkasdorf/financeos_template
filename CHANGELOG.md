@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.8] - 2026-05-08
+
+### Fixed
+
+- **Setup-Wizard Step 7 account-mapping was English-only on a German install.** The account-type dropdown rendered values straight from the backend's `ACCOUNT_TYPES` list (English labels: "Custody", "Pass-through", "Bank account", …), and the Step 7 review headers (Brand / Currency / Auth / Datasource / Features), the "Account aliases" sub-heading, the long alias-hint paragraph, and the table column headers had no `data-i18n` attributes at all. Added `data-i18n` to all those nodes and a new `setup.account_type.<key>` lookup in `setup.js` that translates the dropdown label via `t()` while keeping the backend's English label as fallback. New i18n keys for EN + DE; DE renders Custody as "Treuhand", Pass-through as "Durchlauf", Cash as "Bargeld", etc.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.7` → `1.3.1-rc.8`
+
 ## [1.3.1-rc.7] - 2026-05-08
 
 ### Added

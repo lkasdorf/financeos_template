@@ -733,15 +733,21 @@ function renderReview() {
       if (t === 'cash' || t === 'savings' || t === 'loan' || t === 'bank') return t;
       return 'other';
     };
-    const typeKeys = new Set(state.account_types.map(t => t.key));
+    const typeKeys = new Set(state.account_types.map(at => at.key));
+    // Translate the type label via the global i18n helper. The fallback
+    // is the English label that ships in the backend's ACCOUNT_TYPES list,
+    // so non-localized installs keep working unchanged.
+    const typeLabel = (at) => (typeof t === 'function')
+      ? t(`setup.account_type.${at.key}`, {}, at.label)
+      : at.label;
     for (const acc of state.staging.accounts) {
       const tr = document.createElement('tr');
       const slug = autoSlug(acc.name);
       const cur = acc.currency_code || acc.currency || '—';
       const guess = mmexTypeGuess(acc.type);
       const selected = typeKeys.has(guess) ? guess : 'other';
-      const opts = state.account_types.map(t =>
-        `<option value="${escapeHtml(t.key)}"${t.key === selected ? ' selected' : ''}>${escapeHtml(t.label)}</option>`
+      const opts = state.account_types.map(at =>
+        `<option value="${escapeHtml(at.key)}"${at.key === selected ? ' selected' : ''}>${escapeHtml(typeLabel(at))}</option>`
       ).join('');
       tr.innerHTML = `
         <td>${escapeHtml(acc.name)}</td>
