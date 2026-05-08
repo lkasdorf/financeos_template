@@ -18,6 +18,28 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.2] - 2026-05-08
+
+Multi-currency forks were dependent on the daily `cron_fx.py` to accumulate FX history over time — fresh forks rendered historical reports with today's rates retroactively applied to past months. This RC fixes that with two pieces:
+
+### Added
+
+- **`scripts/fx_backfill.py`** — CLI for filling `data/fx_rates_history.csv` from Bank of Tanzania (TZS-quoted EUR/USD) + Frankfurter (PLN/TRY via EUR cross-rate). Idempotent merge that never overwrites existing rows. Auto-detects start date from the last CSV row; explicit `--since`/`--until` for seeding gaps. Atomic write + backup snapshot before each run.
+- **`POST /api/fx/backfill` endpoint** so the dashboard can run the backfill on demand without dropping to a terminal.
+- **Settings → Currency → "Backfill historical rates"** — UI section with optional since/until date inputs and a status panel. Surfaces the merge summary inline (new dates, filled cells, total rows, optional Frankfurter warning).
+- **Setup-Wizard auto-delta hook** — after the wizard's finalize step, the dashboard fires a fire-and-forget POST to `/api/fx/backfill` so fresh forks land with current rates without the user needing to know the script exists.
+- **Public template now ships the populated `data/fx_rates_history.csv`** (8 years of daily rates, 2018-01-01 → release date, no PII). Was a header-only stub before. Fresh forks immediately render multi-year multi-currency reports correctly.
+
+### Changed
+
+- **`cron_fx.py`: BoT-primary fetch with er-api fallback.** Daily snapshot now prefers Bank of Tanzania for TZS-quoted EUR/USD and falls back to the er-api endpoint configured in `config/defaults.json` only if BoT is unreachable. PLN/TRY are derived via Frankfurter EUR cross-rate. The fetch returns `(rates, source_label)` so the daily log shows which source fired.
+
+### Documentation
+
+- `docs/faq.md` + `docs/faq.de.md`: new "Backfill historical FX rates" section explaining the Settings button + when to use it; "Currency Switcher" section updated with the BoT-primary / er-api-fallback flow.
+
+
+
 ## [1.3.1-rc.1] - 2026-05-08
 
 First patch release after v1.3.0 — small but real UX gap surfaced while testing v1.3.0 fresh.

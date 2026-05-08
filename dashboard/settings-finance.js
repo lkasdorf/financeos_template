@@ -68,7 +68,66 @@ function renderFxRatesTab() {
       </div>
       <div id="fx-status" class="mt-12"></div>
     </div>
+
+    <div class="section" style="margin-top:24px;">
+      <div class="section-title">${t('settings.fxbackfill.title', {}, 'Backfill historical rates')}</div>
+      <p class="hint-md mb-16" style="line-height:1.5;">
+        ${t('settings.fxbackfill.hint', {}, 'Fill gaps in <code>data/fx_rates_history.csv</code> from Bank of Tanzania (EUR/USD) and Frankfurter (PLN/TRY via EUR cross-rate). Existing rows are never overwritten. Leave both fields empty to fetch only new dates since the last entry.')}
+      </p>
+      <div class="atx-row" style="align-items:flex-end;gap:12px;flex-wrap:wrap;">
+        <div class="atx-field" style="min-width:160px;">
+          <label>${t('settings.fxbackfill.since', {}, 'Since (optional)')}</label>
+          <input type="date" id="fx-bf-since" placeholder="auto">
+        </div>
+        <div class="atx-field" style="min-width:160px;">
+          <label>${t('settings.fxbackfill.until', {}, 'Until (optional)')}</label>
+          <input type="date" id="fx-bf-until" placeholder="today">
+        </div>
+        <button class="btn-save" id="fx-bf-run" onclick="runFxBackfill()">${t('settings.fxbackfill.run', {}, 'Run backfill')}</button>
+      </div>
+      <div id="fx-bf-status" class="mt-12"></div>
+    </div>
   `;
+}
+
+async function runFxBackfill() {
+  const sinceEl = document.getElementById('fx-bf-since');
+  const untilEl = document.getElementById('fx-bf-until');
+  const statusEl = document.getElementById('fx-bf-status');
+  const btn = document.getElementById('fx-bf-run');
+
+  const body = {};
+  if (sinceEl.value) body.since = sinceEl.value;
+  if (untilEl.value) body.until = untilEl.value;
+
+  btn.disabled = true;
+  statusEl.innerHTML = `<div class="atx-status">${escapeHtml(t('settings.fxbackfill.running', {}, 'Fetching… this can take a few seconds for a delta, or several minutes for a multi-year seed.'))}</div>`;
+
+  try {
+    const res = await fetch('/api/fx/backfill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const summary = t(
+      'settings.fxbackfill.done',
+      data,
+      `Done. ${data.since} → ${data.until}: +${data.new_dates} new, ${data.updated_dates} filled, ${data.total} total rows.`,
+    );
+    let html = `<div class="atx-status success">${escapeHtml(summary)}</div>`;
+    if (data.frankfurter_warning) {
+      html += `<div class="atx-status warning" style="margin-top:8px;font-size:11px;">Frankfurter: ${escapeHtml(data.frankfurter_warning)} — PLN/TRY cells skipped.</div>`;
+    }
+    statusEl.innerHTML = html;
+  } catch (e) {
+    statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.fxbackfill.error', { error: String(e.message || e) }, `Backfill failed: ${e.message || e}`))}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function applyFxOverrides() {

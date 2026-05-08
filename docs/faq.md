@@ -278,7 +278,16 @@ The dashboard and every other page are **left-aligned** to the sidebar. Content 
 The sum of every Self account in the active display currency. Pass-through balances are 0 by definition; custody accounts are shown separately.
 
 ### Currency Switcher
-In the header. Live rates from the FX provider configured in `config/defaults.json`, fallback to `data/fx_rates.csv`. History in `data/fx_rates_history.csv`.
+In the header. Live rates: `cron_fx.py` queries Bank of Tanzania first (TZS-quoted EUR/USD; PLN/TRY via Frankfurter ECB cross-rate) and falls back to the er-api endpoint configured in `config/defaults.json` if BoT is unreachable. Snapshot goes to `data/fx_rates.csv`; history accumulates in `data/fx_rates_history.csv`.
+
+### Backfill historical FX rates
+Settings → Currency → **Backfill historical rates** runs `scripts/fx_backfill.py` against the same two sources to fill gaps in `data/fx_rates_history.csv`. Useful when:
+
+- You imported MMEX with multi-year history and need accurate per-period currency conversion in reports.
+- Your dashboard was offline for a while and `cron_fx.py` couldn't snapshot.
+- You forked the public template, which ships with rates through the release date — the Setup-Wizard already kicks the backfill once after finalize, but you can re-run it any time.
+
+The merge step **never overwrites** an existing row, so re-running is safe. Both date fields are optional: leave them empty to fetch only new dates since the last CSV row, or set them explicitly to seed a long range (e.g. 2018-01-01 → today).
 
 ### Sidebar modules
 Add TX · Dashboard · Reports · Accounts · Transactions · Custom Reports · Alerts · Debts · Reconciliation · Settings · **FAQ**

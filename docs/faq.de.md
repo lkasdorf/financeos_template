@@ -278,7 +278,16 @@ Das Dashboard und jede andere Seite sind **linksbündig** zur Sidebar. Content-B
 Die Summe aller Self-Konten in der aktiven Display-Currency. Pass-Through-Salden sind per Definition 0; Custody-Konten werden separat angezeigt.
 
 ### Currency Switcher
-Im Header. Live-Kurse vom in `config/defaults.json` konfigurierten FX-Provider, Fallback auf `data/fx_rates.csv`. Historie in `data/fx_rates_history.csv`.
+Im Header. Live-Kurse: `cron_fx.py` fragt zuerst Bank of Tanzania (TZS-quoted EUR/USD; PLN/TRY via Frankfurter ECB-Cross-Rate) und fällt auf den in `config/defaults.json` konfigurierten er-api-Endpoint zurück, falls BoT nicht erreichbar ist. Snapshot landet in `data/fx_rates.csv`; Historie sammelt sich in `data/fx_rates_history.csv`.
+
+### Historische FX-Kurse nachladen
+Settings → Currency → **Backfill historical rates** ruft `scripts/fx_backfill.py` gegen die gleichen zwei Quellen auf, um Lücken in `data/fx_rates_history.csv` zu füllen. Hilfreich wenn:
+
+- Du MMEX mit Mehrjahres-Historie importiert hast und akkurate per-Periode-Währungsumrechnung in Reports brauchst.
+- Dein Dashboard länger offline war und `cron_fx.py` keinen Snapshot machen konnte.
+- Du das Public-Template forkst, das mit Kursen bis zum Release-Datum geliefert wird — der Setup-Wizard triggert den Backfill einmal nach Finalize automatisch, du kannst ihn aber jederzeit erneut laufen lassen.
+
+Der Merge-Schritt **überschreibt nie** eine vorhandene Zeile, daher ist Re-Run sicher. Beide Datums-Felder sind optional: leer lassen, um nur neue Tage seit der letzten CSV-Zeile zu holen, oder explizit setzen, um eine längere Spanne zu seeden (z.B. 2018-01-01 → heute).
 
 ### Sidebar-Module
 Add TX · Dashboard · Reports · Accounts · Transactions · Custom Reports · Alerts · Debts · Reconciliation · Settings · **FAQ**

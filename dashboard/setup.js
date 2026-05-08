@@ -813,6 +813,20 @@ async function finalize() {
     const counts = data.counts || {};
     status.className = 'setup-status success';
     status.textContent = `Done. Wrote ${counts.accounts || 0} accounts, ${counts.categories || 0} categories, ${counts.transactions || 0} transactions. Redirecting to dashboard…`;
+
+    // Fire-and-forget: kick the backend into fetching FX rates for any
+    // dates between the bundled history snapshot and today. The Python
+    // handler keeps running even if the browser navigates away, so the
+    // CSV is up-to-date by the time the user starts adding transactions.
+    // We deliberately do not await this — it can take a few seconds and
+    // the user should not wait at the wizard's "Done" screen.
+    fetch('/api/fx/backfill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      keepalive: true,
+    }).catch(() => { /* network/timeout — Settings → Currency exposes a manual button */ });
+
     setTimeout(() => { window.location.href = 'index.html'; }, 1400);
   } catch (e) {
     status.className = 'setup-status error';

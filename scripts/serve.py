@@ -58,6 +58,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import auth
 import backup
 import fuel
+import fx_backfill
 import tx_engine
 from config_loader import get_default, get_reports_config, is_enabled, save_reports_config
 
@@ -410,6 +411,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/setup/finalize": self.handle_setup_finalize,
             "/api/reports-config/get": self.handle_reports_config_get,
             "/api/reports-config/save": self.handle_reports_config_save,
+            "/api/fx/backfill": self.handle_fx_backfill,
             "/api/branding/get": self.handle_branding_get,
             "/api/branding/save": self.handle_branding_save,
             "/api/health": self.handle_health,
@@ -2038,6 +2040,94 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             pass
         self._respond_json(200, {"ok": True, "config": get_reports_config()})
+
+    # ── API: FX history backfill ─────────────────────────────────────
+    # Wraps scripts/fx_backfill.py so the dashboard can extend
+    # data/fx_rates_history.csv on demand. The Settings → Currency tab
+    # exposes a manual button; the Setup-Wizard fires it once after
+    # finalize so fresh forks land with current rates without the user
+    # needing to know the script exists.
+
+    def handle_fx_backfill(self):
+        """Run an FX backfill. Body: { since?: YYYY-MM-DD, until?: YYYY-MM-DD }.
+
+        Both bounds are optional — ``since`` defaults to "last CSV date + 1"
+        (auto-detect), ``until`` defaults to today. The handler runs
+        synchronously: a typical delta call (a few days since the last
+        snapshot) finishes in under 5 seconds. A long seed (years) may
+        block the request for a few minutes, which is acceptable for an
+        admin-triggered Settings action.
+        """
+        from datetime import date, datetime, timedelta
+
+        body = self._read_json_body() or {}
+
+        def _parse(field):
+            raw = body.get(field)
+            if not raw:
+                return None
+            try:
+                return datetime.strptime(raw, "%Y-%m-%d").date()
+            except (TypeError, ValueError):
+                raise ValueError(f"{field} must be YYYY-MM-DD")
+
+        try:
+            since = _parse("since")
+            until = _parse("until")
+        except ValueError as e:
+            self._respond_json(400, {"error": str(e)})
+            return
+
+        existing = fx_backfill._read_existing(fx_backfill.FX_HISTORY_PATH)
+        if since is None:
+            since = fx_backfill._detect_since(existing)
+        if until is None:
+            until = date.today()
+        if since > until:
+            self._respond_json(200, {"ok": True, "since": since.isoformat(), "until": until.isoformat(),
+                                      "new_dates": 0, "updated_dates": 0, "total": len(existing),
+                                      "note": "nothing to do"})
+            return
+
+        try:
+            bot_data = fx_backfill.fetch_bot_range(since, until)
+            cross_data = {}
+            try:
+                fr = fx_backfill.fetch_frankfurter_eur_to(fx_backfill.FRANKFURTER_CURRENCIES, since, until)
+                cross_data = fx_backfill.derive_via_eur_cross_rate(
+                    fr, bot_data, fx_backfill.FRANKFURTER_CURRENCIES,
+                )
+            except Exception as e:
+                # Frankfurter outage shouldn't kill the whole call —
+                # BoT-only fill is still useful.
+                cross_data = {}
+                frankfurter_warning = str(e)
+            else:
+                frankfurter_warning = None
+
+            merged, new_dates, updated_dates = fx_backfill.merge(existing, bot_data, cross_data)
+
+            if new_dates or updated_dates:
+                try:
+                    backup.backup_file("fx_rates_history", fx_backfill.FX_HISTORY_PATH)
+                except Exception:
+                    pass  # backup failure shouldn't block the write
+                fx_backfill.write_csv(fx_backfill.FX_HISTORY_PATH, merged)
+        except Exception as e:
+            self._respond_json(502, {"error": f"fx backfill failed: {e}"})
+            return
+
+        resp = {
+            "ok": True,
+            "since": since.isoformat(),
+            "until": until.isoformat(),
+            "new_dates": new_dates,
+            "updated_dates": updated_dates,
+            "total": len(merged),
+        }
+        if frankfurter_warning:
+            resp["frankfurter_warning"] = frankfurter_warning
+        self._respond_json(200, resp)
 
     # ── API: Branding (display name + accent color) ──────────────────
     # Settings → Branding writes through here. The setup wizard populates

@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import backup
+import fx_backfill
 import tx_engine
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -52,8 +53,8 @@ TRACKED = ["TZS", "USD", "EUR", "PLN", "TRY"]
 HISTORY_CURRENCIES = ["EUR", "USD", "PLN", "TRY"]
 
 
-def fetch_rates() -> dict[str, float]:
-    """Fetch USD-based exchange rates from the open.er-api.com API.
+def fetch_rates_erapi() -> dict[str, float]:
+    """Fetch USD-based exchange rates from the open.er-api.com API (fallback source).
 
     Returns:
         Dict mapping currency code to rate-per-USD. None for unavailable currencies.
@@ -76,6 +77,70 @@ def fetch_rates() -> dict[str, float]:
         else:
             result[cur] = None
     return result
+
+
+def fetch_rates_bot() -> dict[str, float]:
+    """Fetch today's rates via Bank of Tanzania (primary source).
+
+    BoT publishes daily TZS-quoted rates for EUR + USD (and ~40 other
+    currencies). PLN and TRY are derived via Frankfurter EUR cross-rate
+    since BoT does not reliably publish them.
+
+    If today is a weekend / holiday and BoT has no row yet, walks back up
+    to 6 days to find the most recent published rate.
+
+    Returns the same shape as ``fetch_rates_erapi`` so callers can stay
+    source-agnostic.
+    """
+    from datetime import timedelta
+
+    today = date.today()
+    bot_today: dict[str, float] | None = None
+    bot_data_for_cross: dict = {}
+    for offset in range(0, 7):
+        d = today - timedelta(days=offset)
+        chunk = fx_backfill.fetch_bot_chunk(d, d)
+        if chunk.get(d, {}).get("USD"):
+            bot_today = chunk[d]
+            bot_data_for_cross = chunk
+            break
+
+    if not bot_today or "USD" not in bot_today:
+        raise RuntimeError("BoT: no recent USD rate (last 7 days returned empty)")
+
+    tzs_per_usd = bot_today["USD"]
+    result: dict[str, float | None] = {"USD": 1.0, "TZS": tzs_per_usd}
+
+    for cur in ("EUR",):
+        v = bot_today.get(cur)
+        result[cur] = (tzs_per_usd / v) if v else None
+
+    # PLN + TRY via Frankfurter cross-rate.
+    try:
+        fr = fx_backfill.fetch_frankfurter_eur_to(("PLN", "TRY"), today - timedelta(days=7), today)
+        cross = fx_backfill.derive_via_eur_cross_rate(fr, bot_data_for_cross, ("PLN", "TRY"))
+        latest_cross = cross.get(max(cross)) if cross else {}
+        for cur in ("PLN", "TRY"):
+            tzs_per_cur = latest_cross.get(cur)
+            result[cur] = (tzs_per_usd / tzs_per_cur) if tzs_per_cur else None
+    except Exception:
+        result.setdefault("PLN", None)
+        result.setdefault("TRY", None)
+
+    return result
+
+
+def fetch_rates() -> tuple[dict[str, float], str]:
+    """Try BoT first, fall back to open.er-api.com on any failure.
+
+    Returns ``(rates_dict, source_label)`` where source_label is "BoT" or
+    "er-api". Raises if both sources fail — caller decides what to do.
+    """
+    try:
+        return fetch_rates_bot(), "BoT"
+    except Exception as e:
+        print(f"  [warn] BoT primary failed: {e}", file=sys.stderr)
+        return fetch_rates_erapi(), "er-api"
 
 
 def read_existing() -> list[dict]:
@@ -203,14 +268,15 @@ def main() -> int:
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
     today_str = date.today().isoformat()
 
-    print(f"[{ts}] cron_fx: fetching FX rates from {API_URL}...")
+    print(f"[{ts}] cron_fx: fetching FX rates (BoT primary, er-api fallback)...")
 
     try:
-        rates = fetch_rates()
+        rates, source = fetch_rates()
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, RuntimeError) as e:
-        print(f"  [error] Failed to fetch FX rates: {e}")
+        print(f"  [error] Both BoT and er-api failed: {e}")
         print("  Keeping existing fx_rates.csv unchanged.")
         return 1
+    print(f"  source: {source}")
 
     # Log fetched rates
     for cur, rate in rates.items():
