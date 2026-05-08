@@ -9,6 +9,27 @@ function renderFixedVarReport() {
     return FIXED_PREFIXES.some(p => cat === p || cat.startsWith(p));
   };
 
+  // Banner shown when the report has expenses but none of them matched any
+  // configured Fixed prefix — without this hint the user sees 100% Discretionary
+  // and may not realise their prefix list doesn't match their category names.
+  const noFixedWarning = (totFixed, totAll) => {
+    if (totFixed > 0 || totAll <= 0) return '';
+    const title = t('reports.fv.empty.title', {}, 'No expenses match your Fixed-cost prefixes');
+    const body  = t('reports.fv.empty.body',  {}, 'All expenses are being classified as Discretionary because no category matched any of your Fixed prefixes. Adjust the prefix list in');
+    const cta   = t('reports.fv.empty.cta',   {}, 'Settings → Reports');
+    return `
+      <div class="fv-empty-warning" style="background:var(--surface-soft, #fef3c7);border:1px solid var(--accent-soft, #f59e0b);border-radius:var(--radius-xs, 6px);padding:12px 14px;margin-bottom:14px;display:flex;gap:12px;align-items:flex-start;">
+        <div style="font-size:20px;flex-shrink:0;line-height:1;">&#x26A0;&#xFE0F;</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(title)}</div>
+          <div style="font-size:12px;line-height:1.45;">
+            ${escapeHtml(body)}
+            <a href="#settings" data-action="presetSettingsTab" data-arg1="reports" style="text-decoration:underline;font-weight:600;">${escapeHtml(cta)}</a>.
+          </div>
+        </div>
+      </div>`;
+  };
+
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
   const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
@@ -91,6 +112,7 @@ function renderFixedVarReport() {
 
     const content = document.getElementById('fv-content');
     content.innerHTML = `
+      ${noFixedWarning(totFixed, totAll)}
       <div class="report-section">
         <div class="report-section-title">${escapeHtml(t('reports.fv.title_monthly', { year, currency }, `Fixed vs. Discretionary ${year} — ${currency}`))}</div>
         <div class="income-grid">
@@ -191,9 +213,12 @@ function renderFixedVarReport() {
       }
       data.push({ year: y, fixed, disc, total: fixed + disc, fixedPct: (fixed + disc) > 0 ? (fixed / (fixed + disc) * 100) : 0 });
     }
+    const totFixedAll = data.reduce((s, d) => s + d.fixed, 0);
+    const totAllYears = data.reduce((s, d) => s + d.total, 0);
 
     const content = document.getElementById('fv-content');
     content.innerHTML = `
+      ${noFixedWarning(totFixedAll, totAllYears)}
       <div class="report-section">
         <div class="report-section-title">${escapeHtml(t('reports.fv.title_yearly', { currency }, `Fixed vs. Discretionary by Year — ${currency}`))}</div>
         <div class="income-grid">

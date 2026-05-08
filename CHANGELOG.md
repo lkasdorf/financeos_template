@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.1] - 2026-05-08
+
+First patch release after v1.3.0 — small but real UX gap surfaced while testing v1.3.0 fresh.
+
+### Added
+
+- **Discretionary vs. Fixed — empty-state warning.** When the report has expense data but **none** of the user's categories match any configured Fixed prefix, the chart shows everything as 100% Discretionary with no explanation why. The renderer now prepends a warning banner pointing to Settings → Reports so users can fix their prefix list. Affects both monthly and yearly views. New i18n keys `reports.fv.empty.{title,body,cta}` for EN + DE.
+
+### Changed
+
+- **Clearer hint for the Fixed-prefixes textarea.** The settings hint previously said "Use exact name or trailing colon for a prefix (e.g. 'Bills:')" — ambiguous about how `Rent` (no colon) and `Bills:` (with colon) differ. Now: "Trailing colon = whole subtree (e.g. 'Bills:' matches every Bills:* category). No colon = exact category name. Everything else → Discretionary." Empty textarea also shows a placeholder example.
+- **Setup-Wizard prefix section now has hint text.** The Setup-Wizard Step 6 rendered the Discretionary vs. Fixed textarea with **no hint at all** — users seeing it for the first time had to guess. Now uses the same hint i18n key as the Settings tab.
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
 ## [1.3.0] - 2026-05-08
 
 Promoted rc.17 to final. No code changes vs. v1.3.0-rc.17; this is the version-string bump and a final GitHub release. The full v1.3.0 series ran through 17 release candidates over 2026-05-07 and 2026-05-08, driven by a Windows-11 testing pass against a real MMEX file.

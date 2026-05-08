@@ -74,7 +74,7 @@ function _reportTabSections() {
     {
       key: 'discretionary_fixed',
       get title() { return t('settings.reports.disc_fixed.title', {}, 'Discretionary vs. Fixed'); },
-      get hint()  { return t('settings.reports.disc_fixed.hint', {}, 'Prefixes that mark a category as a fixed cost. Anything else is discretionary. Use exact name or trailing colon for a prefix (e.g. "Bills:").'); },
+      get hint()  { return t('settings.reports.disc_fixed.hint', {}, 'List prefixes that count as fixed costs (one per line). Trailing colon = whole subtree (e.g. "Bills:" matches every Bills:* category). No colon = exact category name. Everything else → Discretionary.'); },
       shape: 'prefixes',
     },
     {
@@ -216,7 +216,7 @@ function _renderPrefixSection(sec, node) {
     <div class="card" data-section="${sec.key}" data-shape="prefixes">
       <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
       <div class="c-mut" style="font-size:12px;margin:2px 0 8px;">${escapeHtml(sec.hint)}</div>
-      <textarea name="${sec.key}.fixed_prefixes" rows="6" style="width:100%;min-height:120px;padding:8px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
+      <textarea name="${sec.key}.fixed_prefixes" rows="6" placeholder="${escapeHtml(t('settings.reports.disc_fixed.placeholder', {}, 'e.g.\nRent\nBills:\nInsurance:'))}" style="width:100%;min-height:120px;padding:8px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
     </div>
   `;
 }

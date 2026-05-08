@@ -639,10 +639,17 @@ function renderReportsStep() {
     }
     if (sec.shape === 'prefixes') {
       const prefixes = node.fixed_prefixes || [];
+      const hintText = (typeof t === 'function')
+        ? t('settings.reports.disc_fixed.hint', {}, 'List prefixes that count as fixed costs (one per line). Trailing colon = whole subtree (e.g. "Bills:" matches every Bills:* category). No colon = exact category name. Everything else → Discretionary.')
+        : 'List prefixes that count as fixed costs (one per line). Trailing colon = whole subtree (e.g. "Bills:" matches every Bills:* category). No colon = exact category name. Everything else → Discretionary.';
+      const phText = (typeof t === 'function')
+        ? t('settings.reports.disc_fixed.placeholder', {}, 'e.g.\nRent\nBills:\nInsurance:')
+        : 'e.g.\nRent\nBills:\nInsurance:';
       return `
         <div class="setup-card-block" data-section="${sec.key}" data-shape="prefixes">
           <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
-          <textarea name="${sec.key}.fixed_prefixes" rows="5" style="width:100%;padding:6px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
+          <div class="c-mut" style="font-size:12px;margin:0 0 8px;line-height:1.4;">${escapeHtml(hintText)}</div>
+          <textarea name="${sec.key}.fixed_prefixes" rows="5" placeholder="${escapeHtml(phText)}" style="width:100%;padding:6px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
         </div>`;
     }
     return '';
