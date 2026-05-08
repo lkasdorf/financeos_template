@@ -59,8 +59,27 @@ import auth
 import backup
 import fuel
 import fx_backfill
+import setup_core
 import tx_engine
 from config_loader import get_default, get_reports_config, is_enabled, save_reports_config
+
+import re as _re
+
+# Matches src="..." or href="..." pointing at a .js or .css file. Used to
+# append a cache-busting ?v=<WIZARD_VERSION> query so a deploy invalidates
+# every browser's 1-hour static-asset cache without forcing the user to
+# hard-reload. The replacement skips absolute URLs (http://, https://, //,
+# data:) and any path that already carries a query string.
+_HTML_ASSET_RE = _re.compile(r'((?:src|href)=")([^"?]+\.(?:js|css))(")', _re.IGNORECASE)
+
+
+def _inject_cache_bust(html: str, version: str) -> str:
+    def repl(m):
+        url = m.group(2)
+        if url.startswith(("http://", "https://", "//", "data:")):
+            return m.group(0)
+        return f"{m.group(1)}{url}?v={version}{m.group(3)}"
+    return _HTML_ASSET_RE.sub(repl, html)
 
 # Map API paths to the feature flag that must be enabled to serve them.
 FEATURE_GATED_ROUTES = {
@@ -238,12 +257,59 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/data/crdb_data") and not is_enabled("crdb_recon"):
             self.send_error(404, "CRDB reconciliation disabled")
             return
+        # Cache-bust JS/CSS asset references in HTML responses. The browser
+        # caches /dashboard/*.{js,css} for 1 hour (see _cache_policy_for_path),
+        # so a deploy that ships a new setup.js wouldn't reach the user until
+        # the cache expired or they hard-reloaded. Appending ?v=<WIZARD_VERSION>
+        # to every script/link reference in the served HTML changes the URL
+        # on each release and forces a fresh fetch.
+        if self._serve_html_with_cache_bust():
+            return
         # Block the metals data files so the dashboard can't load them either.
         if (self.path.startswith("/data/metals_portfolio")
                 or self.path.startswith("/data/metal_price_history")) and not is_enabled("metals"):
             self.send_error(404, "Metals feature disabled")
             return
         super().do_GET()
+
+    def _serve_html_with_cache_bust(self) -> bool:
+        """Serve an HTML file with ?v=<WIZARD_VERSION> appended to every
+        script/link reference. Returns True if the request was handled.
+
+        Only triggers for paths that resolve to an .html file (or a directory
+        whose index.html exists). All other paths fall through to the normal
+        static handler.
+        """
+        # Strip query/fragment, decode, and let the parent class translate
+        # the URL to a filesystem path via its standard rules.
+        try:
+            from urllib.parse import unquote
+            raw = self.path.split("?", 1)[0].split("#", 1)[0]
+            fs_path = self.translate_path(unquote(raw))
+        except Exception:
+            return False
+
+        path_obj = Path(fs_path)
+        if path_obj.is_dir():
+            path_obj = path_obj / "index.html"
+        if not path_obj.is_file() or path_obj.suffix.lower() != ".html":
+            return False
+
+        try:
+            html = path_obj.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+        rewritten = _inject_cache_bust(html, setup_core.WIZARD_VERSION).encode("utf-8")
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(rewritten)))
+            self.end_headers()
+            self.wfile.write(rewritten)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected
+        return True
 
     # ── CORS ─────────────────────────────────────────────────────────────
 

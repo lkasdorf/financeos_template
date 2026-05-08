@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.5] - 2026-05-08
+
+### Fixed
+
+- **JS/CSS cache-busting on every release.** `serve.py` caches `/dashboard/*.{js,css}` for 1 hour to keep page reloads fast during a work session. The downside: a deploy that shipped a fixed `setup.js` wouldn't reach users until either the cache TTL expired or they manually hard-reloaded — meaning a real bug fix could appear "still broken" for an hour after the deploy. The HTML response handler now rewrites every `<script src="x.js">` / `<link href="x.css">` reference to `<script src="x.js?v=<WIZARD_VERSION>">`. Each release bump invalidates the cache for every browser automatically without losing the 1-hour cache benefit during normal use. Absolute URLs (CDN libs) and references that already carry a query string are left untouched.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.4` → `1.3.1-rc.5`
+
 ## [1.3.1-rc.4] - 2026-05-08
 
 Two follow-up fixes after rc.3 found-during-fresh-test:
