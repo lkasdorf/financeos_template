@@ -1403,11 +1403,14 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         body = self._read_json_body()
         target = body.get("target", "transactions")
         script = str(Path(__file__).parent / "backup.py")
+        # Suppress Windows console flash for child python (no-op on POSIX).
+        no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
         try:
             result = subprocess.run(
                 ["python", script, target],
                 capture_output=True, text=True, timeout=30,
                 cwd=str(Path(__file__).parent.parent),
+                **no_win,
             )
             output = (result.stdout + result.stderr).strip()
             self._respond_json(200, {"success": True, "message": output})
@@ -2238,15 +2241,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # Git status
         try:
             repo = tx_engine.DATA_DIR.parent
+            # Suppress Windows console flash on each git child (no-op on POSIX).
+            no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
             last_commit = subprocess.check_output(
                 ["git", "log", "-1", "--format=%h %s (%cr)"],
-                cwd=str(repo), timeout=5, stderr=subprocess.DEVNULL
+                cwd=str(repo), timeout=5, stderr=subprocess.DEVNULL,
+                **no_win,
             ).decode().strip()
             info["git_last_commit"] = last_commit
 
             status_out = subprocess.check_output(
                 ["git", "status", "--porcelain"],
-                cwd=str(repo), timeout=5, stderr=subprocess.DEVNULL
+                cwd=str(repo), timeout=5, stderr=subprocess.DEVNULL,
+                **no_win,
             ).decode().strip()
             info["git_clean"] = len(status_out) == 0
             info["git_dirty_files"] = len(status_out.splitlines()) if status_out else 0

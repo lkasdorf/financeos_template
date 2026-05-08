@@ -47,6 +47,12 @@ import config_loader  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 
+# Cross-platform "no console flash" subprocess kwargs. On Windows, Python's
+# default subprocess invocation pops up a transient console window for each
+# child process — visible to the user as a flash on every git commit. The
+# CREATE_NO_WINDOW flag (0x08000000) suppresses that. Non-Windows: no-op.
+_NO_WINDOW_KWARGS: dict = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
 
 # Cross-platform exclusive file lock for cross-process serialization of
 # transactions.csv rewrites. HTTPServer alone is single-threaded, but cron
@@ -1859,8 +1865,9 @@ def _trigger_async_sync() -> None:
             "close_fds": True,
         }
         if sys.platform == "win32":
-            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — child outlives parent
-            kwargs["creationflags"] = 0x00000008 | 0x00000200
+            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+            # — child outlives parent AND no console flash on the user's screen.
+            kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
         else:
             kwargs["start_new_session"] = True
         subprocess.Popen([sys.executable, str(cron_script)], **kwargs)
@@ -1919,25 +1926,30 @@ def git_commit(message: str, files: list[str] | None = None) -> bool:
                 subprocess.run(
                     ["git", "add"] + files,
                     cwd=REPO_ROOT, check=True, capture_output=True,
+                    **_NO_WINDOW_KWARGS,
                 )
             else:
                 subprocess.run(
                     ["git", "add", "data/transactions.csv", "data/prompt_log.csv"],
                     cwd=REPO_ROOT, check=True, capture_output=True,
+                    **_NO_WINDOW_KWARGS,
                 )
             result = subprocess.run(
                 ["git", "commit", "-m", message],
                 cwd=REPO_ROOT, capture_output=True, text=True,
+                **_NO_WINDOW_KWARGS,
             )
             if result.returncode != 0:
                 return False
             subprocess.run(
                 ["git", "pull", "origin", "main", "--rebase"],
                 cwd=REPO_ROOT, capture_output=True, timeout=15,
+                **_NO_WINDOW_KWARGS,
             )
             subprocess.run(
                 ["git", "push", "origin", "main"],
                 cwd=REPO_ROOT, capture_output=True, timeout=15,
+                **_NO_WINDOW_KWARGS,
             )
             return True
         except Exception:

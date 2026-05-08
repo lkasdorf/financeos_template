@@ -2,7 +2,8 @@ path,type,active,note,pnl,essential
 Income,income,true,,true,true
 Income:Salary,income,true,Regular employment income,true,true
 Income:Bonus,income,true,,true,false
-Income:Investments,income,true,"Dividends, interest, capital gains",true,false
+Income:Dividends,income,true,Stock / fund / ETF dividend distributions,true,false
+Income:Investments,income,true,Capital gains and interest (dividends have their own category),true,false
 Income:Other,income,true,Catch-all for one-off income,true,false
 Bills,expense,true,,true,true
 Bills:Electricity,expense,true,,true,true

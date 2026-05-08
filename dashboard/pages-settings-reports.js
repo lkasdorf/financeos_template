@@ -85,6 +85,7 @@ function _reportTabSections() {
       buckets: [
         { id: 'salary',            get label() { return t('settings.reports.income_sources.salary',            {}, 'Salary'); } },
         { id: 'interest',          get label() { return t('settings.reports.income_sources.interest',          {}, 'Interest'); } },
+        { id: 'dividends',         get label() { return t('settings.reports.income_sources.dividends',         {}, 'Dividends'); } },
         { id: 'investments_sales', get label() { return t('settings.reports.income_sources.investments_sales', {}, 'Investments & Sales'); } },
         { id: 'reimbursement',     get label() { return t('settings.reports.income_sources.reimbursement',     {}, 'Reimbursement'); } },
         { id: 'refunds',           get label() { return t('settings.reports.income_sources.refunds',           {}, 'Refunds'); } },

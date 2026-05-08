@@ -907,7 +907,7 @@ function renderIncomeSourcesReport() {
       // Generic-bucket lookup (config-driven). Iterate buckets in a fixed
       // priority order so a category mapped to multiple buckets resolves
       // deterministically.
-      for (const bid of ['salary', 'interest', 'investments_sales', 'reimbursement', 'refunds']) {
+      for (const bid of ['salary', 'interest', 'dividends', 'investments_sales', 'reimbursement', 'refunds']) {
         const cats = (incBuckets[bid] && incBuckets[bid].categories) || [];
         if (cats.includes(cat)) return bid;
       }
@@ -935,6 +935,7 @@ function renderIncomeSourcesReport() {
       reimbursement: '#a3e635',
       refunds: '#94a3b8',
       interest: '#10b981',
+      dividends: '#0ea5e9',
       investments_sales: '#06b6d4',
       other: '#6b7280',
     };
@@ -943,6 +944,7 @@ function renderIncomeSourcesReport() {
       reimbursement: 'Reimbursement',
       refunds: 'Refunds',
       interest: 'Interest',
+      dividends: 'Dividends',
       investments_sales: 'Investments & Sales',
       other: 'Other Income',
     };
@@ -952,7 +954,7 @@ function renderIncomeSourcesReport() {
     // installs that haven't gone through the wizard's income-classification step).
     const salaryHasCategories = ((incBuckets.salary && incBuckets.salary.categories) || []).length > 0;
     const genericOrder = (salaryHasCategories ? ['salary'] : [])
-      .concat(['reimbursement', 'refunds', 'interest', 'investments_sales', 'other']);
+      .concat(['reimbursement', 'refunds', 'interest', 'dividends', 'investments_sales', 'other']);
     const sourceOrder = [...businessKeys, ...genericOrder];
     const sourceFallback = { ...businessFallbacks, ...staticFallback };
     const sourceLabel = (k) => t(`reports.incsrc.source.${k}`, {}, sourceFallback[k] || k);

@@ -63,6 +63,7 @@ window.REPORTS_CONFIG = {
     buckets: {
       salary:            { categories: [] },
       interest:          { categories: ['Income:Interest'] },
+      dividends:         { categories: ['Income:Dividends'] },
       investments_sales: { categories: ['Income:Investments', 'Income:Sales'] },
       reimbursement:     { categories: ['Income:Reimbursement'] },
       refunds:           { categories: ['Income:Refund'] },

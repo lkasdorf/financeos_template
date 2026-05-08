@@ -18,6 +18,22 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.3] - 2026-05-08
+
+Two small but visible improvements landed in the same RC: a missing income classification, and a Windows-only papercut.
+
+### Added
+
+- **Dividends as a first-class income source.** Setup-Wizard Step 6 + Settings → Reports now expose **Dividends** as its own bucket alongside Salary / Interest / Investments & Sales / Reimbursement / Refunds. The Income Sources Breakdown report renders a 6th column for it, and the seed categories include `Income:Dividends` ("Stock / fund / ETF dividend distributions"). Previously dividends had to be lumped into `Income:Investments` together with capital gains and interest — fine for accounting but useless for "where does my income come from?" reporting.
+
+### Fixed
+
+- **No more Windows console flash on every transaction save.** Each `git commit` issued by FinanceOS used to pop a transient console window on Windows because Python's default subprocess invocation creates one. The flash was visible whenever a user added / edited / deleted a transaction (the auto-commit path), or when the dashboard ran a backup or git-status check. Added `creationflags=CREATE_NO_WINDOW` to every subprocess invocation that runs git or python in `tx_engine.py`, `cron_commit.py`, and `serve.py`. POSIX behaviour unchanged (the flag is no-op on non-Windows).
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.2` → `1.3.1-rc.3`
+
 ## [1.3.1-rc.2] - 2026-05-08
 
 Multi-currency forks were dependent on the daily `cron_fx.py` to accumulate FX history over time — fresh forks rendered historical reports with today's rates retroactively applied to past months. This RC fixes that with two pieces:

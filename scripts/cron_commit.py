@@ -34,6 +34,11 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+# CREATE_NO_WINDOW (0x08000000): suppress the Windows console flash on every
+# subprocess invocation. Each git child call would otherwise pop a transient
+# console window visible to the user. No-op on POSIX.
+_NO_WINDOW_KWARGS: dict = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCK_PATH = REPO_ROOT / "data" / ".transactions.lock"
 
@@ -95,6 +100,7 @@ def run(cmd: list[str], check: bool = False, timeout: int = 30):
         text=True,
         check=check,
         timeout=timeout,
+        **_NO_WINDOW_KWARGS,
     )
 
 

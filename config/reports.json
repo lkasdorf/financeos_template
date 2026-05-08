@@ -124,6 +124,7 @@
     "buckets": {
       "salary":            { "label": "Salary",            "categories": [] },
       "interest":          { "label": "Interest",          "categories": ["Income:Interest"] },
+      "dividends":         { "label": "Dividends",         "categories": ["Income:Dividends"] },
       "investments_sales": { "label": "Investments & Sales", "categories": ["Income:Investments", "Income:Sales"] },
       "reimbursement":     { "label": "Reimbursement",     "categories": ["Income:Reimbursement"] },
       "refunds":           { "label": "Refunds",           "categories": ["Income:Refund"] }

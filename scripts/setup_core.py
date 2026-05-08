@@ -24,7 +24,7 @@ from typing import Any
 
 # Schema version for ``data/.setup_state.json`` — bump when fields change.
 SETUP_STATE_SCHEMA_VERSION = 1
-WIZARD_VERSION = "1.3.1-rc.2"
+WIZARD_VERSION = "1.3.1-rc.3"
 
 # CSV headers — must match data/*.csv exactly. Single source of truth lives
 # in docs/schema.md; these constants mirror it.
@@ -85,7 +85,8 @@ EMPTY_SEED_CATEGORIES: list[dict[str, str]] = [
     {"path": "Income", "type": "income", "active": "true", "note": "", "pnl": "true", "essential": "true"},
     {"path": "Income:Salary", "type": "income", "active": "true", "note": "Regular employment income", "pnl": "true", "essential": "true"},
     {"path": "Income:Bonus", "type": "income", "active": "true", "note": "", "pnl": "true", "essential": "false"},
-    {"path": "Income:Investments", "type": "income", "active": "true", "note": "Dividends, interest, capital gains", "pnl": "true", "essential": "false"},
+    {"path": "Income:Dividends", "type": "income", "active": "true", "note": "Stock / fund / ETF dividend distributions", "pnl": "true", "essential": "false"},
+    {"path": "Income:Investments", "type": "income", "active": "true", "note": "Capital gains and interest (dividends have their own category)", "pnl": "true", "essential": "false"},
     {"path": "Income:Other", "type": "income", "active": "true", "note": "Catch-all for one-off income", "pnl": "true", "essential": "false"},
     # Bills
     {"path": "Bills", "type": "expense", "active": "true", "note": "", "pnl": "true", "essential": "true"},

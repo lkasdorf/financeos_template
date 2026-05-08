@@ -516,6 +516,7 @@ const REPORTS_STEP_SECTIONS = [
     key: 'income_sources', title: 'Income Sources Breakdown', shape: 'buckets',
     buckets: [
       { id: 'salary', label: 'Salary' }, { id: 'interest', label: 'Interest' },
+      { id: 'dividends', label: 'Dividends' },
       { id: 'investments_sales', label: 'Investments & Sales' },
       { id: 'reimbursement', label: 'Reimbursement' }, { id: 'refunds', label: 'Refunds' },
     ],
