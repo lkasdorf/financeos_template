@@ -81,6 +81,68 @@ def _inject_cache_bust(html: str, version: str) -> str:
         return f"{m.group(1)}{url}?v={version}{m.group(3)}"
     return _HTML_ASSET_RE.sub(repl, html)
 
+
+# ── FX backfill job registry ────────────────────────────────────────────────
+# In-memory map of job_id -> status dict. Survives across requests but not
+# across server restart — that is acceptable for a feature that is normally
+# either fast (a few seconds delta) or rare (multi-year seed). On restart
+# the user just re-runs from Settings → Currency.
+
+_fx_jobs: dict[str, dict] = {}
+_fx_jobs_lock = threading.Lock()
+_FX_JOB_TTL_SECONDS = 24 * 3600  # drop completed jobs after a day
+
+
+def _fx_jobs_gc() -> None:
+    """Drop jobs older than the TTL so the dict can't leak memory."""
+    cutoff = time.time() - _FX_JOB_TTL_SECONDS
+    with _fx_jobs_lock:
+        for jid in list(_fx_jobs.keys()):
+            if _fx_jobs[jid].get("finished_at", _fx_jobs[jid]["started_at"]) < cutoff:
+                _fx_jobs.pop(jid, None)
+
+
+def _fx_run_job(job_id: str, since, until) -> None:
+    """Worker that runs the actual backfill and writes the result into _fx_jobs."""
+    try:
+        existing = fx_backfill._read_existing(fx_backfill.FX_HISTORY_PATH)
+        bot_data = fx_backfill.fetch_bot_range(since, until)
+        cross_data: dict = {}
+        frankfurter_warning = None
+        try:
+            fr = fx_backfill.fetch_frankfurter_eur_to(fx_backfill.FRANKFURTER_CURRENCIES, since, until)
+            cross_data = fx_backfill.derive_via_eur_cross_rate(
+                fr, bot_data, fx_backfill.FRANKFURTER_CURRENCIES,
+            )
+        except Exception as e:
+            frankfurter_warning = str(e)
+
+        merged, new_dates, updated_dates = fx_backfill.merge(existing, bot_data, cross_data)
+
+        if new_dates or updated_dates:
+            try:
+                backup.backup_file("fx_rates_history", fx_backfill.FX_HISTORY_PATH)
+            except Exception:
+                pass
+            fx_backfill.write_csv(fx_backfill.FX_HISTORY_PATH, merged)
+
+        with _fx_jobs_lock:
+            _fx_jobs[job_id].update({
+                "status": "done",
+                "finished_at": time.time(),
+                "new_dates": new_dates,
+                "updated_dates": updated_dates,
+                "total": len(merged),
+                "frankfurter_warning": frankfurter_warning,
+            })
+    except Exception as e:
+        with _fx_jobs_lock:
+            _fx_jobs[job_id].update({
+                "status": "error",
+                "finished_at": time.time(),
+                "error": str(e),
+            })
+
 # Map API paths to the feature flag that must be enabled to serve them.
 FEATURE_GATED_ROUTES = {
     "/api/debts/list": "debt_tracking",
@@ -478,6 +540,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/reports-config/get": self.handle_reports_config_get,
             "/api/reports-config/save": self.handle_reports_config_save,
             "/api/fx/backfill": self.handle_fx_backfill,
+            "/api/fx/backfill/status": self.handle_fx_backfill_status,
             "/api/branding/get": self.handle_branding_get,
             "/api/branding/save": self.handle_branding_save,
             "/api/health": self.handle_health,
@@ -2125,16 +2188,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
     # needing to know the script exists.
 
     def handle_fx_backfill(self):
-        """Run an FX backfill. Body: { since?: YYYY-MM-DD, until?: YYYY-MM-DD }.
+        """Kick off an FX backfill in the background. Body: { since?, until? }.
 
         Both bounds are optional — ``since`` defaults to "last CSV date + 1"
-        (auto-detect), ``until`` defaults to today. The handler runs
-        synchronously: a typical delta call (a few days since the last
-        snapshot) finishes in under 5 seconds. A long seed (years) may
-        block the request for a few minutes, which is acceptable for an
-        admin-triggered Settings action.
+        (auto-detect), ``until`` defaults to today. The handler returns
+        immediately with a job_id; the actual work runs in a daemon thread
+        so the user can navigate away from the Settings page without losing
+        progress, and a multi-year seed (which can take several minutes)
+        does not tie up the HTTP keep-alive connection.
+
+        Poll ``/api/fx/backfill/status`` with the returned ``job_id`` to
+        watch progress and pick up the merge summary on completion.
         """
-        from datetime import date, datetime, timedelta
+        from datetime import date, datetime
 
         body = self._read_json_body() or {}
 
@@ -2160,50 +2226,49 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if until is None:
             until = date.today()
         if since > until:
-            self._respond_json(200, {"ok": True, "since": since.isoformat(), "until": until.isoformat(),
-                                      "new_dates": 0, "updated_dates": 0, "total": len(existing),
-                                      "note": "nothing to do"})
+            self._respond_json(200, {
+                "ok": True,
+                "status": "done",
+                "since": since.isoformat(), "until": until.isoformat(),
+                "new_dates": 0, "updated_dates": 0, "total": len(existing),
+                "note": "nothing to do",
+            })
             return
 
-        try:
-            bot_data = fx_backfill.fetch_bot_range(since, until)
-            cross_data = {}
-            try:
-                fr = fx_backfill.fetch_frankfurter_eur_to(fx_backfill.FRANKFURTER_CURRENCIES, since, until)
-                cross_data = fx_backfill.derive_via_eur_cross_rate(
-                    fr, bot_data, fx_backfill.FRANKFURTER_CURRENCIES,
-                )
-            except Exception as e:
-                # Frankfurter outage shouldn't kill the whole call —
-                # BoT-only fill is still useful.
-                cross_data = {}
-                frankfurter_warning = str(e)
-            else:
-                frankfurter_warning = None
-
-            merged, new_dates, updated_dates = fx_backfill.merge(existing, bot_data, cross_data)
-
-            if new_dates or updated_dates:
-                try:
-                    backup.backup_file("fx_rates_history", fx_backfill.FX_HISTORY_PATH)
-                except Exception:
-                    pass  # backup failure shouldn't block the write
-                fx_backfill.write_csv(fx_backfill.FX_HISTORY_PATH, merged)
-        except Exception as e:
-            self._respond_json(502, {"error": f"fx backfill failed: {e}"})
-            return
-
-        resp = {
+        _fx_jobs_gc()
+        job_id = f"fx-{int(time.time())}-{secrets.token_hex(4)}"
+        with _fx_jobs_lock:
+            _fx_jobs[job_id] = {
+                "status": "running",
+                "since": since.isoformat(),
+                "until": until.isoformat(),
+                "started_at": time.time(),
+            }
+        threading.Thread(target=_fx_run_job, args=(job_id, since, until), daemon=True).start()
+        self._respond_json(202, {
             "ok": True,
+            "status": "running",
+            "job_id": job_id,
             "since": since.isoformat(),
             "until": until.isoformat(),
-            "new_dates": new_dates,
-            "updated_dates": updated_dates,
-            "total": len(merged),
-        }
-        if frankfurter_warning:
-            resp["frankfurter_warning"] = frankfurter_warning
-        self._respond_json(200, resp)
+        })
+
+    def handle_fx_backfill_status(self):
+        """Return the current state of a backfill job. Body: { job_id }."""
+        body = self._read_json_body() or {}
+        job_id = body.get("job_id")
+        if not job_id:
+            self._respond_json(400, {"error": "job_id is required"})
+            return
+        with _fx_jobs_lock:
+            job = _fx_jobs.get(job_id)
+            snapshot = dict(job) if job else None
+        if snapshot is None:
+            self._respond_json(404, {"error": "job not found", "job_id": job_id})
+            return
+        snapshot["ok"] = True
+        snapshot["job_id"] = job_id
+        self._respond_json(200, snapshot)
 
     # ── API: Branding (display name + accent color) ──────────────────
     # Settings → Branding writes through here. The setup wizard populates

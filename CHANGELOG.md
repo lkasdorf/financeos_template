@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.6] - 2026-05-08
+
+### Changed
+
+- **FX backfill is now a background job — leave the page, come back later.** Previously `POST /api/fx/backfill` ran synchronously and the user had to keep the Settings → Currency tab open until completion (a few seconds for a delta, several minutes for a multi-year seed). The endpoint now returns immediately with a `job_id` and runs the backfill in a daemon thread; the result lives in an in-memory job registry. The frontend persists the active `job_id` to `localStorage` and polls a new `/api/fx/backfill/status` endpoint every 3 seconds — navigating away from Settings (or even closing the browser) does not stop the work, and re-opening Settings → Currency picks up the same job and shows its result.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.5` → `1.3.1-rc.6`
+
 ## [1.3.1-rc.5] - 2026-05-08
 
 ### Fixed

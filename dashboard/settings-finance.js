@@ -88,20 +88,28 @@ function renderFxRatesTab() {
       <div id="fx-bf-status" class="mt-12"></div>
     </div>
   `;
+
+  // If a backfill job is still running from a previous tab visit (or from
+  // an earlier session), resume polling so the user sees its result.
+  _fxBackfillResumeIfActive();
 }
+
+// Background-job pattern: kick off via POST → localStorage stores the
+// job_id so navigating away/back resumes polling → poll every 3s until
+// status flips to done/error. The user can leave the Settings page
+// (or even close the browser) and the backend keeps running; coming
+// back to Settings → Currency picks up the same job and shows its result.
+const _FX_JOB_KEY = 'lp-fx-backfill-job-id';
+let _fxPollTimer = null;
 
 async function runFxBackfill() {
   const sinceEl = document.getElementById('fx-bf-since');
   const untilEl = document.getElementById('fx-bf-until');
-  const statusEl = document.getElementById('fx-bf-status');
-  const btn = document.getElementById('fx-bf-run');
-
   const body = {};
   if (sinceEl.value) body.since = sinceEl.value;
   if (untilEl.value) body.until = untilEl.value;
 
-  btn.disabled = true;
-  statusEl.innerHTML = `<div class="atx-status">${escapeHtml(t('settings.fxbackfill.running', {}, 'Fetching… this can take a few seconds for a delta, or several minutes for a multi-year seed.'))}</div>`;
+  _fxBackfillSetRunningUI();
 
   try {
     const res = await fetch('/api/fx/backfill', {
@@ -113,21 +121,111 @@ async function runFxBackfill() {
     if (!res.ok || !data.ok) {
       throw new Error(data.error || `HTTP ${res.status}`);
     }
-    const summary = t(
-      'settings.fxbackfill.done',
-      data,
-      `Done. ${data.since} → ${data.until}: +${data.new_dates} new, ${data.updated_dates} filled, ${data.total} total rows.`,
-    );
-    let html = `<div class="atx-status success">${escapeHtml(summary)}</div>`;
-    if (data.frankfurter_warning) {
-      html += `<div class="atx-status warning" style="margin-top:8px;font-size:11px;">Frankfurter: ${escapeHtml(data.frankfurter_warning)} — PLN/TRY cells skipped.</div>`;
+    if (data.status === 'done') {
+      // Trivial range — backend short-circuited and returned the summary
+      // synchronously without spawning a job. Render directly.
+      _fxBackfillRenderResult(data);
+      return;
     }
-    statusEl.innerHTML = html;
+    if (data.job_id) {
+      try { localStorage.setItem(_FX_JOB_KEY, data.job_id); } catch { /* ignore */ }
+      _fxBackfillStartPolling(data.job_id);
+    }
   } catch (e) {
-    statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.fxbackfill.error', { error: String(e.message || e) }, `Backfill failed: ${e.message || e}`))}</div>`;
-  } finally {
-    btn.disabled = false;
+    _fxBackfillRenderError(String(e.message || e));
   }
+}
+
+function _fxBackfillSetRunningUI() {
+  const statusEl = document.getElementById('fx-bf-status');
+  const btn = document.getElementById('fx-bf-run');
+  if (btn) btn.disabled = true;
+  if (statusEl) {
+    statusEl.innerHTML = `<div class="atx-status">${escapeHtml(t('settings.fxbackfill.running', {}, 'Fetching… you can leave this page; the dashboard will pick up where it left off when you come back.'))}</div>`;
+  }
+}
+
+function _fxBackfillStartPolling(jobId) {
+  if (_fxPollTimer) clearInterval(_fxPollTimer);
+  const tick = async () => {
+    try {
+      const res = await fetch('/api/fx/backfill/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId }),
+      });
+      const data = await res.json();
+      if (res.status === 404) {
+        // Server restarted between kick-off and poll → job is gone.
+        try { localStorage.removeItem(_FX_JOB_KEY); } catch { /* ignore */ }
+        _fxBackfillStopPolling();
+        _fxBackfillRenderError(t('settings.fxbackfill.lost', {}, 'Job lost (server restarted). Re-run the backfill.'));
+        return;
+      }
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      if (data.status === 'running') return;
+      _fxBackfillStopPolling();
+      try { localStorage.removeItem(_FX_JOB_KEY); } catch { /* ignore */ }
+      if (data.status === 'error') {
+        _fxBackfillRenderError(data.error || 'unknown error');
+      } else {
+        _fxBackfillRenderResult(data);
+      }
+    } catch (e) {
+      // Transient network error — keep polling, the next tick may succeed.
+      console.warn('fx backfill poll failed:', e);
+    }
+  };
+  tick();
+  _fxPollTimer = setInterval(tick, 3000);
+}
+
+function _fxBackfillStopPolling() {
+  if (_fxPollTimer) {
+    clearInterval(_fxPollTimer);
+    _fxPollTimer = null;
+  }
+  const btn = document.getElementById('fx-bf-run');
+  if (btn) btn.disabled = false;
+}
+
+function _fxBackfillRenderResult(data) {
+  const statusEl = document.getElementById('fx-bf-status');
+  const btn = document.getElementById('fx-bf-run');
+  if (btn) btn.disabled = false;
+  if (!statusEl) return;
+  const summary = t(
+    'settings.fxbackfill.done',
+    data,
+    `Done. ${data.since} → ${data.until}: +${data.new_dates} new, ${data.updated_dates} filled, ${data.total} total rows.`,
+  );
+  let html = `<div class="atx-status success">${escapeHtml(summary)}</div>`;
+  if (data.frankfurter_warning) {
+    html += `<div class="atx-status warning" style="margin-top:8px;font-size:11px;">Frankfurter: ${escapeHtml(data.frankfurter_warning)} — PLN/TRY cells skipped.</div>`;
+  }
+  statusEl.innerHTML = html;
+}
+
+function _fxBackfillRenderError(msg) {
+  const statusEl = document.getElementById('fx-bf-status');
+  const btn = document.getElementById('fx-bf-run');
+  if (btn) btn.disabled = false;
+  if (statusEl) {
+    statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.fxbackfill.error', { error: msg }, `Backfill failed: ${msg}`))}</div>`;
+  }
+}
+
+// Resume polling on tab open if there's an active job from a previous
+// page-load. Called from renderFxRatesTab right after the tab DOM is
+// in place.
+function _fxBackfillResumeIfActive() {
+  let jobId = null;
+  try { jobId = localStorage.getItem(_FX_JOB_KEY); } catch { /* ignore */ }
+  if (!jobId) return;
+  _fxBackfillSetRunningUI();
+  _fxBackfillStartPolling(jobId);
 }
 
 async function applyFxOverrides() {
