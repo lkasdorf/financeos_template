@@ -1404,10 +1404,17 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         target = body.get("target", "transactions")
         script = str(Path(__file__).parent / "backup.py")
         # Suppress Windows console flash for child python (no-op on POSIX).
+        # Use pythonw.exe on Windows so the child has no console at all
+        # (python.exe still flashes briefly even with CREATE_NO_WINDOW).
         no_win = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+        py = sys.executable
+        if sys.platform == "win32":
+            cand = Path(sys.executable).with_name("pythonw.exe")
+            if cand.exists():
+                py = str(cand)
         try:
             result = subprocess.run(
-                ["python", script, target],
+                [py, script, target],
                 capture_output=True, text=True, timeout=30,
                 cwd=str(Path(__file__).parent.parent),
                 **no_win,

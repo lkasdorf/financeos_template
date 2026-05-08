@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.4] - 2026-05-08
+
+Two follow-up fixes after rc.3 found-during-fresh-test:
+
+### Fixed
+
+- **Dividends bucket appeared in the UI but was empty in the wizard.** rc.3 added the new bucket to the section spec and to the shipped `config/reports.json`, but two hardcoded defaults blocks were overlooked: `scripts/config_loader.py` REPORTS_DEFAULTS (Python-side fallback) and `dashboard/setup.js`'s own state initial block (used to pre-fill the Setup-Wizard Step 6 form). The Dividends row showed up but with no pre-selected category. Both now seed `Income:Dividends`.
+- **Windows console flash made truly invisible.** rc.3's `CREATE_NO_WINDOW` flag suppresses the new console window, but `python.exe` still flashes briefly during console-host attach/detach on Windows 11. The detached `_trigger_async_sync` spawn and `serve.py`'s backup spawn now use `pythonw.exe` (the windowless Python interpreter) when available — no flicker even on a stress-clicked tag-toggle. POSIX behaviour unchanged.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.3` → `1.3.1-rc.4`
+
 ## [1.3.1-rc.3] - 2026-05-08
 
 Two small but visible improvements landed in the same RC: a missing income classification, and a Windows-only papercut.

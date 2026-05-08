@@ -54,6 +54,21 @@ DATA_DIR = REPO_ROOT / "data"
 _NO_WINDOW_KWARGS: dict = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
 
 
+def _windowless_python() -> str:
+    """Pick the python interpreter that does NOT pop a console window.
+
+    On Windows, ``python.exe`` is a console application — even with
+    ``CREATE_NO_WINDOW`` it briefly attaches/detaches a console host
+    (visible as a flash). ``pythonw.exe`` is the GUI variant that has
+    no console at all. Use it for detached background spawns where
+    we have no use for the console anyway.
+    """
+    if sys.platform != "win32":
+        return sys.executable
+    candidate = Path(sys.executable).with_name("pythonw.exe")
+    return str(candidate) if candidate.exists() else sys.executable
+
+
 # Cross-platform exclusive file lock for cross-process serialization of
 # transactions.csv rewrites. HTTPServer alone is single-threaded, but cron
 # jobs (cron_sched.py) and the PWA sync path run concurrently and all
@@ -1870,7 +1885,7 @@ def _trigger_async_sync() -> None:
             kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen([sys.executable, str(cron_script)], **kwargs)
+        subprocess.Popen([_windowless_python(), str(cron_script)], **kwargs)
     except Exception as e:
         # Never let an event-sync spawn failure break the user's request —
         # the */5 cron remains the safety net. But surface the failure on
