@@ -135,7 +135,11 @@ async function renderAccountsSettingsTab() {
   const labelOn = t('common.actions.on', {}, 'On');
   const labelOff = t('common.actions.off', {}, 'Off');
   const nwHeader = t('settings.accounts.col_net_worth', {}, 'In Net Worth');
-  let html = '';
+  let html = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px;">
+      <button class="btn-save" data-action="showAccountAddModal">${escapeHtml(t('settings.accounts.add', {}, '+ Add Account'))}</button>
+    </div>
+  `;
   for (const g of groups) {
     if (!g.items.length) continue;
     const rows = g.items.map(a => {
@@ -185,6 +189,124 @@ async function toggleAccountNetWorth(alias, currentFlag) {
     if (acc) acc.include_in_net_worth = next;
   }
   renderAccountsSettingsTab();
+}
+
+// Open the "Add Account" modal. Distinct values for type / owner /
+// currency are derived from the existing accounts so the dropdowns
+// match the install's vocabulary, but each comes with a sensible seed
+// list for fresh installs that have only the wizard-seeded accounts.
+async function showAccountAddModal() {
+  const allAccs = (typeof state !== 'undefined' && state.accounts) ? state.accounts : [];
+  const distinct = (key, fallbacks) => {
+    const seen = new Set(allAccs.map(a => a[key]).filter(Boolean));
+    for (const f of fallbacks) seen.add(f);
+    return [...seen].sort();
+  };
+  const typeOptions = distinct('type', ['bank', 'cash', 'savings', 'credit_card', 'mobile_money', 'pass_through']);
+  const ownerOptions = distinct('owner', ['self']);
+  const currencyOptions = distinct('currency', ['EUR', 'USD']);
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>${escapeHtml(t('settings.accounts.modal.add_title', {}, 'Add new account'))}</h3>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('settings.accounts.modal.label_alias', {}, 'Alias')}</label>
+          <input type="text" id="acc-add-alias" placeholder="${escapeHtml(t('settings.accounts.modal.alias_ph', {}, 'short_id'))}" autocomplete="off">
+        </div>
+        <div class="atx-field fx2"><label>${t('common.col.name', {}, 'Name')}</label>
+          <input type="text" id="acc-add-name" placeholder="${escapeHtml(t('settings.accounts.modal.name_ph', {}, 'My Bank Checking'))}">
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('common.col.currency', {}, 'Currency')}</label>
+          <select id="acc-add-currency">${currencyOptions.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}</select>
+        </div>
+        <div class="atx-field fx1"><label>${t('common.col.type', {}, 'Type')}</label>
+          <select id="acc-add-type">${typeOptions.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}</select>
+        </div>
+        <div class="atx-field fx1"><label>${t('settings.accounts.col_owner', {}, 'Owner')}</label>
+          <select id="acc-add-owner">${ownerOptions.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('settings.accounts.modal.label_initial_balance', {}, 'Initial Balance')}</label>
+          <input type="text" id="acc-add-balance" value="0">
+        </div>
+        <div class="atx-field fx1"><label>${t('settings.accounts.modal.label_initial_balance_date', {}, 'Initial Balance Date')}</label>
+          <input type="date" id="acc-add-baldate" value="${today}">
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field"><label>${t('settings.accounts.modal.label_notes', {}, 'Notes')}</label>
+          <input type="text" id="acc-add-notes">
+        </div>
+      </div>
+      <div class="atx-row">
+        <div class="atx-field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" id="acc-add-in-net-worth" checked>
+            <span>${t('settings.accounts.modal.label_in_net_worth', {}, 'Include in Net Worth')}</span>
+          </label>
+        </div>
+      </div>
+      <div id="acc-add-status-msg"></div>
+      <div class="modal-footer">
+        <div class="btn-left"></div>
+        <div class="btn-right">
+          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button class="btn-save" data-action="saveAccountAdd">${t('common.actions.save', {}, 'Save')}</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
+  document.addEventListener('keydown', overlay._escHandler);
+  setTimeout(() => { const el = document.getElementById('acc-add-alias'); if (el) el.focus(); }, 30);
+}
+
+async function saveAccountAdd() {
+  const payload = {
+    alias: document.getElementById('acc-add-alias').value.trim().toLowerCase(),
+    name: document.getElementById('acc-add-name').value.trim(),
+    currency: document.getElementById('acc-add-currency').value,
+    type: document.getElementById('acc-add-type').value,
+    owner: document.getElementById('acc-add-owner').value,
+    initial_balance: parseAmountInputStr(document.getElementById('acc-add-balance').value || '0'),
+    initial_balance_date: document.getElementById('acc-add-baldate').value,
+    notes: document.getElementById('acc-add-notes').value.trim(),
+    include_in_net_worth: document.getElementById('acc-add-in-net-worth').checked ? 'true' : 'false',
+  };
+  const statusEl = document.getElementById('acc-add-status-msg');
+  statusEl.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${t('common.saving', {}, 'Saving...')}</div>`;
+  try {
+    const res = await fetch('/api/accounts/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.error) {
+      statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`;
+      return;
+    }
+    closeModal();
+    // Patch state in-memory so the new account shows up immediately
+    // without a full boot() (which would jump tabs, see saveAccountEdit).
+    if (typeof state !== 'undefined' && state.accounts && data.account) {
+      state.accounts.push(data.account);
+    }
+    renderAccountsSettingsTab();
+  } catch (e) {
+    statusEl.innerHTML = `<div class="atx-status error">${t('common.save_failed', { msg: escapeHtml(e.message) }, `Save failed: ${escapeHtml(e.message)}`)}</div>`;
+  }
 }
 
 async function showAccountEditModal(alias) {

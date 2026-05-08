@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.7] - 2026-05-08
+
+### Added
+
+- **Add Account UI** in Settings → Accounts. Until now, accounts could only be created via the Setup-Wizard's MMEX import or by hand-editing `data/accounts.csv` — a real gap once a user wanted to onboard a new account post-setup. The "+ Add Account" button opens a modal with alias / name / currency / type / owner / initial balance / initial balance date / notes / "include in Net Worth" fields. Validation enforces alias uniqueness (lowercase letters/digits/underscore, must start with a letter) and ISO-3 currency codes. Type / owner / currency dropdowns seed from the install's existing distinct values plus a fallback list, so a fresh fork already sees `bank` / `cash` / `savings` / `credit_card` / `mobile_money` / `pass_through` before any account exists. New `POST /api/accounts/add` writes via the standard atomic-CSV + backup + git-commit cascade. Hard-delete is intentionally NOT included — the existing `status='archived'` flow stays the canonical "remove" path because it preserves the transaction audit trail.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.6` → `1.3.1-rc.7`
+
 ## [1.3.1-rc.6] - 2026-05-08
 
 ### Changed

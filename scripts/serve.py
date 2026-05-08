@@ -516,6 +516,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/goals/add": self.handle_goals_add,
             "/api/goals/update": self.handle_goals_update,
             "/api/goals/delete": self.handle_goals_delete,
+            "/api/accounts/add": self.handle_accounts_add,
             "/api/accounts/update": self.handle_accounts_update,
             "/api/accounts/rename": self.handle_accounts_rename,
             "/api/backup/create": self.handle_backup_create,
@@ -1355,6 +1356,116 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         self._respond_json(200, {"success": True})
 
     # ── API: /api/accounts/update ──────────────────────────────────────
+
+    def handle_accounts_add(self):
+        """Append a new account row to data/accounts.csv.
+
+        Body: ``{alias, name, currency, type, owner, status?, pass_through_payee?,
+        initial_balance?, initial_balance_date?, include_in_net_worth?, notes?}``.
+
+        Required: alias, name, currency, type, owner. Optional fields fall
+        back to sensible defaults (``status='active'``, ``initial_balance=0``,
+        ``initial_balance_date=today``, ``include_in_net_worth='true'``).
+
+        Validations:
+          - alias is lowercase a-z / 0-9 / underscore, no spaces
+          - alias must not already exist in accounts.csv
+          - currency is uppercase 3-letter ISO-ish code
+          - initial_balance must parse as a number (defaults to 0 if empty)
+
+        Locking + atomic write + git commit mirror handle_accounts_update.
+        """
+        import csv
+        import re as _re_local
+        from datetime import date as _date_local
+        from pathlib import Path as _Path_local
+
+        body = self._read_json_body() or {}
+
+        def _s(field: str, default: str = "") -> str:
+            v = body.get(field)
+            return (str(v).strip() if v is not None else "") or default
+
+        alias = _s("alias").lower()
+        name = _s("name")
+        currency = _s("currency").upper()
+        acc_type = _s("type")
+        owner = _s("owner")
+
+        if not alias or not _re_local.fullmatch(r"[a-z][a-z0-9_]*", alias):
+            self._respond_json(400, {"error": "alias must be lowercase letters/digits/underscore, starting with a letter"})
+            return
+        if not name:
+            self._respond_json(400, {"error": "name is required"})
+            return
+        if not _re_local.fullmatch(r"[A-Z]{3}", currency):
+            self._respond_json(400, {"error": "currency must be a 3-letter code (e.g. EUR, USD, TZS)"})
+            return
+        if not acc_type:
+            self._respond_json(400, {"error": "type is required"})
+            return
+        if not owner:
+            self._respond_json(400, {"error": "owner is required"})
+            return
+
+        status = _s("status", "active")
+        if status not in ("active", "archived"):
+            self._respond_json(400, {"error": "status must be 'active' or 'archived'"})
+            return
+
+        pass_through_payee = _s("pass_through_payee")
+
+        initial_balance_raw = _s("initial_balance", "0")
+        try:
+            initial_balance = f"{float(initial_balance_raw.replace(',', '').strip()):.2f}"
+        except ValueError:
+            self._respond_json(400, {"error": "initial_balance must be a number"})
+            return
+
+        initial_balance_date = _s("initial_balance_date") or _date_local.today().isoformat()
+
+        include_nw = _s("include_in_net_worth", "true").lower()
+        if include_nw not in ("true", "false"):
+            include_nw = "true"
+
+        notes = _s("notes")
+
+        accounts_path = _Path_local(__file__).parent.parent / "data" / "accounts.csv"
+
+        with tx_engine.tx_write_lock():
+            backup.backup_file("accounts", accounts_path)
+            rows = []
+            fieldnames = None
+            with open(accounts_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames or []
+                for row in reader:
+                    if row.get("alias") == alias:
+                        self._respond_json(409, {"error": f"alias '{alias}' already exists"})
+                        return
+                    rows.append(row)
+
+            new_row = {
+                "alias": alias,
+                "name": name,
+                "currency": currency,
+                "type": acc_type,
+                "owner": owner,
+                "status": status,
+                "pass_through_payee": pass_through_payee,
+                "initial_balance": initial_balance,
+                "initial_balance_date": initial_balance_date,
+                "include_in_net_worth": include_nw,
+                "notes": notes,
+            }
+            # Only keep keys that the CSV actually has (forward-compat).
+            new_row = {k: new_row.get(k, "") for k in fieldnames}
+            rows.append(new_row)
+
+            tx_engine._atomic_csv_rewrite(accounts_path, list(fieldnames), rows)
+            tx_engine.git_commit(f"Account add: {alias}", ["data/accounts.csv"])
+
+        self._respond_json(200, {"success": True, "account": new_row})
 
     def handle_accounts_update(self):
         """Update account properties (name, currency, type, etc.) by alias.
