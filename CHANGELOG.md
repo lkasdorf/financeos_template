@@ -18,6 +18,26 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1] - 2026-05-08
+
+Promoted rc.9 to final. No code changes vs. v1.3.1-rc.9; this is the version-string bump and a final GitHub release. The v1.3.1 series ran through 9 release candidates over a single day (2026-05-08), driven by a fresh-fork Windows-11 testing pass.
+
+### Highlights of the v1.3.1 patch
+
+- **Discretionary vs. Fixed — clearer settings hint + empty-state warning** (rc.1).
+- **Historical FX-rate backfill** (rc.2): new `scripts/fx_backfill.py` (Bank of Tanzania + Frankfurter cross-rate), `POST /api/fx/backfill` + Settings UI + Setup-Wizard auto-delta hook, `cron_fx.py` upgraded to BoT-primary with er-api fallback. Public template now ships the populated `data/fx_rates_history.csv` (8 years of daily rates back to 2018-01-01) so fresh forks render historical multi-currency reports correctly out of the box.
+- **Dividends as a first-class income source** (rc.3): new bucket alongside Salary / Interest / Investments & Sales / Reimbursement / Refunds; seed category `Income:Dividends` + Income Sources Breakdown column.
+- **Windows console flash gone** (rc.3 / rc.4): `CREATE_NO_WINDOW` + `pythonw.exe` for detached spawns — no more transient console window flickering on every TX save.
+- **JS/CSS cache-busting** (rc.5): every release bump appends `?v=<WIZARD_VERSION>` to script/link references, so deploys reach users immediately without manual hard-reload.
+- **FX backfill as a background job** (rc.6): kick off in one tab, leave / close the browser, come back later — `POST /api/fx/backfill/status` + localStorage resume.
+- **Add Account UI** (rc.7): Settings → Accounts → "+ Add Account". Closes the gap where new accounts could only be created via the Setup-Wizard or hand-editing `data/accounts.csv`. Hard-delete intentionally not implemented; `status='archived'` stays the canonical "remove" path.
+- **Full Setup-Wizard German translation** (rc.8 / rc.9): every previously hardcoded English string now uses `data-i18n` / `data-i18n-html`. DE renders Custody as **Treuhand**, Pass-through as **Durchlauf**, plus every step's labels, hints, feature checkboxes, and Step 7 review labels.
+- **Dividends defaults wired through `config_loader.py` REPORTS_DEFAULTS + `setup.js` initial state** (rc.4) so the wizard's "Customize now" path pre-selects `Income:Dividends`.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.9` → `1.3.1`
+
 ## [1.3.1-rc.9] - 2026-05-08
 
 ### Fixed
