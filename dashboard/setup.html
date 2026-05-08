@@ -44,9 +44,9 @@
 
     <!-- Banner shown if the repo is already initialized -->
     <section class="setup-block setup-blocked" id="blocked-card" hidden>
-      <h2>Setup already complete</h2>
-      <p id="blocked-reason">FinanceOS is already initialized on this server.</p>
-      <p><a href="index.html" class="setup-link">→ Open Dashboard</a></p>
+      <h2 data-i18n="setup.blocked.title">Setup already complete</h2>
+      <p id="blocked-reason" data-i18n="setup.blocked.reason">FinanceOS is already initialized on this server.</p>
+      <p><a href="index.html" class="setup-link" data-i18n="setup.blocked.open_dashboard">→ Open Dashboard</a></p>
     </section>
 
     <!-- Step 1: Branding -->
@@ -54,11 +54,11 @@
       <h2 data-i18n="setup.s1.h">Brand your instance</h2>
       <p class="setup-hint" data-i18n="setup.s1.hint">A display name shown in the header. The accent color tints buttons and links.</p>
       <label class="setup-field">
-        <span>Display name</span>
-        <input type="text" id="brand-name" placeholder="My FinanceOS" maxlength="60" required>
+        <span data-i18n="setup.s1.display_name">Display name</span>
+        <input type="text" id="brand-name" data-i18n-placeholder="setup.s1.brand_name_ph" placeholder="My FinanceOS" maxlength="60" required>
       </label>
       <label class="setup-field">
-        <span>Accent color</span>
+        <span data-i18n="setup.s1.accent_color">Accent color</span>
         <div class="setup-color-row">
           <input type="color" id="brand-color" value="#1e40af">
           <input type="text" id="brand-color-hex" value="#1e40af" pattern="^#[0-9a-fA-F]{6}$" maxlength="7">
@@ -78,7 +78,7 @@
         <button type="button" data-cur="PLN">PLN</button>
       </div>
       <label class="setup-field">
-        <span>ISO code</span>
+        <span data-i18n="setup.s2.iso_code">ISO code</span>
         <input type="text" id="currency-input" maxlength="3" pattern="[A-Za-z]{3}" placeholder="EUR" required>
       </label>
     </section>
@@ -90,32 +90,32 @@
       <div class="setup-radio-group">
         <label class="setup-radio">
           <input type="radio" name="auth-mode" value="basic" checked>
-          <span><strong>Basic</strong> — username + bcrypt-hashed password stored in <code>config/auth.json</code></span>
+          <span data-i18n-html="setup.s3.opt_basic"><strong>Basic</strong> — username + bcrypt-hashed password stored in <code>config/auth.json</code></span>
         </label>
         <label class="setup-radio">
           <input type="radio" name="auth-mode" value="none">
-          <span><strong>None</strong> — no auth (only safe on a private LAN or behind your own VPN)</span>
+          <span data-i18n-html="setup.s3.opt_none"><strong>None</strong> — no auth (only safe on a private LAN or behind your own VPN)</span>
         </label>
       </div>
 
       <div id="auth-basic-fields">
         <label class="setup-field">
-          <span>Username</span>
+          <span data-i18n="setup.s3.username">Username</span>
           <input type="text" id="auth-user" autocomplete="off" maxlength="60">
         </label>
         <label class="setup-field">
-          <span>Password</span>
+          <span data-i18n="setup.s3.password">Password</span>
           <input type="password" id="auth-pass" autocomplete="new-password" minlength="8">
         </label>
         <label class="setup-field">
-          <span>Repeat password</span>
+          <span data-i18n="setup.s3.password_repeat">Repeat password</span>
           <input type="password" id="auth-pass2" autocomplete="new-password" minlength="8">
         </label>
-        <p class="setup-hint" id="auth-pass-hint">Min. 8 characters. Stored as bcrypt hash, never plaintext.</p>
+        <p class="setup-hint" id="auth-pass-hint" data-i18n="setup.s3.pass_hint">Min. 8 characters. Stored as bcrypt hash, never plaintext.</p>
       </div>
 
       <div id="auth-none-warning" class="setup-warning" hidden>
-        <strong>Warning:</strong> running with <code>auth_mode=none</code> means anyone who reaches the dashboard URL can view and edit your data. Make sure the server is on a private network.
+        <span data-i18n-html="setup.s3.warn_html"><strong>Warning:</strong> running with <code>auth_mode=none</code> means anyone who reaches the dashboard URL can view and edit your data. Make sure the server is on a private network.</span>
         <label class="setup-field" style="margin-top:8px;">
           <input type="checkbox" id="auth-none-confirm">
           <span>I understand the risk and want to proceed without authentication.</span>
@@ -130,23 +130,23 @@
       <div class="setup-radio-group">
         <label class="setup-radio">
           <input type="radio" name="datasource" value="empty" checked>
-          <span><strong>Empty start</strong> — 4 generic accounts (cash / checking / savings / credit) + 34 neutral categories</span>
+          <span data-i18n-html="setup.s4.opt_empty"><strong>Empty start</strong> — 4 generic accounts (cash / checking / savings / credit) + 34 neutral categories</span>
         </label>
         <label class="setup-radio">
           <input type="radio" name="datasource" value="mmex">
-          <span><strong>Import from Money Manager Ex</strong> — upload an <code>.mmb</code> file</span>
+          <span data-i18n-html="setup.s4.opt_mmex"><strong>Import from Money Manager Ex</strong> — upload an <code>.mmb</code> file</span>
         </label>
       </div>
 
       <div id="mmex-zone" hidden>
         <label class="setup-field">
-          <span>Choose .mmb file</span>
+          <span data-i18n="setup.s4.choose_file">Choose .mmb file</span>
           <input type="file" id="mmex-file" accept=".mmb">
         </label>
-        <button type="button" id="mmex-upload-btn" class="setup-btn-primary" disabled>Upload &amp; preview</button>
+        <button type="button" id="mmex-upload-btn" class="setup-btn-primary" disabled data-i18n="setup.s4.upload_btn">Upload &amp; preview</button>
         <p class="setup-hint" id="mmex-status"></p>
         <div id="mmex-summary" hidden>
-          <h3 class="setup-subhead">Imported records</h3>
+          <h3 class="setup-subhead" data-i18n="setup.s4.imported_records">Imported records</h3>
           <ul class="setup-summary-list" id="mmex-summary-list"></ul>
         </div>
       </div>
@@ -157,13 +157,13 @@
       <h2 data-i18n="setup.s5.h">Optional features</h2>
       <p class="setup-hint" data-i18n="setup.s5.hint">Turn on extras that aren't core. Can be changed later in <code>config/features.json</code>.</p>
       <div class="setup-toggle-list" id="features-list">
-        <label><input type="checkbox" data-feature="debt_tracking"><span><strong>Debt tracking</strong> — money lent to or owed by third parties with payment history</span></label>
-        <label><input type="checkbox" data-feature="metals"><span><strong>Precious metals</strong> — gold/silver portfolio with daily spot prices</span></label>
-        <label><input type="checkbox" data-feature="pwa"><span><strong>Mobile PWA</strong> — offline-capable expense logging on phones</span></label>
-        <label><input type="checkbox" data-feature="crdb_recon"><span><strong>Bank reconciliation (CRDB)</strong> — monthly bank statement matching (specific to CRDB Bank)</span></label>
-        <label><input type="checkbox" data-feature="quick_expenses" checked><span><strong>Quick expenses</strong> — chip shortcuts under Add TX for repeating cash purchases</span></label>
-        <label><input type="checkbox" data-feature="custom_reports" checked><span><strong>Custom reports</strong> — user-defined reports with filter builder</span></label>
-        <label><input type="checkbox" data-feature="scheduled_tx" checked><span><strong>Scheduled transactions</strong> — recurring TX templates (rent, salary, subscriptions)</span></label>
+        <label><input type="checkbox" data-feature="debt_tracking"><span data-i18n-html="setup.s5.feat_debt"><strong>Debt tracking</strong> — money lent to or owed by third parties with payment history</span></label>
+        <label><input type="checkbox" data-feature="metals"><span data-i18n-html="setup.s5.feat_metals"><strong>Precious metals</strong> — gold/silver portfolio with daily spot prices</span></label>
+        <label><input type="checkbox" data-feature="pwa"><span data-i18n-html="setup.s5.feat_pwa"><strong>Mobile PWA</strong> — offline-capable expense logging on phones</span></label>
+        <label><input type="checkbox" data-feature="crdb_recon"><span data-i18n-html="setup.s5.feat_crdb"><strong>Bank reconciliation (CRDB)</strong> — monthly bank statement matching (specific to CRDB Bank)</span></label>
+        <label><input type="checkbox" data-feature="quick_expenses" checked><span data-i18n-html="setup.s5.feat_quick"><strong>Quick expenses</strong> — chip shortcuts under Add TX for repeating cash purchases</span></label>
+        <label><input type="checkbox" data-feature="custom_reports" checked><span data-i18n-html="setup.s5.feat_custom"><strong>Custom reports</strong> — user-defined reports with filter builder</span></label>
+        <label><input type="checkbox" data-feature="scheduled_tx" checked><span data-i18n-html="setup.s5.feat_sched"><strong>Scheduled transactions</strong> — recurring TX templates (rent, salary, subscriptions)</span></label>
       </div>
     </section>
 
@@ -174,25 +174,25 @@
       <div id="reports-step-mode" class="setup-radio-group" style="margin-bottom:14px;">
         <label class="setup-radio">
           <input type="radio" name="reports-mode" value="defaults" checked>
-          <span><strong>Use defaults</strong> — recommended unless you renamed a default category</span>
+          <span data-i18n-html="setup.s6.opt_defaults"><strong>Use defaults</strong> — recommended unless you renamed a default category</span>
         </label>
         <label class="setup-radio">
           <input type="radio" name="reports-mode" value="customize">
-          <span><strong>Customize now</strong> — pick which of your categories drive each report</span>
+          <span data-i18n-html="setup.s6.opt_customize"><strong>Customize now</strong> — pick which of your categories drive each report</span>
         </label>
       </div>
       <div id="reports-step-form" hidden>
-        <p class="setup-hint" style="margin-top:0;">Pick from the categories that will be created. <strong>Tip:</strong> hold Ctrl / ⌘ to multi-select, type a letter to jump to the first match, scroll inside each box to see all options. Change everything later in <code>Settings → Reports</code>.</p>
+        <p class="setup-hint" style="margin-top:0;" data-i18n-html="setup.s6.cust_hint">Pick from the categories that will be created. <strong>Tip:</strong> hold Ctrl / ⌘ to multi-select, type a letter to jump to the first match, scroll inside each box to see all options. Change everything later in <code>Settings → Reports</code>.</p>
         <div id="reports-step-detection" class="setup-hint" style="margin:0 0 8px;font-size:12px;"></div>
         <label style="display:block;margin-bottom:10px;font-size:12px;color:var(--muted);">
           Filter the dropdown options:
           <input type="text" id="reports-step-filter" placeholder="Type to filter all dropdowns (e.g. 'Income' or 'Bills')" style="width:100%;margin-top:4px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);">
         </label>
         <details style="margin-bottom:12px;">
-          <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Don't see one of your categories? Add it manually</summary>
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);" data-i18n="setup.s6.extra_summary">Don't see one of your categories? Add it manually</summary>
           <div style="margin-top:8px;">
             <textarea id="reports-step-extra-cats" rows="3" placeholder="Income:Salary&#10;Bills:Rent&#10;… one per line" style="width:100%;padding:6px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);"></textarea>
-            <button type="button" id="reports-step-extra-apply" style="margin-top:6px;font-size:12px;padding:4px 10px;">Add to options</button>
+            <button type="button" id="reports-step-extra-apply" style="margin-top:6px;font-size:12px;padding:4px 10px;" data-i18n="setup.s6.extra_apply">Add to options</button>
           </div>
         </details>
         <div id="reports-step-sections" style="display:flex;flex-direction:column;gap:14px;"></div>

@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.3.1-rc.9] - 2026-05-08
+
+### Fixed
+
+- **Setup-Wizard: every remaining hardcoded English string is now translatable.** rc.8 covered Step 7 (account-type dropdown + review labels). rc.9 finishes the rest: the "Setup already complete" banner, Step 1 form labels (Display name / Accent color), Step 2 ISO-code label, Step 3 Auth options + username/password labels + the warning banner, Step 4 datasource options + upload button + "Imported records" heading, Step 5 feature checkboxes (all 7 features with `<strong>name</strong> — desc` rendered via `data-i18n-html`), and Step 6 customize hints + extra-categories summary/button. ~30 new keys per locale. DE translations cover everything; EN keys are also present so future locales drop into the same skeleton.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.3.1-rc.8` → `1.3.1-rc.9`
+
 ## [1.3.1-rc.8] - 2026-05-08
 
 ### Fixed
