@@ -18,6 +18,21 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.4.0-rc.1] - 2026-05-09
+
+### Added
+
+- **Settings → Vehicles tab** — new management UI for tracked vehicles, sitting between **Accounts** and **Currency** (feature-gated `vehicles`). Lists every vehicle (active + archived) with name + plate + ID, currency, default account, default payee, and a status badge that surfaces the per-vehicle fuel-entry count. Each row gets **Edit** / **Archive** (or **Activate** when archived) / **Delete** actions. The header **+ Add Vehicle** button reuses the existing modal; Edit reuses the same modal with the row prefilled.
+- **Vehicle modal — Edit mode.** `openVehicleModal(existing)` now accepts an existing vehicle record (guarded against accidental MouseEvent passthrough). Title and save label flip to "Edit" / "Update vehicle"; the form prefills every field; the save handler routes to `/api/vehicles/update`. The `active` flag is inherited from the row so the Settings tab's archive button stays the only path that toggles active state.
+- **Per-vehicle drilldown on the Vehicles page.** A tab-pill row appears above the period tabs **only when 2+ active vehicles exist** (single-vehicle setups are unchanged). "All vehicles" aggregates as before; selecting a specific vehicle filters every KPI / chart / fuel table through `filterFuelEntries()`. The selection persists in `localStorage` (`lp-vehicles-selected`) and falls back to "All" automatically if the persisted vehicle is later deleted or archived.
+- **Optional FX Charts sidebar link** — bridge to an external self-hosted FX/charts dashboard. Configurable in **Settings → Branding** as **FX Dashboard URL**; persists in `config/branding.json` as `fx_dashboard_url` (validated as `http(s)://`). Empty by default — the sidebar entry stays hidden, so the template ships unchanged for forks who don't run a separate FX surface. When set, an **FX Charts** entry appears between **Vehicles** and **Settings** with a `↗` indicator and opens the URL in a new tab.
+
+### Changed
+
+- **`/api/vehicles/delete` rejects vehicles with fuel-log history.** The endpoint now counts referencing rows in `data/fuel_log.csv` first and returns `409 Conflict` + the entry count when non-zero, so a vehicle cannot be deleted out from under its history. Frontend already mirrors this via a disabled Delete button + tooltip — the server check is defense-in-depth against direct API calls. To delete, archive first or remove the entries.
+- **Vehicle modal name placeholder is now generic** ("e.g. Family car") instead of a private brand example.
+- **`/api/branding/{get,save}` round-trip `fx_dashboard_url`** — the branding API and the in-memory `window.BRANDING` object both pick up the new optional URL field. `applyBranding()` patches the sidebar entry on every save so the change reflects without a reload.
+
 ## [1.3.1] - 2026-05-08
 
 Promoted rc.9 to final. No code changes vs. v1.3.1-rc.9; this is the version-string bump and a final GitHub release. The v1.3.1 series ran through 9 release candidates over a single day (2026-05-08), driven by a fresh-fork Windows-11 testing pass.

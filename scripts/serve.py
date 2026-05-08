@@ -1887,11 +1887,25 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         self._respond_json(200, {"success": True})
 
     def handle_vehicles_delete(self):
-        """Remove a vehicle. Orphan fuel_log entries keep their vehicle_id ref."""
+        """Remove a vehicle. Refuses when fuel_log entries reference the vid
+        — the Settings UI blocks this client-side, but a server-side check
+        protects against direct API calls and keeps historical reports
+        intact. Caller is told to archive instead.
+        """
         body = self._read_json_body()
         vid = body.get("vehicle_id", "")
         if not vid:
             self._respond_json(400, {"error": "vehicle_id is required"})
+            return
+        try:
+            referencing = sum(1 for r in fuel.load_fuel_log() if r.get("vehicle_id") == vid)
+        except Exception:
+            referencing = 0
+        if referencing > 0:
+            self._respond_json(409, {
+                "error": f"Vehicle '{vid}' has {referencing} fuel-log entries. Archive it instead, or delete the entries first.",
+                "fuel_entries": referencing,
+            })
             return
         try:
             ok = fuel.delete_vehicle(vid)
@@ -2396,6 +2410,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         self._respond_json(200, {
             "display_name": data.get("display_name", "FinanceOS"),
             "accent_color": data.get("accent_color", "#1e40af"),
+            "fx_dashboard_url": data.get("fx_dashboard_url", ""),
         })
 
     def handle_branding_save(self):
@@ -2404,17 +2419,24 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         body = self._read_json_body()
         name = (body.get("display_name") or "").strip()
         accent = (body.get("accent_color") or "").strip()
+        # Optional external FX dashboard URL. Empty string is allowed and
+        # means "no link in sidebar". When set, must be http(s) — we do not
+        # accept javascript: or other schemes since this lands in an <a href>.
+        fx_url = (body.get("fx_dashboard_url") or "").strip()
         if not name:
             self._respond_json(400, {"error": "display_name is required"})
             return
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
             self._respond_json(400, {"error": "accent_color must be #rrggbb"})
             return
+        if fx_url and not re.match(r"^https?://", fx_url, re.IGNORECASE):
+            self._respond_json(400, {"error": "fx_dashboard_url must start with http:// or https://"})
+            return
         target = REPO_ROOT / "config" / "branding.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         # Mirror display_name into display_name_html so the sidebar logo
         # (data-brand-html binding) updates in lockstep with the title.
-        payload = {"display_name": name, "display_name_html": name, "accent_color": accent}
+        payload = {"display_name": name, "display_name_html": name, "accent_color": accent, "fx_dashboard_url": fx_url}
         # Atomic write — temp + os.replace, mirrors save_reports_config.
         import tempfile
         tmp_fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")

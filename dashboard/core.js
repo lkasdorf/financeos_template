@@ -145,6 +145,11 @@ window.BRANDING = {
   display_name: 'FinanceOS',
   display_name_html: 'FinanceOS',
   accent_color: '#1e40af',
+  // Optional URL to an external FX/charts dashboard (e.g. self-hosted
+  // fxdashboard on the same Pi). Empty string keeps the sidebar entry
+  // hidden; setting it via Settings → Branding shows the entry and points
+  // it at the URL. Opens in a new tab.
+  fx_dashboard_url: '',
 };
 async function loadBranding() {
   try {
@@ -183,6 +188,23 @@ function applyBranding() {
     // Slightly lighter accent for "dim" usages — blend 25% with white.
     const dim = _blendHex(accent, '#ffffff', 0.25);
     if (dim) root.setProperty('--accent-dim', dim);
+  }
+  // FX Charts sidebar entry — show only when a URL is configured. Setting
+  // .hidden on the <li> hides it from both desktop sidebar and mobile drawer
+  // since both share the same DOM. We keep target="_blank" + rel set in HTML
+  // and only patch the href here so unconfigured installs don't accidentally
+  // navigate to "#".
+  const fxLi = document.getElementById('nav-fx-charts');
+  if (fxLi) {
+    const url = (window.BRANDING.fx_dashboard_url || '').trim();
+    const a = fxLi.querySelector('a');
+    if (url) {
+      if (a) a.setAttribute('href', url);
+      fxLi.hidden = false;
+    } else {
+      if (a) a.setAttribute('href', '#');
+      fxLi.hidden = true;
+    }
   }
 }
 

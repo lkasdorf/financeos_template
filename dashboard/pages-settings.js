@@ -465,6 +465,7 @@ async function renderSettingsPage() {
     { id: 'atmfees', label: t('settings.tab.atmfees', {}, 'ATM Fees') },
     { id: 'payees', label: t('settings.tab.payees', {}, 'Payees') },
     { id: 'accounts', label: t('settings.tab.accounts', {}, 'Accounts') },
+    { id: 'vehicles', label: t('settings.tab.vehicles', {}, 'Vehicles'), feature: 'vehicles' },
     { id: 'currency', label: t('settings.tab.currency', {}, 'Currency') },
     { id: 'fxrates', label: t('settings.tab.fxrates', {}, 'FX Rates') },
     { id: 'goals', label: t('settings.tab.goals', {}, 'Goals') },
@@ -492,9 +493,168 @@ async function renderSettingsPage() {
   else if (settingsTab === 'goals') renderGoalsTab();
   else if (settingsTab === 'budgets') renderBudgetsTab();
   else if (settingsTab === 'reports') renderReportsConfigTab();
+  else if (settingsTab === 'vehicles') renderVehiclesTab();
   else if (settingsTab === 'branding') renderBrandingTab();
   else if (settingsTab === 'backup') renderBackupTab();
   else if (settingsTab === 'language') renderLanguageTab();
+}
+
+// ─── Settings: Vehicles (CRUD list with archive/delete) ────────────────
+// List of all vehicles (active + archived) with per-row Edit, Archive (or
+// Activate when archived), and Delete actions. Reuses openVehicleModal()
+// from vehicles.js for both Add and Edit. Delete is blocked client-side
+// when fuel-log entries reference the vehicle — the user must archive in
+// that case to preserve historical reporting integrity.
+
+async function renderVehiclesTab() {
+  const container = document.getElementById('settings-tab-content');
+  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.vehicles.loading', {}, 'Loading vehicles...'))}</div>`;
+  // Fresh-load the data so the tab can be opened directly without first
+  // visiting the Vehicles page (where loadVehiclesData usually fires).
+  if (typeof loadVehiclesData === 'function' && (!Array.isArray(vehicleList) || vehicleList.length === 0)) {
+    await loadVehiclesData();
+  }
+
+  const list = Array.isArray(vehicleList) ? vehicleList.slice() : [];
+  // Stable sort: active first, then by name. Same shape Settings tabs
+  // use elsewhere (active rows above archived).
+  list.sort((a, b) => {
+    const aActive = a.active === true || a.active === 'true' ? 0 : 1;
+    const bActive = b.active === true || b.active === 'true' ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  // Count fuel-log entries per vehicle so the Delete button can be blocked
+  // when a vehicle still has history. Archived vehicles with entries can
+  // still be archived again (no-op) but never deleted.
+  const fuelCounts = {};
+  (Array.isArray(fuelLog) ? fuelLog : []).forEach(e => {
+    const vid = e.vehicle_id;
+    if (vid) fuelCounts[vid] = (fuelCounts[vid] || 0) + 1;
+  });
+
+  const rowsHtml = list.length === 0
+    ? `<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:24px;">${escapeHtml(t('settings.vehicles.empty', {}, 'No vehicles configured. Click "Add Vehicle" to create one.'))}</td></tr>`
+    : list.map(v => {
+        const isActive = v.active === true || v.active === 'true';
+        const fuelN = fuelCounts[v.vehicle_id] || 0;
+        const canDelete = fuelN === 0;
+        const archiveLabel = isActive
+          ? t('settings.vehicles.action.archive', {}, 'Archive')
+          : t('settings.vehicles.action.activate', {}, 'Activate');
+        const statusBadge = isActive
+          ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--accent-glow);color:var(--accent);font-size:11px;font-weight:600;">${escapeHtml(t('settings.vehicles.status.active', {}, 'Active'))}</span>`
+          : `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--border-soft);color:var(--muted);font-size:11px;font-weight:600;">${escapeHtml(t('settings.vehicles.status.archived', {}, 'Archived'))}</span>`;
+        const deleteAttrs = canDelete
+          ? ''
+          : `disabled title="${escapeHtml(t('settings.vehicles.delete_blocked_tooltip', { n: fuelN }, `${fuelN} fuel entries reference this vehicle. Archive instead, or delete the entries first.`))}" style="opacity:0.4;cursor:not-allowed;"`;
+        return `
+          <tr data-vid="${escapeHtml(v.vehicle_id)}">
+            <td style="padding:10px 12px;">
+              <div style="font-weight:600;">${escapeHtml(v.name || v.vehicle_id)}</div>
+              <div style="font-size:11px;color:var(--muted);">${escapeHtml(v.license_plate || '')} ${v.license_plate ? '·' : ''} ${escapeHtml(v.vehicle_id)}</div>
+            </td>
+            <td style="padding:10px 12px;font-size:12px;color:var(--muted-soft);">${escapeHtml(v.currency || '—')}</td>
+            <td style="padding:10px 12px;font-size:12px;color:var(--muted-soft);">${escapeHtml(v.default_account || '—')}</td>
+            <td style="padding:10px 12px;font-size:12px;color:var(--muted-soft);">${escapeHtml(v.default_payee || '—')}</td>
+            <td style="padding:10px 12px;">${statusBadge}<div style="font-size:11px;color:var(--muted);margin-top:2px;">${fuelN} ${escapeHtml(t('settings.vehicles.fuel_entries_label', {}, 'fuel entries'))}</div></td>
+            <td style="padding:10px 12px;text-align:right;white-space:nowrap;">
+              <button class="vt-edit-btn" data-vid="${escapeHtml(v.vehicle_id)}" style="padding:4px 10px;font-size:11px;background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:var(--radius-xs);cursor:pointer;margin-right:4px;">${escapeHtml(t('settings.vehicles.action.edit', {}, 'Edit'))}</button>
+              <button class="vt-archive-btn" data-vid="${escapeHtml(v.vehicle_id)}" data-active="${isActive ? 'true' : 'false'}" style="padding:4px 10px;font-size:11px;background:transparent;color:var(--muted-soft);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;margin-right:4px;">${escapeHtml(archiveLabel)}</button>
+              <button class="vt-delete-btn" data-vid="${escapeHtml(v.vehicle_id)}" ${deleteAttrs} style="padding:4px 10px;font-size:11px;background:transparent;color:var(--negative,#dc2626);border:1px solid var(--negative,#dc2626);border-radius:var(--radius-xs);cursor:pointer;">${escapeHtml(t('settings.vehicles.action.delete', {}, 'Delete'))}</button>
+            </td>
+          </tr>`;
+      }).join('');
+
+  container.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div>
+        <h3 style="margin:0 0 4px;">${escapeHtml(t('settings.vehicles.heading', {}, 'Vehicles'))}</h3>
+        <p class="c-mut" style="margin:0;font-size:12px;">${escapeHtml(t('settings.vehicles.intro', {}, 'Manage tracked vehicles. The Sidebar → Vehicles page shows fuel-log analytics per active vehicle.'))}</p>
+      </div>
+      <button class="btn btn-primary" id="vt-add-btn">+ ${escapeHtml(t('settings.vehicles.action.add', {}, 'Add Vehicle'))}</button>
+    </div>
+    <div style="border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:var(--border-soft);font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);">
+            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.name', {}, 'Name'))}</th>
+            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.currency', {}, 'Currency'))}</th>
+            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.account', {}, 'Default account'))}</th>
+            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.payee', {}, 'Default payee'))}</th>
+            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.status', {}, 'Status'))}</th>
+            <th style="padding:8px 12px;text-align:right;font-weight:500;">${escapeHtml(t('settings.vehicles.col.actions', {}, 'Actions'))}</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p class="c-mut" style="margin-top:12px;font-size:11px;">${escapeHtml(t('settings.vehicles.delete_hint', {}, 'Vehicles with fuel-log entries cannot be deleted. Archive them instead — archived vehicles are excluded from the per-vehicle selector but remain in historical reports.'))}</p>
+  `;
+
+  // Wire up the action buttons. Delegation would also work but per-row
+  // click handlers stay tighter and avoid an extra closure path.
+  document.getElementById('vt-add-btn')?.addEventListener('click', () => openVehicleModal());
+  container.querySelectorAll('.vt-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const vid = btn.dataset.vid;
+      const v = list.find(x => x.vehicle_id === vid);
+      if (v) openVehicleModal(v);
+    });
+  });
+  container.querySelectorAll('.vt-archive-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const vid = btn.dataset.vid;
+      const v = list.find(x => x.vehicle_id === vid);
+      if (!v) return;
+      const newActive = btn.dataset.active === 'true' ? 'false' : 'true';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/vehicles/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...v, vehicle_id: vid, active: newActive }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        await loadVehiclesData();
+        renderVehiclesTab();
+      } catch (e) {
+        btn.disabled = false;
+        uiAlert(t('settings.vehicles.err_archive', { msg: e.message }, `Update failed: ${e.message}`), { type: 'error' });
+      }
+    });
+  });
+  container.querySelectorAll('.vt-delete-btn').forEach(btn => {
+    if (btn.disabled) return;
+    btn.addEventListener('click', async () => {
+      const vid = btn.dataset.vid;
+      const v = list.find(x => x.vehicle_id === vid);
+      if (!v) return;
+      const ok = await uiConfirm(
+        t('settings.vehicles.confirm_delete', { name: v.name || vid }, `Delete vehicle "${v.name || vid}"? This cannot be undone.`),
+        { type: 'destructive' }
+      );
+      if (!ok) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/vehicles/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vehicle_id: vid }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        await loadVehiclesData();
+        renderVehiclesTab();
+        uiAlert(t('settings.vehicles.success_delete', { name: v.name || vid }, `Vehicle "${v.name || vid}" deleted.`), { type: 'info' });
+      } catch (e) {
+        btn.disabled = false;
+        uiAlert(t('settings.vehicles.err_delete', { msg: e.message }, `Delete failed: ${e.message}`), { type: 'error' });
+      }
+    });
+  });
 }
 
 // ─── Settings: Branding (display name + accent color) ──────────────────
@@ -506,7 +666,11 @@ async function renderSettingsPage() {
 async function renderBrandingTab() {
   const container = document.getElementById('settings-tab-content');
   container.innerHTML = `<div class="loading">${escapeHtml(t('settings.branding.loading', {}, 'Loading branding...'))}</div>`;
-  let data = { display_name: window.BRANDING.display_name || 'FinanceOS', accent_color: window.BRANDING.accent_color || '#1e40af' };
+  let data = {
+    display_name: window.BRANDING.display_name || 'FinanceOS',
+    accent_color: window.BRANDING.accent_color || '#1e40af',
+    fx_dashboard_url: window.BRANDING.fx_dashboard_url || '',
+  };
   try {
     const res = await fetch('/api/branding/get', { method: 'POST' });
     if (res.ok) data = await res.json();
@@ -527,6 +691,12 @@ async function renderBrandingTab() {
           <span class="c-mut" style="font-size:12px;">${escapeHtml(t('settings.branding.accent_hint', {}, 'Used for accents, hover glows, links.'))}</span>
         </div>
       </label>
+      <hr style="border:0;border-top:1px solid var(--border-soft);margin:20px 0 16px;">
+      <label style="display:block;margin-bottom:14px;">
+        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(t('settings.branding.fx_url_label', {}, 'FX Dashboard URL'))}</div>
+        <input type="url" id="branding-fx-url" placeholder="https://example.ts.net:8446/" value="${escapeHtml(data.fx_dashboard_url || '')}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:monospace;font-size:12px;">
+        <div class="c-mut" style="font-size:12px;margin-top:4px;">${escapeHtml(t('settings.branding.fx_url_hint', {}, 'Optional. If set, an "FX Charts" link appears in the sidebar and opens this URL in a new tab. Leave empty to hide.'))}</div>
+      </label>
       <div style="display:flex;gap:10px;align-items:center;margin-top:18px;">
         <button class="btn btn-primary" id="branding-save">${escapeHtml(t('settings.branding.save', {}, 'Save'))}</button>
         <span id="branding-status" class="c-mut" style="font-size:12px;"></span>
@@ -543,18 +713,24 @@ async function renderBrandingTab() {
     const status = document.getElementById('branding-status');
     const name = document.getElementById('branding-name').value.trim();
     const accent = hexInp.value.trim();
+    const fxUrl = document.getElementById('branding-fx-url').value.trim();
     if (!name) { status.textContent = t('settings.branding.err_name', {}, 'Display name required'); return; }
     if (!/^#[0-9A-Fa-f]{6}$/.test(accent)) { status.textContent = t('settings.branding.err_color', {}, 'Color must be #rrggbb'); return; }
+    if (fxUrl && !/^https?:\/\//i.test(fxUrl)) {
+      status.textContent = t('settings.branding.err_fx_url', {}, 'FX URL must start with http:// or https://');
+      return;
+    }
     status.textContent = t('settings.branding.saving', {}, 'Saving...');
     try {
       const res = await fetch('/api/branding/save', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_name: name, accent_color: accent }),
+        body: JSON.stringify({ display_name: name, accent_color: accent, fx_dashboard_url: fxUrl }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const out = await res.json();
       window.BRANDING.display_name = out.display_name;
       window.BRANDING.accent_color = out.accent_color;
+      window.BRANDING.fx_dashboard_url = out.fx_dashboard_url || '';
       applyBranding();
       status.textContent = t('settings.branding.saved', {}, '✓ Saved');
       setTimeout(() => { if (status) status.textContent = ''; }, 2400);

@@ -13,6 +13,13 @@ let fuelLogLoaded = false;
 // Period filter for KPIs + charts. 'all' is the default since the
 // vehicle history is short enough that all-time is the useful baseline.
 let vehiclesPeriod = 'all'; // 'month_3' | 'year' | 'all'
+// Currently selected vehicle for the per-vehicle drilldown. null = "All
+// vehicles" (aggregated). Persisted in localStorage so the choice survives
+// reloads and across tabs. Falls back to null if the persisted vehicle is
+// no longer active or has been deleted.
+let selectedVehicleId = (() => {
+  try { return localStorage.getItem('lp-vehicles-selected') || null; } catch { return null; }
+})();
 
 // ─── Data loader ─────────────────────────────────────────────────────
 
@@ -37,6 +44,11 @@ async function loadVehiclesData() {
 function filterFuelEntries() {
   // Always sort by date asc for stable timeline rendering
   let entries = [...fuelLog].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  // Per-vehicle filter applied first so period filtering operates on the
+  // already-restricted set. selectedVehicleId === null means "All vehicles".
+  if (selectedVehicleId) {
+    entries = entries.filter(e => e.vehicle_id === selectedVehicleId);
+  }
   if (vehiclesPeriod === 'all') return entries;
   // year:YYYY — calendar-year filter, derived from the data on render
   if (vehiclesPeriod.startsWith('year:')) {
@@ -102,25 +114,44 @@ async function renderVehiclesPage() {
     await loadVehiclesData();
   }
 
+  // Drop a stale selectedVehicleId silently if the vehicle has been deleted
+  // or archived since the last visit — falls back to "All vehicles" so the
+  // page still renders something meaningful.
+  if (selectedVehicleId) {
+    const stillThere = vehicleList.find(v => v.vehicle_id === selectedVehicleId && (v.active === true || v.active === 'true'));
+    if (!stillThere) {
+      selectedVehicleId = null;
+      try { localStorage.removeItem('lp-vehicles-selected'); } catch { /* ignore */ }
+    }
+  }
+
   const entries = filterFuelEntries();
-  const vehicle = vehicleList[0] || null; // single-vehicle assumption for now
+  const activeVehicles = vehicleList.filter(v => v.active === true || v.active === 'true');
+  // Subtitle vehicle reference: the selected vehicle if any, else the sole
+  // active vehicle (current behavior for single-vehicle setups), else null
+  // so the "All vehicles" label is shown in the multi-vehicle case.
+  const vehicle = selectedVehicleId
+    ? vehicleList.find(v => v.vehicle_id === selectedVehicleId) || null
+    : (activeVehicles.length === 1 ? activeVehicles[0] : null);
 
   // Update subtitle with light meta info
   const meta = document.getElementById('vehicles-meta');
   if (meta) {
-    if (vehicle && entries.length > 0) {
-      const first = entries[0].date;
-      const last = entries[entries.length - 1].date;
-      meta.textContent = t('page.vehicles.meta', { name: vehicle.name, n: entries.length, from: first, to: last },
-        `${vehicle.name} · ${entries.length} entries · ${first} → ${last}`);
-    } else if (vehicle) {
+    if (entries.length === 0 && vehicleList.length === 0) {
+      meta.textContent = t('page.vehicles.no_vehicles', {}, 'No vehicles configured');
+    } else if (entries.length === 0 && vehicle) {
       meta.textContent = t('page.vehicles.empty', { name: vehicle.name }, `${vehicle.name} · no fuel entries yet`);
     } else {
-      meta.textContent = t('page.vehicles.no_vehicles', {}, 'No vehicles configured');
+      const first = entries[0]?.date || '';
+      const last = entries[entries.length - 1]?.date || '';
+      const label = vehicle ? vehicle.name : t('page.vehicles.selector.all', {}, 'All vehicles');
+      meta.textContent = t('page.vehicles.meta', { name: label, n: entries.length, from: first, to: last },
+        `${label} · ${entries.length} entries · ${first} → ${last}`);
     }
   }
 
   content.innerHTML = `
+    ${renderVehicleSelector(activeVehicles)}
     ${renderVehicleControls()}
     ${renderReconciliationBanner()}
     ${renderVehicleKpis(entries)}
@@ -134,6 +165,28 @@ async function renderVehiclesPage() {
 }
 
 // ─── Sub-renderers ────────────────────────────────────────────────────
+
+// Selector pills shown only when 2+ active vehicles exist. Single-vehicle
+// setups skip rendering this row entirely so the page stays unchanged for
+// the common case. "All vehicles" pill aggregates across every vehicle —
+// the original page behavior — and is the default state.
+function renderVehicleSelector(activeVehicles) {
+  if (!activeVehicles || activeVehicles.length < 2) return '';
+  const pills = [
+    { id: '', label: t('page.vehicles.selector.all', {}, 'All vehicles') },
+    ...activeVehicles.map(v => ({ id: v.vehicle_id, label: v.name || v.vehicle_id })),
+  ].map(p => {
+    const isActive = (selectedVehicleId || '') === p.id;
+    const activeStyle = isActive ? 'background:var(--accent);color:var(--bg);border-color:var(--accent);' : '';
+    return `<button class="vh-vehicle-tab" data-vid="${escapeHtml(p.id)}" style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);cursor:pointer;font-size:12px;${activeStyle}">${escapeHtml(p.label)}</button>`;
+  }).join('');
+  return `
+    <div class="report-section" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;">${escapeHtml(t('page.vehicles.selector.label', {}, 'Vehicle'))}</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${pills}</div>
+    </div>
+  `;
+}
 
 function renderVehicleControls() {
   // Build the tab list dynamically: "All time" first, then one button
@@ -686,6 +739,20 @@ function bindVehicleControls() {
       renderVehiclesPage();
     });
   });
+  // Per-vehicle pills — empty data-vid means "All vehicles" (selectedVehicleId
+  // = null). localStorage is updated immediately so a reload restores the
+  // current view; clearing it on the "All" pill keeps the storage minimal.
+  document.querySelectorAll('.vh-vehicle-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const vid = btn.dataset.vid || '';
+      selectedVehicleId = vid || null;
+      try {
+        if (selectedVehicleId) localStorage.setItem('lp-vehicles-selected', selectedVehicleId);
+        else localStorage.removeItem('lp-vehicles-selected');
+      } catch { /* ignore quota / private mode */ }
+      renderVehiclesPage();
+    });
+  });
   const addBtn = document.getElementById('vh-add-btn');
   if (addBtn) addBtn.addEventListener('click', () => openFuelModal());
   const addVehicleBtn = document.getElementById('vh-add-vehicle-btn');
@@ -1102,34 +1169,50 @@ async function deleteFuelEntry(fuelId) {
 // default_category, tracking_start_date, active, notes. Until rc.13 the only
 // way to add a new vehicle was to hand-edit the CSV; this modal POSTs to
 // /api/vehicles/add and re-renders the page on success.
-function openVehicleModal() {
+function openVehicleModal(existingVehicle) {
+  // Guard: callers occasionally bind this as an event handler, in which case
+  // the first arg is a MouseEvent. Treat anything that isn't a real vehicle
+  // record as "no existing", matching the same-day fuel-modal fix from Apr 30.
+  const editing = existingVehicle && typeof existingVehicle === 'object' && existingVehicle.vehicle_id;
+  const v = editing ? existingVehicle : null;
+
   const accounts = (state.accounts || []).filter(a => a.status === 'active');
-  const accountOptions = accounts.map(a => `<option value="${escapeHtml(a.alias)}">${escapeHtml(a.alias)} — ${escapeHtml(a.name || '')}</option>`).join('');
+  const accountOptions = accounts.map(a => {
+    const sel = v && v.default_account === a.alias ? ' selected' : '';
+    return `<option value="${escapeHtml(a.alias)}"${sel}>${escapeHtml(a.alias)} — ${escapeHtml(a.name || '')}</option>`;
+  }).join('');
 
   // Common currency options — covers the canonical FinanceOS set. Users on
   // exotic currencies can still type into the input (it falls back to a text
   // input when "Other…" is chosen).
   const currencyOptions = ['TZS', 'EUR', 'USD', 'PLN', 'GBP', 'CHF']
-    .map(c => `<option value="${c}">${c}</option>`).join('');
+    .map(c => `<option value="${c}"${v && v.currency === c ? ' selected' : ''}>${c}</option>`).join('');
 
   const todayIso = new Date().toISOString().slice(0, 10);
 
-  const existing = document.querySelector('.modal-overlay');
-  if (existing) existing.remove();
+  const existingOverlay = document.querySelector('.modal-overlay');
+  if (existingOverlay) existingOverlay.remove();
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 
+  const titleVerb = editing
+    ? t('page.vehicles.vehicle_modal.title_edit', {}, 'Edit')
+    : t('page.vehicles.vehicle_modal.title', {}, 'Add');
+  const saveLabel = editing
+    ? t('page.vehicles.vehicle_modal.save_edit', {}, 'Update vehicle')
+    : t('page.vehicles.vehicle_modal.save', {}, 'Save vehicle');
+
   overlay.innerHTML = `
     <div class="modal" style="max-width:640px;">
-      <h3>${t('page.vehicles.vehicle_modal.title', {}, 'Add')} <span class="accent">${t('page.vehicles.vehicle_modal.title_noun', {}, 'Vehicle')}</span></h3>
+      <h3>${escapeHtml(titleVerb)} <span class="accent">${t('page.vehicles.vehicle_modal.title_noun', {}, 'Vehicle')}</span></h3>
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('page.vehicles.vehicle_modal.name', {}, 'Name')}</label>
-          <input type="text" id="vm-name" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.name_placeholder', {}, 'Toyota Vehicle'))}" required>
+          <input type="text" id="vm-name" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.name_placeholder', {}, 'e.g. Family car'))}" value="${escapeHtml(v ? v.name || '' : '')}" required>
         </div>
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.plate', {}, 'License plate')}</label>
-          <input type="text" id="vm-plate" placeholder="ABC 123">
+          <input type="text" id="vm-plate" placeholder="ABC 123" value="${escapeHtml(v ? v.license_plate || '' : '')}">
         </div>
       </div>
       <div class="atx-row">
@@ -1137,28 +1220,28 @@ function openVehicleModal() {
           <select id="vm-currency" required>${currencyOptions}</select>
         </div>
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_account', {}, 'Default account')}</label>
-          <select id="vm-account"><option value="">—</option>${accountOptions}</select>
+          <select id="vm-account"><option value=""${v && !v.default_account ? ' selected' : ''}>—</option>${accountOptions}</select>
         </div>
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.tracking_start', {}, 'Tracking start')}</label>
-          <input type="date" id="vm-track-start" value="${todayIso}">
+          <input type="date" id="vm-track-start" value="${escapeHtml(v ? (v.tracking_start_date || todayIso) : todayIso)}">
         </div>
       </div>
       <div class="atx-row">
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_payee', {}, 'Default payee')}</label>
-          <input type="text" id="vm-payee" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.payee_placeholder', {}, 'Petrol station name'))}">
+          <input type="text" id="vm-payee" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.payee_placeholder', {}, 'Petrol station name'))}" value="${escapeHtml(v ? v.default_payee || '' : '')}">
         </div>
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_category', {}, 'Default category')}</label>
-          <input type="text" id="vm-category" value="Automobile:Petrol" placeholder="Automobile:Petrol">
+          <input type="text" id="vm-category" value="${escapeHtml(v ? (v.default_category || 'Automobile:Petrol') : 'Automobile:Petrol')}" placeholder="Automobile:Petrol">
         </div>
       </div>
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('page.vehicles.vehicle_modal.notes', {}, 'Notes')}</label>
-          <input type="text" id="vm-notes" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.notes_placeholder', {}, 'Optional — e.g. company car, lease end Aug 2027'))}">
+          <input type="text" id="vm-notes" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.notes_placeholder', {}, 'Optional — e.g. company car, lease end Aug 2027'))}" value="${escapeHtml(v ? v.notes || '' : '')}">
         </div>
       </div>
       <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
         <button id="vm-cancel" class="btn-secondary">${t('common.cancel', {}, 'Cancel')}</button>
-        <button id="vm-save" class="btn-primary">${t('page.vehicles.vehicle_modal.save', {}, 'Save vehicle')}</button>
+        <button id="vm-save" class="btn-primary">${escapeHtml(saveLabel)}</button>
       </div>
     </div>
   `;
@@ -1179,17 +1262,26 @@ function openVehicleModal() {
       default_category: overlay.querySelector('#vm-category').value.trim(),
       tracking_start_date: overlay.querySelector('#vm-track-start').value,
       notes: overlay.querySelector('#vm-notes').value.trim(),
-      active: 'true',
     };
     if (!payload.name) {
       uiAlert(t('page.vehicles.vehicle_modal.err_name', {}, 'Name is required.'), { type: 'warning' });
       return;
     }
+    if (editing) {
+      payload.vehicle_id = v.vehicle_id;
+      // Preserve the row's active flag — the dedicated archive button is
+      // the only path that flips it, so the edit modal must not silently
+      // re-activate an archived vehicle.
+      payload.active = v.active === false || v.active === 'false' ? 'false' : 'true';
+    } else {
+      payload.active = 'true';
+    }
     const saveBtn = overlay.querySelector('#vm-save');
     saveBtn.disabled = true;
     saveBtn.textContent = t('page.vehicles.vehicle_modal.saving', {}, 'Saving…');
     try {
-      const res = await fetch('/api/vehicles/add', {
+      const url = editing ? '/api/vehicles/update' : '/api/vehicles/add';
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1197,14 +1289,26 @@ function openVehicleModal() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       closeModal();
-      uiAlert(t('page.vehicles.vehicle_modal.success', { id: data.vehicle_id }, `Vehicle saved (${data.vehicle_id}).`), { type: 'info' });
+      const msg = editing
+        ? t('page.vehicles.vehicle_modal.success_edit', { name: payload.name }, `Vehicle "${payload.name}" updated.`)
+        : t('page.vehicles.vehicle_modal.success', { id: data.vehicle_id }, `Vehicle saved (${data.vehicle_id}).`);
+      uiAlert(msg, { type: 'info' });
       // Reload vehicle list + re-render so the new vehicle shows up in
       // any subsequent fuel-entry dropdown.
       await loadVehiclesData();
-      renderVehiclesPage();
+      // Settings → Vehicles tab uses its own renderer; if open, retarget that
+      // instead of re-running the full settings page (which would jump back
+      // to Categories per the boot() reset behavior). Otherwise fall back to
+      // the Vehicles page (Sidebar route).
+      const onSettingsVehicles = typeof settingsTab !== 'undefined' && settingsTab === 'vehicles';
+      if (onSettingsVehicles && typeof renderVehiclesTab === 'function') {
+        renderVehiclesTab();
+      } else {
+        renderVehiclesPage();
+      }
     } catch (e) {
       saveBtn.disabled = false;
-      saveBtn.textContent = t('page.vehicles.vehicle_modal.save', {}, 'Save vehicle');
+      saveBtn.textContent = escapeHtml(saveLabel);
       uiAlert(t('page.vehicles.vehicle_modal.err_save', { msg: e.message }, `Save failed: ${e.message}`), { type: 'error' });
     }
   });

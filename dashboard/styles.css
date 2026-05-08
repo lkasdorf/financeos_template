@@ -848,6 +848,12 @@
   }
   .sidebar-nav .nav-icon svg { width: 16px; height: 16px; }
   .sidebar-nav a.active .nav-icon { opacity: 1; }
+  /* External-link indicator (e.g. FX Charts opens in a new tab). Pushed to
+     the right edge of the link via auto-margin and dimmed to avoid stealing
+     attention from the label. Sized to the same 13px line-height as the
+     surrounding text. */
+  .sidebar-nav .nav-ext { margin-left: auto; font-size: 11px; opacity: 0.5; }
+  .sidebar-nav a:hover .nav-ext { opacity: 0.9; }
   .sidebar-nav .nav-spacer { flex: 1; min-height: 24px; }
   .sidebar-nav a.nav-add-tx {
     margin: 4px 16px 12px;
