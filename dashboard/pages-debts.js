@@ -74,7 +74,7 @@ async function showDebtModal(editId) {
         <div class="btn-left"></div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="saveDebt" data-arg1="${isEdit ? `'${editId}'` : 'null'}">${isEdit ? t('pages.debt.btn.save_edit', {}, 'Save') : t('pages.debt.btn.save_new', {}, 'Add')}</button>
+          <button class="btn-save" data-action="saveDebt" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('pages.debt.btn.save_edit', {}, 'Save') : t('pages.debt.btn.save_new', {}, 'Add')}</button>
         </div>
       </div>
     </div>

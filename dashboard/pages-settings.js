@@ -900,7 +900,7 @@ async function showCategoryModal(editPath) {
         <div class="btn-left"></div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="saveCategory" data-arg1="${isEdit ? `'${escapeHtml(editPath)}'` : 'null'}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
+          <button class="btn-save" data-action="saveCategory" data-arg1="${isEdit ? escapeHtml(editPath) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
       </div>
     </div>
@@ -1035,7 +1035,7 @@ async function showTagModal(editTag) {
         <div class="btn-left"></div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="saveTag" data-arg1="${isEdit ? `'${escapeHtml(editTag)}'` : 'null'}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
+          <button class="btn-save" data-action="saveTag" data-arg1="${isEdit ? escapeHtml(editTag) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
       </div>
     </div>
@@ -1225,7 +1225,7 @@ async function showScheduledModal(editId) {
         <div class="btn-left"></div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="saveScheduled" data-arg1="${isEdit ? `'${editId}'` : 'null'}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
+          <button class="btn-save" data-action="saveScheduled" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
       </div>
     </div>
@@ -1426,7 +1426,7 @@ async function showQuickExpModal(editId) {
         <div class="btn-left"></div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="saveQuickExp" data-arg1="${isEdit ? `'${editId}'` : 'null'}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
+          <button class="btn-save" data-action="saveQuickExp" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
       </div>
     </div>
@@ -1607,7 +1607,7 @@ async function showAtmFeeModal(editId) {
         <div class="btn-left"></div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="saveAtmFee" data-arg1="${isEdit ? `'${editId}'` : 'null'}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
+          <button class="btn-save" data-action="saveAtmFee" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
       </div>
     </div>

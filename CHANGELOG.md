@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.4.0-rc.2] - 2026-05-09
+
+### Fixed
+
+- **Edit buttons in 6 modal forms were silently broken.** Save buttons in the Scheduled-TX, Categories, Tags, Quick-Expenses, ATM-Fees, and Debts edit modals serialized the edit-ID via `data-arg1="${isEdit ? \`'${editId}'\` : 'null'}"`. The global `data-action` dispatcher in `core.js` passes `dataset.arg1` through verbatim, so the backend received `sched_id="'sched-005'"` (8-char quoted string) instead of `sched-005` and returned `404 not found`. The Add-mode fallback string `'null'` was also truthy in JS, so an Add submission would have routed to the update endpoint instead of the add endpoint. Both bugs fixed by switching to `data-arg1="${isEdit ? escapeHtml(editId) : ''}"` — empty string is falsy, IDs ship bare. Affects every Edit operation in the listed Settings tabs and the Debts page.
+
 ## [1.4.0-rc.1] - 2026-05-09
 
 ### Added
