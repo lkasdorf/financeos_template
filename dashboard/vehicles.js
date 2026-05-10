@@ -69,6 +69,25 @@ function filterFuelEntries() {
 // Distinct calendar years present in the loaded fuel log, newest first.
 // Used to build the year-filter buttons in renderVehicleControls() so the
 // list adapts as new years arrive without needing a code change.
+// Inline badge for the per-vehicle pill — `tracking_start_date` doubles
+// as the ownership-start (acquisition) for the lifecycle display, and
+// `end_date` (added in v1.4.0 polish) marks vehicles that have been sold
+// or replaced. Empty end_date = "still own it", no badge needed.
+function _renderVehicleLifecycleBadge(startDate, endDate) {
+  const today = new Date().toISOString().slice(0, 10);
+  const start = (startDate || '').trim();
+  const end = (endDate || '').trim();
+  if (!end && !start) return '';
+  const baseStyle = 'display:inline-block;font-size:10px;font-weight:500;padding:1px 6px;border-radius:8px;margin-left:6px;vertical-align:middle;';
+  if (end && end <= today) {
+    return ` <span style="${baseStyle}background:rgba(148,163,184,0.18);color:var(--muted);">${escapeHtml(t('lifecycle.ended', { date: end.slice(0, 7) }, `ended ${end.slice(0, 7)}`))}</span>`;
+  }
+  if (end && end > today) {
+    return ` <span style="${baseStyle}background:rgba(245,158,11,0.18);color:#b45309;">${escapeHtml(t('lifecycle.until', { date: end.slice(0, 7) }, `until ${end.slice(0, 7)}`))}</span>`;
+  }
+  return '';
+}
+
 function availableYears() {
   const years = new Set();
   for (const e of fuelLog) {
@@ -152,7 +171,7 @@ async function renderVehiclesPage() {
 
   content.innerHTML = `
     ${renderVehicleSelector(activeVehicles)}
-    ${renderVehicleControls()}
+    ${renderVehicleControls(vehicle)}
     ${renderReconciliationBanner()}
     ${renderVehicleKpis(entries)}
     ${renderVehicleCharts()}
@@ -172,13 +191,20 @@ async function renderVehiclesPage() {
 // the original page behavior — and is the default state.
 function renderVehicleSelector(activeVehicles) {
   if (!activeVehicles || activeVehicles.length < 2) return '';
+  const today = new Date().toISOString().slice(0, 10);
   const pills = [
-    { id: '', label: t('page.vehicles.selector.all', {}, 'All vehicles') },
-    ...activeVehicles.map(v => ({ id: v.vehicle_id, label: v.name || v.vehicle_id })),
+    { id: '', label: t('page.vehicles.selector.all', {}, 'All vehicles'), badge: '', archived: false },
+    ...activeVehicles.map(v => ({
+      id: v.vehicle_id,
+      label: v.name || v.vehicle_id,
+      badge: _renderVehicleLifecycleBadge(v.tracking_start_date, v.end_date),
+      archived: !!((v.end_date || '').trim() && v.end_date <= today),
+    })),
   ].map(p => {
     const isActive = (selectedVehicleId || '') === p.id;
     const activeStyle = isActive ? 'background:var(--accent);color:var(--bg);border-color:var(--accent);' : '';
-    return `<button class="vh-vehicle-tab" data-vid="${escapeHtml(p.id)}" style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);cursor:pointer;font-size:12px;${activeStyle}">${escapeHtml(p.label)}</button>`;
+    const opacity = p.archived && !isActive ? 'opacity:0.7;' : '';
+    return `<button class="vh-vehicle-tab" data-vid="${escapeHtml(p.id)}" style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);cursor:pointer;font-size:12px;${activeStyle}${opacity}">${escapeHtml(p.label)}${p.badge}</button>`;
   }).join('');
   return `
     <div class="report-section" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -188,7 +214,7 @@ function renderVehicleSelector(activeVehicles) {
   `;
 }
 
-function renderVehicleControls() {
+function renderVehicleControls(vehicle) {
   // Build the tab list dynamically: "All time" first, then one button
   // per calendar year (newest first), then the rolling windows.
   const periods = [['all', t('page.vehicles.period.all', {}, 'All time')]];
@@ -203,10 +229,18 @@ function renderVehicleControls() {
     return `<button class="vh-period-tab" data-period="${escapeHtml(key)}" style="padding:6px 12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);cursor:pointer;font-size:12px;${active}">${escapeHtml(label)}</button>`;
   }).join('');
 
+  // Excel download is offered only when a single vehicle is in scope —
+  // either the user picked a pill or the workspace has just one active
+  // vehicle. The "All vehicles" aggregate has no useful per-vehicle
+  // workbook to render, so we hide the button rather than guess.
+  const exportBtn = vehicle ? `
+        <button id="vh-export-btn" data-vehicle-id="${escapeHtml(vehicle.vehicle_id)}" data-vehicle-name="${escapeHtml(vehicle.name || vehicle.vehicle_id)}" style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-weight:600;" title="${escapeHtml(t('page.vehicles.export_excel_hint', { name: vehicle.name || vehicle.vehicle_id }, `Download fuel log for ${vehicle.name || vehicle.vehicle_id} as Excel`))}">${t('page.vehicles.export_excel_button', {}, 'Download Excel')}</button>` : '';
+
   return `
     <div class="report-section" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${tabs}</div>
       <div style="display:flex;gap:8px;">
+        ${exportBtn}
         <button id="vh-add-vehicle-btn" style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_vehicle_button', {}, 'Add Vehicle')}</button>
         <button id="vh-add-btn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_button', {}, 'Add Fuel Entry')}</button>
       </div>
@@ -732,6 +766,45 @@ function drawStationsChart(allEntries) {
 
 // ─── Event bindings ──────────────────────────────────────────────────
 
+// Trigger an .xlsx download for one vehicle's fuel log. Server returns
+// the workbook bytes synchronously (small payload — at most a few hundred
+// rows in practice), so we accept the resolved blob in one go and feed it
+// to a hidden anchor's click(). Any non-2xx response is surfaced via
+// uiAlert with the server's error string when present.
+async function downloadVehicleExcel(vehicleId, fallbackName) {
+  if (!vehicleId) return;
+  try {
+    const res = await fetch('/api/fuel/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vehicle_id: vehicleId }),
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j && j.error) msg = j.error;
+      } catch { /* server returned non-JSON */ }
+      uiAlert(t('page.vehicles.export_failed', { msg }, `Excel export failed: ${msg}`));
+      return;
+    }
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    const filename = m ? m[1] : `${(fallbackName || 'Vehicle').replace(/[^\w\-]+/g, '_')}_Fuel.xlsx`;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {
+    uiAlert(t('page.vehicles.export_failed', { msg: String(e) }, `Excel export failed: ${e}`));
+  }
+}
+
 function bindVehicleControls() {
   document.querySelectorAll('.vh-period-tab').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -757,6 +830,10 @@ function bindVehicleControls() {
   if (addBtn) addBtn.addEventListener('click', () => openFuelModal());
   const addVehicleBtn = document.getElementById('vh-add-vehicle-btn');
   if (addVehicleBtn) addVehicleBtn.addEventListener('click', () => openVehicleModal());
+  const exportBtn = document.getElementById('vh-export-btn');
+  if (exportBtn) exportBtn.addEventListener('click', () => {
+    downloadVehicleExcel(exportBtn.dataset.vehicleId, exportBtn.dataset.vehicleName);
+  });
   document.querySelectorAll('.vh-del-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteFuelEntry(btn.dataset.fuelId));
   });
@@ -1127,7 +1204,7 @@ async function deleteFuelEntry(fuelId) {
   // pass-through reimbursement) goes too — this is the whole point of
   // the cascade.
   const txInfo = entry.tx_import_id
-    ? `\n\n${t('page.vehicles.delete.tx_warn', {}, 'The linked transaction')} ${entry.tx_import_id.slice(0, 8)}…${entry.account === 'kft' || entry.account === 'kfu' ? ` ${t('page.vehicles.delete.reimb_warn', {}, '+ its pass-through reimbursement')}` : ''} ${t('page.vehicles.delete.also_deleted', {}, 'will also be deleted.')}`
+    ? `\n\n${t('page.vehicles.delete.tx_warn', {}, 'The linked transaction')} ${entry.tx_import_id.slice(0, 8)}…${((window.state?.accounts || []).find(a => a.alias === entry.account)?.type === 'pass_through') ? ` ${t('page.vehicles.delete.reimb_warn', {}, '+ its pass-through reimbursement')}` : ''} ${t('page.vehicles.delete.also_deleted', {}, 'will also be deleted.')}`
     : '';
   // Format the cost so DE comma vs EN dot follows dashboard locale
   // (UX backlog "locale-aware numbers in dialog bodies").
@@ -1225,6 +1302,9 @@ function openVehicleModal(existingVehicle) {
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.tracking_start', {}, 'Tracking start')}</label>
           <input type="date" id="vm-track-start" value="${escapeHtml(v ? (v.tracking_start_date || todayIso) : todayIso)}">
         </div>
+        <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.end_date', {}, 'End / sold')}</label>
+          <input type="date" id="vm-end-date" value="${escapeHtml(v ? (v.end_date || '') : '')}" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.end_date_ph', {}, 'leave empty if still owned'))}">
+        </div>
       </div>
       <div class="atx-row">
         <div class="atx-field fx1"><label>${t('page.vehicles.vehicle_modal.default_payee', {}, 'Default payee')}</label>
@@ -1261,6 +1341,7 @@ function openVehicleModal(existingVehicle) {
       default_payee: overlay.querySelector('#vm-payee').value.trim(),
       default_category: overlay.querySelector('#vm-category').value.trim(),
       tracking_start_date: overlay.querySelector('#vm-track-start').value,
+      end_date: overlay.querySelector('#vm-end-date').value,
       notes: overlay.querySelector('#vm-notes').value.trim(),
     };
     if (!payload.name) {

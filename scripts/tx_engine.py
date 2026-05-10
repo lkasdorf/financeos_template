@@ -177,7 +177,7 @@ def _atomic_csv_rewrite(
 # ── Data Loading ─────────────────────────────────────────────────────────────
 
 def load_accounts() -> dict[str, dict]:
-    """Load accounts.csv as dict keyed by alias (e.g. 'crdb', 'cash', 'kft')."""
+    """Load accounts.csv as dict keyed by alias (e.g. 'checking', 'cash', 'business')."""
     accounts = {}
     with open(DATA_DIR / "accounts.csv", newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -232,7 +232,7 @@ def add_payee(data: dict) -> str:
     """Add a payee to payees.json. Returns the auto-generated slug ID.
 
     If the slugified payee name collides with an existing ID, appends
-    a numeric suffix (e.g. 'jumbo-2') to ensure uniqueness.
+    a numeric suffix (e.g. 'payee-2') to ensure uniqueness.
     """
     payees = load_payees()
     pid = _slugify(data.get("payee", ""))
@@ -1393,7 +1393,7 @@ def apply_auto_tags(account: str, payee: str, explicit_tags: list[str]) -> list[
     Deduplication ensures no tag appears twice.
 
     Args:
-        account: Account alias (e.g. 'kft').
+        account: Account alias (e.g. 'business').
         payee: Payee name for payee-based tag rules.
         explicit_tags: Tags explicitly provided by user or scheduled entry.
 

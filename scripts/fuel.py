@@ -53,7 +53,13 @@ RECON_DISMISSED_COLUMNS = ["import_id", "dismissed_at", "reason"]
 VEHICLE_COLUMNS = [
     "vehicle_id", "name", "license_plate", "currency",
     "default_account", "default_payee", "default_category",
-    "tracking_start_date", "active", "notes",
+    "tracking_start_date",
+    # Optional ISO date marking when this vehicle was sold / replaced.
+    # Empty = "currently owned". `tracking_start_date` already covers the
+    # acquisition side (doubles as ownership-start). UI uses end_date to
+    # render archived-style pills and to clamp report periods.
+    "end_date",
+    "active", "notes",
 ]
 
 # Canonical column order for fuel_log.csv. The `account` field is
@@ -710,7 +716,7 @@ def build_expense_tx(fuel_row: dict, vehicle: dict) -> dict:
         note_parts.append(fuel_row["remarks"])
     note = " | ".join(note_parts)
 
-    # Auto-tags rely on standard rules (e.g. kft → BUSINESS_<entity>). No
+    # Auto-tags rely on standard rules (e.g. business → BUSINESS_<entity>). No
     # explicit tags from the fuel layer in Phase 1a; vehicle-level tags
     # may be added in a later phase if multi-vehicle filtering is needed.
     tags = ";".join(

@@ -175,6 +175,54 @@ async function computeAlerts() {
     }
   }
 
+  // 6. Property drift alerts (LUKU/Water — kWh spike, missed water, …)
+  // Computed server-side because the math needs the full LUKU + Water
+  // history and the dashboard would otherwise have to fetch it just
+  // for this aggregate.
+  try {
+    const res = await fetch('/api/properties/alerts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const propAlerts = Array.isArray(data.alerts) ? data.alerts : [];
+      for (const a of propAlerts) alerts.push(a);
+    }
+  } catch (e) { /* API not available — ignore */ }
+
+  // Migration nudge: pre-1.3.0 installs never wrote `config/reports.json`,
+  // which means several reports filter on stale category names and silently
+  // return empty. The setup-step-6 wizard creates this file for fresh
+  // installs; existing 1.2.x users need a one-time pointer to Settings →
+  // Reports. The alert is dismissable per-install (localStorage flag) so
+  // it never shouts twice.
+  if (
+    Array.isArray(state.tx) && state.tx.length > 0
+    && !localStorage.getItem('financeos.reports-config-banner-dismissed')
+  ) {
+    try {
+      const res = await fetch('/api/reports-config/get', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.file_exists === false) {
+          alerts.push({
+            type: 'reports_config_migration',
+            severity: 'info',
+            title: t('alerts.reports_config.title', {}, 'Reports may filter the wrong categories'),
+            detail: t(
+              'alerts.reports_config.detail',
+              {},
+              'Some reports filter by category — open Settings → Reports to map yours, or click Dismiss if you don\'t use those reports.',
+            ),
+            link: '#settings/reports',
+            dismissable: 'reports-config-banner-dismissed',
+          });
+        }
+      }
+    } catch (e) { /* offline or endpoint missing — ignore */ }
+  }
+
   state.alerts = alerts;
   updateAlertsBadge();
 }
@@ -221,12 +269,18 @@ function renderAlertsPage() {
     const borderColor = items[0].severity === 'warning' ? 'var(--warn)' : 'var(--accent)';
     let h = `<div class="section"><h3>${label}</h3>`;
     items.forEach(a => {
+      const dismissBtn = a.dismissable
+        ? `<button type="button" class="alert-dismiss" data-dismiss-key="${escapeHtml(a.dismissable)}" aria-label="${escapeHtml(t('pages.alerts.dismiss', {}, 'Dismiss'))}" style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0 6px;line-height:1;align-self:flex-start;margin-left:8px;">×</button>`
+        : '';
       h += `
         <div class="alert-card" data-link="${escapeHtml(a.link || '')}" role="link" tabindex="0" aria-label="${escapeHtml(a.title)}" style="display:flex;gap:0;margin-bottom:8px;border-radius:var(--radius);overflow:hidden;background:var(--surface);cursor:pointer;border:1px solid var(--border);transition:border-color 0.15s;">
           <div style="width:4px;min-height:100%;background:${borderColor};flex-shrink:0;"></div>
-          <div style="padding:12px 16px;flex:1;">
-            <div style="font-weight:600;font-size:14px;margin-bottom:4px;">${escapeHtml(a.title)}</div>
-            <div class="hint-md">${escapeHtml(a.detail)}</div>
+          <div style="padding:12px 16px;flex:1;display:flex;align-items:flex-start;">
+            <div style="flex:1;">
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px;">${escapeHtml(a.title)}</div>
+              <div class="hint-md">${escapeHtml(a.detail)}</div>
+            </div>
+            ${dismissBtn}
           </div>
         </div>
       `;
@@ -245,6 +299,21 @@ function renderAlertsPage() {
   if (!contentEl._delegated) {
     const activate = (card) => { if (card) location.hash = card.getAttribute('data-link'); };
     contentEl.addEventListener('click', (e) => {
+      // Dismiss-button clicks must NOT bubble up to the card link — handle
+      // them first and stop propagation so we don't navigate AND dismiss.
+      const dismiss = e.target.closest('.alert-dismiss');
+      if (dismiss) {
+        e.stopPropagation();
+        const key = dismiss.dataset.dismissKey;
+        if (key) localStorage.setItem(`financeos.${key}`, '1');
+        // Re-render: drop the dismissed alert from state and refresh.
+        if (Array.isArray(state.alerts)) {
+          state.alerts = state.alerts.filter(a => a.dismissable !== key);
+        }
+        renderAlertsPage();
+        if (typeof updateAlertsBadge === 'function') updateAlertsBadge();
+        return;
+      }
       activate(e.target.closest('.alert-card[data-link]'));
     });
     contentEl.addEventListener('keydown', (e) => {

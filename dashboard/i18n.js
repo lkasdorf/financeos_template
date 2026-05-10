@@ -52,7 +52,15 @@ async function loadLocale(locale) {
 function t(key, params = {}, fallback = null) {
   let str = window.STRINGS[key];
   if (str == null) str = fallback != null ? fallback : key;
-  return str.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
+  // Two interchangeable substitution syntaxes are in use across the
+  // codebase: legacy single-brace `{name}` (accounts/accp/...) and the
+  // Mustache-style double-brace `{{name}}` (alerts/properties/...). The
+  // double-brace pattern MUST be matched first — otherwise the inner
+  // `{name}` is consumed and the outer braces leak into the rendered
+  // string (visible as e.g. "over {20} months" on the property report).
+  return str
+    .replace(/\{\{(\w+)\}\}/g, (m, name) => (name in params ? String(params[name]) : m))
+    .replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
 }
 
 // Map the two-letter locale code to an IETF BCP-47 tag for Intl APIs.

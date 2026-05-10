@@ -18,6 +18,40 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.5.0-rc.1] - 2026-05-10
+
+### Added
+
+- **Properties subsystem (electricity & water tracking).** New top-level page (sidebar entry **Properties**, feature-flag `properties`, default-OFF in the Setup-Wizard since the prepaid-meter model is most common in East Africa — fully configurable for any utility model). Per-property drilldown with KPIs (electricity / kWh / water YTD, avg price/kWh, rolling-12 monthly averages, latest entry / days-since), 9 charts (monthly cost / kWh / water cost / yearly stack / price-per-kWh trend / YTD-cumulative current-vs-prev electricity + water / purchases-per-month / seasonality heatmap), full LUKU + Water log tables with Edit/Delete + receipt-group cascade.
+- **Properties data model.** `data/properties.csv` (header-only in the template), `data/luku_log.csv`, `data/water_log.csv`. `properties.csv` has 17 columns: id, name, address, owner, default_account, currency, electricity_payee, water_payee, electricity_meter, water_meter, water_control_number, electricity_category, water_category, cost_tag, start_date, end_date, active, notes. `luku_log` carries kWh + price-per-unit + meter-reading. `water_log` carries control_number + meter-reading. Both link back to `transactions.csv` via `tx_import_id`.
+- **TX-CLI for utilities.** `TX luku <kWh>kWh <cost>` and `TX water <cost>` — free-text prefixes that create both the log entry and the linked expense TX (plus pass-through reimbursement counter-entry where applicable) atomically. Supports `account=`, `date=`, `prop=`, `meter=`, `control=`, `note=` overrides. Backend at `python scripts/utilities.py luku tx <freetext>` / `... water tx <freetext>`.
+- **Cost-of-Living-per-Property report.** New entry under Reports → Expenses ("Cost of Living — Property"). Property dropdown + dynamic year pills (one per year present in the logs). Three KPI tiles (Total / Avg-per-month / biggest cost line) + stacked-bar monthly composition chart over 10 cost buckets (Rent / Service charges / Electricity / Water / Other utilities / Maintenance / Staff / Household / Legal & fees / Other) + by-bucket and by-category drill-down tables. Backend at `POST /api/properties/cost_overview` aggregates over TX tagged with the property's `cost_tag` and excludes reimbursement counter-entries so pass-through accounts don't zero out costs.
+- **Property `cost_tag` auto-tagging.** Each property now has a `cost_tag` field (default-derived from `property_id` — `prop-myhouse` → `Property_MYHOUSE`). `add_luku_entry` / `add_water_entry` automatically attach this tag to the expense TX in addition to the existing pass-through auto-tags, so the Cost-of-Living report aggregates without manual tagging.
+- **Lifecycle dating for properties + vehicles.** Properties get `start_date` (move-in) + `end_date` (move-out); vehicles get an `end_date` (`tracking_start_date` already doubles as acquisition). Empty = open-ended. Selector pills + drilldown headers render a lifecycle badge (`since YYYY-MM` / `until YYYY-MM` / `ended YYYY-MM`); archived rows (end_date in the past) drop to 0.7 opacity so historical periods are visually distinct from live data.
+- **Year-Picker in Property-Drilldown.** Pill strip below the property selector now shows `Last 3 months / This year / <every year in the logs> / All time`. Year mode recomputes the headline KPIs client-side from the filtered logs and labels the avg-cards as `Ø {{year}}` instead of `rolling 12m`.
+- **Built-in scheduler (`scripts/scheduler.py`).** Optional APScheduler-based daemon thread that runs `cron_fx` (06:00 UTC) / `cron_metals` (08:00) / `cron_sched` (09:00) / `cron_integrity` (02:00) as subprocess jobs. Auto-detects Docker (`/.dockerenv`) or opt-in via `FINANCEOS_BUILTIN_SCHEDULER=on`; bare-metal Pi defers to host cron. Override schedule via `config/scheduler.json`. `apscheduler` is an optional dependency in `requirements.txt`.
+- **`scripts/serve.py --reload`.** Optional dev-loop auto-restart on `.py` changes. Parent process watches `scripts/` via `watchdog`, kills + respawns the server child on every save. Child detects itself via `FINANCEOS_RELOAD_CHILD=1` env. `watchdog` is an optional dependency.
+- **Migration banner for pre-1.3.0 installs.** Alerts page surfaces a dismissable info card ("Reports may filter the wrong categories") when `config/reports.json` is missing AND transactions exist. Click → Settings → Reports. `/api/reports-config/get` now also returns `file_exists`. Generic dismissable-alert mechanism: any alert with `dismissable: '<key>'` gets a `×` button that persists in `localStorage`.
+- **Properties Recon-Banner.** `compute_property_alerts()` parses `data/utilities_unmapped.md` (written by the upstream backfill helper after each XLSX import) and surfaces unmapped LUKU/Water entries as a dismissable info alert. Reuses the same dismiss mechanism as the migration banner.
+- **`vehicles` and `properties` as Setup-Wizard feature toggles.** Step 5 of the Setup-Wizard now lists both subsystems alongside the existing toggles (`debt_tracking`, `metals`, `pwa`, `crdb_recon`, `quick_expenses`, `custom_reports`, `scheduled_tx`). Vehicles default-on; properties default-off (regional-fit caveat in the description).
+- **Setup-Wizard form-label i18n polish.** Four hard-coded English strings (Step-1 brand title, Step-3 auth-none-confirm checkbox, Step-6 filter label + placeholder, Step-6 extra-categories textarea placeholder) now flow through `data-i18n` / `data-i18n-placeholder` with EN+DE parity.
+
+### Changed
+
+- **`t()` substitution supports both `{name}` and `{{name}}`.** The legacy single-brace pattern (used by ~50 keys in `accounts/accp/...`) and the Mustache-style double-brace pattern (used by ~50 keys in `alerts/properties/vehicles/...`) now both substitute correctly. Previously the regex only matched single-brace, so `over {{months}} months` rendered as `over {20} months` because the inner `{months}` was consumed and the outer braces leaked.
+- **Cost-of-Living bucket classifier.** `Staff:*` is now checked before the `rent` substring match — staff rent-stipend categories now correctly land in the Staff bucket instead of inflating the Rent line. New `legal` bucket catches `Professional:Legal` + `Government:*` so lawyer fees and tribunal charges aren't anonymous "Other" rows.
+- **Property-pill `.vehicle-pill-meta` contrast in active state.** Was `var(--muted)` on the dark accent background, dropping below WCAG. Now `rgba(255,255,255,0.78)` so the secondary line ("Total · YTD") stays legible on the active pill.
+- **Print-CSS extended to Property-Drilldown.** Drilldown was previously hidden in `@media print` (only `#page-reports` was allowed). Now the drilldown prints as a multi-page report — interactive chrome (Add buttons, period pills) hidden, charts capped at 220px, `page-break-inside: avoid` per chart card.
+
+### Fixed
+
+- **Multiple chart legends in Properties were hard-coded German.** `Stromkosten` / `Verbrauch` / `Wasserkosten` / `Strom` / `Wasser` / `Median` / `TZS / kWh` are now i18n keys with EN+DE parity.
+- **Cost-of-Living report rendered empty.** `renderCostPerPropertyReport` targeted `#report-detail-content` but the reports framework injects content into `#report-output`. Container-ID mismatch led to an early return without render. Fixed + added an inline error banner that surfaces "server may need to be restarted" if the new endpoint isn't yet served.
+
+## [1.4.0] - 2026-05-09
+
+Promoted v1.4.0-rc.2 to final. No code changes vs. v1.4.0-rc.2 — this is the version-string promotion and the GitHub release tag. The v1.4.0 series shipped the **Vehicles UI subsystem** (Settings → Vehicles tab, per-vehicle drilldown selector, optional FX Charts sidebar link) plus six modal-edit-bug fixes. Properties / Cost-of-Living / lifecycle dating land in v1.5.0.
+
 ## [1.4.0-rc.2] - 2026-05-09
 
 ### Fixed

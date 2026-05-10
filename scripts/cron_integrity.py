@@ -5,7 +5,7 @@ Validates all CSV data files for consistency and correctness. Runs weekly
 via cron on the Pi and writes a report file if issues are found.
 
 Checks performed:
-    1. Orphaned pass-through entries — every expense on kft/kfu/ksdu must
+    1. Orphaned pass-through entries — every expense on a pass-through account must
        have a matching income counter-entry (same date, account, amount)
     2. Unknown categories — all categories in transactions.csv must exist
        in categories.csv
@@ -67,7 +67,7 @@ def load_transactions() -> list[dict]:
 def check_orphaned_pass_through(transactions: list[dict], accounts: dict) -> list[str]:
     """Check that every expense on a pass-through account has a matching income counter-entry.
 
-    Pass-through accounts (kft, kfu, ksdu) should always have paired entries:
+    Pass-through accounts should always have paired entries:
     one expense (the actual spend) and one income (the reimbursement).
     An orphaned expense means the counter-entry was somehow missed.
 

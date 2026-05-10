@@ -466,6 +466,7 @@ async function renderSettingsPage() {
     { id: 'payees', label: t('settings.tab.payees', {}, 'Payees') },
     { id: 'accounts', label: t('settings.tab.accounts', {}, 'Accounts') },
     { id: 'vehicles', label: t('settings.tab.vehicles', {}, 'Vehicles'), feature: 'vehicles' },
+    { id: 'properties', label: t('settings.tab.properties', {}, 'Properties') },
     { id: 'currency', label: t('settings.tab.currency', {}, 'Currency') },
     { id: 'fxrates', label: t('settings.tab.fxrates', {}, 'FX Rates') },
     { id: 'goals', label: t('settings.tab.goals', {}, 'Goals') },
@@ -494,6 +495,7 @@ async function renderSettingsPage() {
   else if (settingsTab === 'budgets') renderBudgetsTab();
   else if (settingsTab === 'reports') renderReportsConfigTab();
   else if (settingsTab === 'vehicles') renderVehiclesTab();
+  else if (settingsTab === 'properties') renderPropertiesSettingsTab();
   else if (settingsTab === 'branding') renderBrandingTab();
   else if (settingsTab === 'backup') renderBackupTab();
   else if (settingsTab === 'language') renderLanguageTab();
@@ -1020,7 +1022,7 @@ async function showTagModal(editTag) {
         </div>
       </div>
       <div class="atx-row">
-        <div class="atx-field"><label>${t('settings.tags.modal.label_auto_rule', {}, 'Auto-Rule (e.g. "account in kft;kfu")')}</label>
+        <div class="atx-field"><label>${t('settings.tags.modal.label_auto_rule', {}, 'Auto-Rule (e.g. "account in <account>;<account>")')}</label>
           <input type="text" id="tm-rule" value="${escapeHtml(tag?.auto_rule || '')}">
         </div>
         <div class="atx-field"><label>${t('common.status.active', {}, 'Active')}</label>

@@ -1156,6 +1156,11 @@ function navigateTo(pageId) {
       if (!isFeatureEnabled('vehicles')) { location.hash = '#dashboard'; return; }
       renderVehiclesPage();
     }
+    if (pageId === 'properties') {
+      // Properties is a stand-alone subsystem (LUKU + water tracking).
+      // No feature gate yet — always rendered when the user navigates here.
+      if (typeof renderPropertiesPage === 'function') renderPropertiesPage();
+    }
     if (pageId === 'add-tx') renderAddTxPage();
     if (pageId === 'payees') { settingsTab = 'payees'; navigateTo('settings'); return; }
     if (pageId === 'search') renderSearchPage();

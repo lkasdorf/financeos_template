@@ -4,3 +4,13 @@ bcrypt>=4.0,<6.0
 # xlrd 2.0 dropped .xls support — we read CRDB legacy .xls statements,
 # so keep it on the 1.x line.
 xlrd<2.0,>=1.2
+# Per-vehicle Excel export (writes .xlsx with formulas + Table objects).
+openpyxl>=3.1,<4.0
+# Optional dev-only dependency: enables `python scripts/serve.py --reload`
+# (auto-restart on Python-code change). Not needed for production / Pi.
+# watchdog>=3.0,<5.0
+# Optional dependency: enables the built-in scheduler (scripts/scheduler.py).
+# Auto-detects Docker / FINANCEOS_BUILTIN_SCHEDULER=on; bare-metal Pi can
+# stay on host cron and skip this. Saves Docker / Synology / Unraid users
+# from wiring a separate cron daemon.
+# apscheduler>=3.10,<4.0

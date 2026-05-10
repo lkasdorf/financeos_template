@@ -21,7 +21,7 @@
           <rect x="21" y="7" width="4" height="19" rx="1" fill="currentColor"/>
         </svg>
       </span>
-      <span>FinanceOS Setup</span>
+      <span data-i18n="setup.title">FinanceOS Setup</span>
     </div>
     <select id="setup-locale" class="setup-locale" aria-label="Language" title="Language">
       <option value="en">English</option>
@@ -118,7 +118,7 @@
         <span data-i18n-html="setup.s3.warn_html"><strong>Warning:</strong> running with <code>auth_mode=none</code> means anyone who reaches the dashboard URL can view and edit your data. Make sure the server is on a private network.</span>
         <label class="setup-field" style="margin-top:8px;">
           <input type="checkbox" id="auth-none-confirm">
-          <span>I understand the risk and want to proceed without authentication.</span>
+          <span data-i18n="setup.s3.warn_confirm">I understand the risk and want to proceed without authentication.</span>
         </label>
       </div>
     </section>
@@ -164,6 +164,8 @@
         <label><input type="checkbox" data-feature="quick_expenses" checked><span data-i18n-html="setup.s5.feat_quick"><strong>Quick expenses</strong> — chip shortcuts under Add TX for repeating cash purchases</span></label>
         <label><input type="checkbox" data-feature="custom_reports" checked><span data-i18n-html="setup.s5.feat_custom"><strong>Custom reports</strong> — user-defined reports with filter builder</span></label>
         <label><input type="checkbox" data-feature="scheduled_tx" checked><span data-i18n-html="setup.s5.feat_sched"><strong>Scheduled transactions</strong> — recurring TX templates (rent, salary, subscriptions)</span></label>
+        <label><input type="checkbox" data-feature="vehicles" checked><span data-i18n-html="setup.s5.feat_vehicles"><strong>Vehicles &amp; fuel tracking</strong> — per-vehicle fuel log, consumption charts, drift alerts</span></label>
+        <label><input type="checkbox" data-feature="properties"><span data-i18n-html="setup.s5.feat_properties"><strong>Properties &amp; utilities</strong> — per-house electricity/water tracking + Cost-of-Living-per-Property report. Best fit for prepaid-meter setups (e.g. LUKU electricity tokens, metered water) — configurable for any utility model</span></label>
       </div>
     </section>
 
@@ -185,13 +187,13 @@
         <p class="setup-hint" style="margin-top:0;" data-i18n-html="setup.s6.cust_hint">Pick from the categories that will be created. <strong>Tip:</strong> hold Ctrl / ⌘ to multi-select, type a letter to jump to the first match, scroll inside each box to see all options. Change everything later in <code>Settings → Reports</code>.</p>
         <div id="reports-step-detection" class="setup-hint" style="margin:0 0 8px;font-size:12px;"></div>
         <label style="display:block;margin-bottom:10px;font-size:12px;color:var(--muted);">
-          Filter the dropdown options:
-          <input type="text" id="reports-step-filter" placeholder="Type to filter all dropdowns (e.g. 'Income' or 'Bills')" style="width:100%;margin-top:4px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);">
+          <span data-i18n="setup.s6.filter_label">Filter the dropdown options:</span>
+          <input type="text" id="reports-step-filter" data-i18n-placeholder="setup.s6.filter_ph" placeholder="Type to filter all dropdowns (e.g. 'Income' or 'Bills')" style="width:100%;margin-top:4px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);">
         </label>
         <details style="margin-bottom:12px;">
           <summary style="cursor:pointer;font-size:12px;color:var(--muted);" data-i18n="setup.s6.extra_summary">Don't see one of your categories? Add it manually</summary>
           <div style="margin-top:8px;">
-            <textarea id="reports-step-extra-cats" rows="3" placeholder="Income:Salary&#10;Bills:Rent&#10;… one per line" style="width:100%;padding:6px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);"></textarea>
+            <textarea id="reports-step-extra-cats" rows="3" data-i18n-placeholder="setup.s6.extra_ph" placeholder="Income:Salary&#10;Bills:Rent&#10;… one per line" style="width:100%;padding:6px;font-family:monospace;font-size:12px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);"></textarea>
             <button type="button" id="reports-step-extra-apply" style="margin-top:6px;font-size:12px;padding:4px 10px;" data-i18n="setup.s6.extra_apply">Add to options</button>
           </div>
         </details>

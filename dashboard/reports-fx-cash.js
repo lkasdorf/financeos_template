@@ -902,7 +902,7 @@ function renderCashDiscrepancyReport() {
 // Deterministic 90-day projection from data/scheduled.csv. Expands each active
 // recurring template forward via its `frequency` (monthly:<day> or
 // weekly:<weekday>) and aggregates into 30/60/90-day cashflow buckets. Pass-
-// through accounts (kft/kfu/ksdu) contribute both the expense leg and the
+// through accounts (configured pass-through aliases) contribute both the expense leg and the
 // auto-reimbursement income leg, so they net to zero in the cashflow curve
 // while staying visible in the volume figures.
 

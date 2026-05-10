@@ -2525,8 +2525,41 @@
     .report-toolbar button,
     .nav-more-menu,
     .page-header .page-subtitle,
-    .page:not(#page-reports) {
+    .page:not(#page-reports):not(#page-properties) {
       display: none !important;
+    }
+
+    /* Property drilldown print rules — same idea as reports: drop the
+       interactive chrome (action buttons, period pill strip) and keep
+       only the KPI grid, charts and log tables on paper. */
+    #page-properties .property-actions,
+    #page-properties #properties-content > div[style*="display:flex"]:not(.report-section) {
+      /* (heuristic above only matches the bare period-pill wrapper, which
+         is rendered as a flex div — see renderPeriodPills() in
+         properties.js. Inline-styled pills don't get a class to anchor.) */
+    }
+    #page-properties .property-actions { display: none !important; }
+    /* The period-pill strip in properties.js doesn't carry a class, but it
+       sits as a direct child of #properties-content with inline flex
+       styles. We tag it via JS-emitted markup; until then this hides the
+       most common Add-* / Excel buttons by ID. */
+    #page-properties #btn-add-luku,
+    #page-properties #btn-add-water,
+    #page-properties #btn-property-excel { display: none !important; }
+    /* Keep all charts visible but cap their height so they don't push
+       a 7-chart page into 5+ printed pages. */
+    #page-properties canvas {
+      max-height: 220px !important;
+      height: 220px !important;
+    }
+    #page-properties .property-header h3 {
+      font-size: 14pt !important;
+      margin: 0 0 4pt !important;
+    }
+    /* Avoid breaking a single chart card across pages */
+    #page-properties .charts-grid > * {
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     /* Flatten the filter dropdowns to plain text — the reader should see
@@ -3360,3 +3393,181 @@
   /* Prevent body scroll while drawer/sheet is open */
   body.sheet-open,
   body.drawer-open { overflow: hidden; }
+
+  /* ═══ Properties (Utilities Subsystem Phase 2) ═══════════════════════════
+   * Layout for the LUKU + Water tracking page. Structure mirrors Vehicles
+   * but uses semantic class names instead of vh-/fl- prefixes — readable
+   * markup wins over short class names here.
+   */
+  .vehicle-selector {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .vehicle-pill {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    text-align: left;
+    font-family: inherit;
+    color: inherit;
+  }
+  .vehicle-pill:hover { border-color: var(--accent); }
+  .vehicle-pill.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(70,89,155,0.18);
+  }
+  .vehicle-pill-name { font-weight: 600; font-size: 14px; }
+  .vehicle-pill-meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  /* Active state forces white-ish meta-text so the secondary line stays
+     legible against the dark accent background — otherwise --muted (gray)
+     on --accent (dark blue) drops below the WCAG contrast threshold. */
+  .vehicle-pill.active .vehicle-pill-meta { color: rgba(255, 255, 255, 0.78); }
+
+  .property-drilldown {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .property-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+  }
+  .property-meta h3 { margin: 0 0 4px; font-size: 18px; }
+  .property-meta .muted { color: var(--muted); font-size: 12px; }
+  .property-actions { display: flex; gap: 8px; }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .btn-secondary:hover { border-color: var(--accent); }
+
+  .kpi-grid-properties { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+
+  .charts-grid-properties {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 14px;
+  }
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px 16px;
+    box-shadow: var(--shadow);
+  }
+  .chart-card h4 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .chart-card canvas {
+    width: 100% !important;
+    height: 240px !important;
+  }
+
+  .property-logs { display: flex; flex-direction: column; gap: 10px; }
+  .logs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 14px;
+  }
+  .log-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+  }
+  .log-block h4 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .log-block .muted { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .table-scroll { max-height: 720px; overflow: auto; }
+  .data-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .data-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    padding: 6px 8px;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .data-table tbody td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .data-table .num { text-align: right; }
+  .data-table tbody tr:hover { background: rgba(70,89,155,0.05); }
+
+  .btn-icon {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .btn-icon:hover { color: var(--negative); border-color: var(--negative); }
+
+  .tx-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: monospace;
+    font-size: 11px;
+  }
+  .tx-link:hover { text-decoration: underline; }
+
+  .empty-state {
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 30px;
+    text-align: center;
+    color: var(--muted);
+  }
+  .empty-state h3 { margin: 0 0 8px; }
+  .page-loading { padding: 30px; text-align: center; color: var(--muted); }
+  .error-banner {
+    background: rgba(231,76,60,0.08);
+    border: 1px solid var(--negative);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    color: var(--negative);
+  }

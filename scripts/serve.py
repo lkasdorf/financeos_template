@@ -58,9 +58,11 @@ if str(SCRIPTS_DIR) not in sys.path:
 import auth
 import backup
 import fuel
+import fuel_export
 import fx_backfill
 import setup_core
 import tx_engine
+import utilities
 from config_loader import get_default, get_reports_config, is_enabled, save_reports_config
 
 import re as _re
@@ -180,6 +182,7 @@ FEATURE_GATED_ROUTES = {
     "/api/fuel/delete": "vehicles",
     "/api/fuel/recon/dismiss": "vehicles",
     "/api/fuel/recon/undismiss": "vehicles",
+    "/api/fuel/export": "vehicles",
 }
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -535,6 +538,21 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/fuel/delete": self.handle_fuel_delete,
             "/api/fuel/recon/dismiss": self.handle_fuel_recon_dismiss,
             "/api/fuel/recon/undismiss": self.handle_fuel_recon_undismiss,
+            "/api/fuel/export": self.handle_fuel_export,
+            "/api/properties/list": self.handle_properties_list,
+            "/api/properties/details": self.handle_properties_details,
+            "/api/properties/cost_overview": self.handle_properties_cost_overview,
+            "/api/properties/excel": self.handle_properties_excel,
+            "/api/properties/alerts": self.handle_properties_alerts,
+            "/api/properties/add": self.handle_properties_add,
+            "/api/properties/update": self.handle_properties_update,
+            "/api/properties/delete": self.handle_properties_delete,
+            "/api/properties/luku/add": self.handle_luku_add,
+            "/api/properties/luku/update": self.handle_luku_update,
+            "/api/properties/luku/delete": self.handle_luku_delete,
+            "/api/properties/water/add": self.handle_water_add,
+            "/api/properties/water/update": self.handle_water_update,
+            "/api/properties/water/delete": self.handle_water_delete,
             "/api/setup/status": self.handle_setup_status,
             "/api/setup/mmex-upload": self.handle_setup_mmex_upload,
             "/api/setup/finalize": self.handle_setup_finalize,
@@ -2006,6 +2024,455 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             return
         self._respond_json(200, {"success": True})
 
+    def handle_fuel_export(self):
+        """Stream a per-vehicle fuel-log workbook as .xlsx.
+
+        Body: {vehicle_id}. Returns an Excel binary that mirrors the
+        original Vehicle_Fuel.xlsx layout (Cost sheet, Table1, formulas,
+        SUBTOTAL totals row) so users can drop the download into the
+        spreadsheet workflow they already had before FinanceOS owned the
+        fuel data.
+        """
+        body = self._read_json_body()
+        vehicle_id = body.get("vehicle_id", "").strip()
+        if not vehicle_id:
+            self._respond_json(400, {"error": "vehicle_id is required"})
+            return
+        try:
+            data, filename = fuel_export.build_vehicle_xlsx(vehicle_id)
+        except ValueError as exc:
+            self._respond_json(404, {"error": str(exc)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(f"[serve] fuel_export req={req_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {"error": "Export failed", "request_id": req_id})
+            return
+        self.send_response(200)
+        self.send_header(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self._send_cors_origin()
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    # ── API: /api/properties/* (Utilities Subsystem Phase 2) ─────────────
+
+    def handle_properties_list(self):
+        """Return all properties enriched with current-month + YTD KPIs.
+
+        Response is the array used to render the Properties sidebar cards.
+        Each entry carries the raw property fields (id, name, address,
+        meters, defaults) plus a `kpis` sub-dict computed server-side so
+        the frontend stays render-only.
+        """
+        try:
+            properties = utilities.list_properties_with_summary()
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] properties_list req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "properties_list failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"properties": properties})
+
+    def handle_properties_details(self):
+        """Return per-property full data: logs, monthly series, KPIs.
+
+        Body: {property_id}. The response is the single source of truth
+        for the property drilldown page — the client never has to compute
+        chart data or KPIs itself, which keeps the dashboard fast on
+        weak Pi-served browsers.
+        """
+        body = self._read_json_body()
+        property_id = body.get("property_id", "").strip()
+        if not property_id:
+            self._respond_json(400, {"error": "property_id is required"})
+            return
+        properties = utilities.load_properties()
+        if property_id not in properties:
+            self._respond_json(404, {"error": f"Property '{property_id}' not found"})
+            return
+        prop = properties[property_id]
+        try:
+            luku, water = utilities.filter_logs_by_property(property_id)
+            # Enrich LUKU rows with consumption_kwh between purchases
+            # so the dashboard can show "Verbrauch" alongside bought kWh
+            # without computing it client-side.
+            luku_enriched = utilities.enrich_luku_consumption(luku)
+            kpis = utilities.property_kpis(luku, water)
+            monthly_luku = utilities.monthly_luku_series(luku)
+            monthly_water = utilities.monthly_water_series(water)
+            yearly = utilities.yearly_comparison(luku, water)
+            price_trend = utilities.price_per_kwh_series(luku)
+            purchase_freq = utilities.luku_purchase_frequency(luku)
+            ytd_cum = utilities.ytd_cumulative(luku, water)
+            heatmap = utilities.seasonality_heatmap(luku, water)
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] properties_details req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "properties_details failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {
+            "property": prop,
+            "kpis": kpis,
+            "luku_log": luku_enriched,
+            "water_log": water,
+            "monthly_luku": monthly_luku,
+            "monthly_water": monthly_water,
+            "yearly": yearly,
+            "price_trend": price_trend,
+            "purchase_freq": purchase_freq,
+            "ytd_cumulative": ytd_cum,
+            "seasonality": heatmap,
+        })
+
+    def handle_properties_excel(self):
+        """Stream a per-property data-only workbook as .xlsx.
+
+        Body: {property_id}. Layout: Summary + LUKU_Log + Water_Log +
+        TX_Linked sheets. No charts (Dashboard owns those) — the export
+        is for raw-data sharing, e.g. with the rental-property accountant
+        who wants the kWh history without poking around the dashboard.
+        """
+        body = self._read_json_body()
+        property_id = body.get("property_id", "").strip()
+        if not property_id:
+            self._respond_json(400, {"error": "property_id is required"})
+            return
+        try:
+            import property_excel_export
+            data, filename = property_excel_export.build_property_xlsx(property_id)
+        except ValueError as exc:
+            self._respond_json(404, {"error": str(exc)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] properties_excel req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "Export failed", "request_id": req_id,
+            })
+            return
+        self.send_response(200)
+        self.send_header(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self._send_cors_origin()
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def handle_properties_cost_overview(self):
+        """Return Cost-of-Living aggregation for one property.
+
+        Body: {property_id, year}. `year` is optional — '' or 'all' means
+        full history, '2024' filters to that calendar year. Aggregates
+        every TX carrying the property's cost_tag into coarse buckets
+        (rent, service charges, utilities, maintenance, staff, etc.) so
+        the report tells a story instead of listing 30 categories.
+        """
+        body = self._read_json_body()
+        property_id = (body.get("property_id") or "").strip()
+        year = (body.get("year") or "").strip()
+        if not property_id:
+            self._respond_json(400, {"error": "property_id is required"})
+            return
+        try:
+            overview = utilities.cost_overview(property_id, year)
+        except ValueError as exc:
+            self._respond_json(404, {"error": str(exc)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] properties_cost_overview req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "cost_overview failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, overview)
+
+    def handle_properties_alerts(self):
+        """Return drift-alerts across all active properties.
+
+        Used by the dashboard's computeAlerts() pipeline so utility
+        anomalies (kWh-spike, missed water bill, price/kWh drift, LUKU
+        overdue) surface in the same Alerts tab as the rest of the
+        FinanceOS warnings.
+        """
+        try:
+            alerts = utilities.compute_property_alerts()
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] properties_alerts req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "properties_alerts failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"alerts": alerts})
+
+    def handle_properties_add(self):
+        """Create a new property row. Body is the full property dict.
+
+        Returns the assigned property_id. Validates name + currency on
+        the server so a malformed POST cannot leave properties.csv in a
+        partially-written state.
+        """
+        body = self._read_json_body()
+        try:
+            pid = utilities.add_property(body)
+        except ValueError as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            self._respond_json(500, {"error": f"add_property failed: {exc}"})
+            return
+        tx_engine.git_commit(
+            f"Property add: {body.get('name', pid)}", ["data/properties.csv"]
+        )
+        self._respond_json(200, {"success": True, "property_id": pid})
+
+    def handle_properties_update(self):
+        """Patch fields on an existing property row. property_id required."""
+        body = self._read_json_body()
+        pid = body.get("property_id", "").strip()
+        if not pid:
+            self._respond_json(400, {"error": "property_id is required"})
+            return
+        try:
+            ok = utilities.update_property(pid, body)
+        except Exception as exc:
+            self._respond_json(500, {"error": f"update_property failed: {exc}"})
+            return
+        if not ok:
+            self._respond_json(404, {"error": f"Property '{pid}' not found"})
+            return
+        tx_engine.git_commit(f"Property edit: {pid}", ["data/properties.csv"])
+        self._respond_json(200, {"success": True})
+
+    def handle_properties_delete(self):
+        """Remove a property. Refuses when LUKU/Water log entries reference it.
+
+        The Settings UI blocks this client-side, but a server-side check
+        protects against direct API calls and preserves historical
+        aggregates. Caller is told how many entries block it.
+        """
+        body = self._read_json_body()
+        pid = body.get("property_id", "").strip()
+        if not pid:
+            self._respond_json(400, {"error": "property_id is required"})
+            return
+        try:
+            luku_ref = sum(
+                1 for r in utilities.load_luku_log() if r.get("property_id") == pid
+            )
+            water_ref = sum(
+                1 for r in utilities.load_water_log() if r.get("property_id") == pid
+            )
+        except Exception:
+            luku_ref = water_ref = 0
+        if luku_ref or water_ref:
+            self._respond_json(409, {
+                "error": (
+                    f"Property '{pid}' has {luku_ref} LUKU + {water_ref} water "
+                    f"entries. Archive it (active=false) instead, or delete "
+                    f"the log entries first."
+                ),
+                "luku_entries": luku_ref,
+                "water_entries": water_ref,
+            })
+            return
+        try:
+            ok = utilities.delete_property(pid)
+        except Exception as exc:
+            self._respond_json(500, {"error": f"delete_property failed: {exc}"})
+            return
+        if not ok:
+            self._respond_json(404, {"error": f"Property '{pid}' not found"})
+            return
+        tx_engine.git_commit(f"Property delete: {pid}", ["data/properties.csv"])
+        self._respond_json(200, {"success": True})
+
+    def handle_luku_add(self):
+        """Create a LUKU log entry + linked expense (+ reimburse) TX.
+
+        Body: {date, property_id, units_kwh, total_price, account?,
+        meter?, note?}. Mirrors the TX-luku free-text flow but with a
+        structured form payload from the Add-LUKU modal.
+        """
+        body = self._read_json_body()
+        try:
+            result = utilities.add_luku_entry(
+                date=body["date"],
+                property_id=body["property_id"],
+                units_kwh=float(body["units_kwh"]),
+                total_price=float(body["total_price"]),
+                account=(body.get("account") or "").strip() or None,
+                meter=body.get("meter", "").strip(),
+                note=body.get("note", "").strip(),
+            )
+        except (KeyError, ValueError) as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] luku_add req={req_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "luku_add failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_water_add(self):
+        """Create a Water log entry + linked expense (+ reimburse) TX.
+
+        Body: {date, property_id, total_price, account?, control_number?,
+        meter?, note?}. Mirrors handle_luku_add for the simpler
+        water-bill case (no kWh field).
+        """
+        body = self._read_json_body()
+        try:
+            result = utilities.add_water_entry(
+                date=body["date"],
+                property_id=body["property_id"],
+                total_price=float(body["total_price"]),
+                account=(body.get("account") or "").strip() or None,
+                control_number=body.get("control_number", "").strip(),
+                meter=body.get("meter", "").strip(),
+                note=body.get("note", "").strip(),
+            )
+        except (KeyError, ValueError) as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] water_add req={req_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "water_add failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_luku_update(self):
+        """Edit a LUKU log entry. Body: {luku_id, ...partial fields}.
+
+        Implementation cascades through utilities.update_luku_entry which
+        delete-then-recreates so the TX import_id rotates cleanly when
+        amount or account changes (no in-place TX edit pain).
+        """
+        body = self._read_json_body()
+        luku_id = body.get("luku_id", "").strip()
+        if not luku_id:
+            self._respond_json(400, {"error": "luku_id is required"})
+            return
+        editable = (
+            "date", "property_id", "units_kwh", "total_price",
+            "account", "meter", "note",
+        )
+        new_fields = {}
+        for k in editable:
+            if k in body and body[k] not in (None, ""):
+                new_fields[k] = body[k]
+        try:
+            result = utilities.update_luku_entry(luku_id, **new_fields)
+        except ValueError as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_water_update(self):
+        """Edit a Water log entry. Body: {water_id, ...partial fields}."""
+        body = self._read_json_body()
+        water_id = body.get("water_id", "").strip()
+        if not water_id:
+            self._respond_json(400, {"error": "water_id is required"})
+            return
+        editable = (
+            "date", "property_id", "total_price",
+            "account", "control_number", "meter", "note",
+        )
+        new_fields = {}
+        for k in editable:
+            if k in body and body[k] not in (None, ""):
+                new_fields[k] = body[k]
+        try:
+            result = utilities.update_water_entry(water_id, **new_fields)
+        except ValueError as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_luku_delete(self):
+        """Delete a LUKU log entry by luku_id, cascading the linked TX(s).
+
+        Body: {luku_id}. Cascade order is owned by utilities.delete_luku_entry:
+        backup → reimburse-counter-entry (if pass-through) → expense TX →
+        log row. Returns {tx_deleted, reimburse_deleted} so the dashboard
+        can show what actually got removed.
+        """
+        body = self._read_json_body()
+        luku_id = body.get("luku_id", "").strip()
+        if not luku_id:
+            self._respond_json(400, {"error": "luku_id is required"})
+            return
+        try:
+            result = utilities.delete_luku_entry(luku_id)
+        except ValueError as exc:
+            self._respond_json(404, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_water_delete(self):
+        """Delete a Water log entry by water_id, cascading the linked TX(s)."""
+        body = self._read_json_body()
+        water_id = body.get("water_id", "").strip()
+        if not water_id:
+            self._respond_json(400, {"error": "water_id is required"})
+            return
+        try:
+            result = utilities.delete_water_entry(water_id)
+        except ValueError as exc:
+            self._respond_json(404, {"error": str(exc)})
+            return
+        self._respond_json(200, {"success": True, **result})
+
     def handle_fuel_delete(self):
         """Delete a fuel entry by fuel_id, cascading the linked TX(s)."""
         body = self._read_json_body()
@@ -2282,8 +2749,17 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
     # second fetch.
 
     def handle_reports_config_get(self):
-        """Return the effective reports config (file merged over defaults)."""
-        self._respond_json(200, {"config": get_reports_config()})
+        """Return the effective reports config (file merged over defaults).
+
+        Also reports `file_exists`, which the dashboard uses to decide
+        whether to show the migration-banner for installs that skipped
+        the 1.3.0 setup-step-6 (config/reports.json gets written there).
+        """
+        from config_loader import _REPORTS_PATH  # local import to avoid touching module-init
+        self._respond_json(200, {
+            "config": get_reports_config(),
+            "file_exists": _REPORTS_PATH.exists(),
+        })
 
     def handle_reports_config_save(self):
         """Replace config/reports.json with the posted body. Body: {config: {...}}."""
@@ -2738,6 +3214,87 @@ def open_browser(url: str, delay: float = 0.5) -> None:
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _run_with_reload(child_argv: list[str]) -> int:
+    """Parent-mode for `--reload`: watch `scripts/` and respawn the server
+    child whenever a `.py` file changes.
+
+    The child runs the same `serve.py` invocation with `FINANCEOS_RELOAD_CHILD=1`
+    set so it skips this branch and goes straight into the normal HTTP loop.
+    Only Python files trigger a restart — JS / CSS / HTML are served live by
+    the running process and never need a reload.
+    """
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        print(
+            "[err] --reload requires the `watchdog` package.\n"
+            "      Install with: pip install watchdog",
+            file=sys.stderr,
+        )
+        return 1
+
+    import subprocess
+    import threading
+
+    pending_restart = threading.Event()
+
+    def spawn_child() -> subprocess.Popen:
+        env = os.environ.copy()
+        env["FINANCEOS_RELOAD_CHILD"] = "1"
+        cmd = [sys.executable, str(Path(__file__).resolve())] + list(child_argv)
+        return subprocess.Popen(cmd, env=env)
+
+    class _Handler(FileSystemEventHandler):
+        def on_modified(self, event):
+            if not event.is_directory and event.src_path.endswith(".py"):
+                pending_restart.set()
+
+        def on_created(self, event):
+            if not event.is_directory and event.src_path.endswith(".py"):
+                pending_restart.set()
+
+    observer = Observer()
+    observer.schedule(_Handler(), str(SCRIPTS_DIR), recursive=True)
+    observer.start()
+
+    print(f"[reload] Watching {SCRIPTS_DIR} for *.py changes — Ctrl+C to stop.")
+    child = spawn_child()
+
+    try:
+        while True:
+            if pending_restart.wait(timeout=1.0):
+                # Debounce: editors often save in two writes (truncate + flush)
+                # so we wait briefly and then drain everything queued in that
+                # window into a single restart.
+                time.sleep(0.3)
+                pending_restart.clear()
+                print("[reload] Python file changed — restarting server…")
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+                child = spawn_child()
+            elif child.poll() is not None:
+                # Child exited on its own (crash / clean shutdown). Mirror its
+                # exit code so the parent doesn't keep an orphan process tree.
+                return child.returncode or 0
+    except KeyboardInterrupt:
+        print("\n[reload] Stopping…")
+        child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+    finally:
+        observer.stop()
+        observer.join()
+    return 0
+
+
 def main() -> int:
     """Parse CLI args and start the HTTP server.
 
@@ -2750,7 +3307,16 @@ def main() -> int:
     parser.add_argument("--bind", default=DEFAULT_BIND, help=f"Bind-Adresse (Default: {DEFAULT_BIND}, fuer Netzwerk: 0.0.0.0)")
     parser.add_argument("--source", choices=["preview", "live"], default="live",
                         help="Default-Datenquelle fürs Dashboard (preview oder live)")
+    parser.add_argument("--reload", action="store_true",
+                        help="Auto-Reload des Servers bei Python-Code-Änderungen (Dev-Loop, requires watchdog).")
     args = parser.parse_args()
+
+    # `--reload` runs us as a parent supervisor that respawns the actual
+    # server child on every .py change. The child is detected via the env
+    # var so it never re-enters this branch.
+    if args.reload and not os.environ.get("FINANCEOS_RELOAD_CHILD"):
+        child_argv = [a for a in sys.argv[1:] if a != "--reload"]
+        return _run_with_reload(child_argv)
 
     url = f"http://localhost:{args.port}{DASHBOARD_PATH}?source={args.source}"
 
@@ -2773,6 +3339,15 @@ def main() -> int:
 
     if not args.no_open:
         open_browser(url)
+
+    # Built-in scheduler — replaces host-cron wiring on Docker / Synology /
+    # Unraid setups. Bare-metal Pi falls back to host crontab unless the
+    # operator opts in via env or config. No-op if apscheduler is missing.
+    try:
+        import scheduler as _scheduler_mod  # noqa: F401 — local module
+        _scheduler_mod.start_scheduler()
+    except Exception as exc:  # noqa: BLE001 — scheduler must never break boot
+        print(f"[warn] scheduler init failed: {exc}", file=sys.stderr)
 
     try:
         with http.server.ThreadingHTTPServer((args.bind, args.port), FinanceOSHandler) as httpd:
