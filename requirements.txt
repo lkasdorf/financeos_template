@@ -6,6 +6,14 @@ bcrypt>=4.0,<6.0
 xlrd<2.0,>=1.2
 # Per-vehicle Excel export (writes .xlsx with formulas + Table objects).
 openpyxl>=3.1,<4.0
+# Receipt-Attachments (v1.6.0): EXIF strip + 256px JPEG thumbnails. All uploads
+# are re-encoded as JPEG so metadata is dropped at the encoder boundary —
+# camera model, GPS, timestamps all go away even if the user disabled stripping.
+Pillow>=10.0,<12.0
+# HEIC support for iPhone uploads. Pure-Python wheel on Pi, ~2 MB on disk.
+# After deploy, run `pip install -r requirements.txt` in the Pi venv —
+# silent ImportError otherwise will throw 500s on the first HEIC upload.
+pillow-heif>=0.13,<1.0
 # Optional dev-only dependency: enables `python scripts/serve.py --reload`
 # (auto-restart on Python-code change). Not needed for production / Pi.
 # watchdog>=3.0,<5.0

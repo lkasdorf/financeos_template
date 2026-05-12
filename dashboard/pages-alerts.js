@@ -191,6 +191,40 @@ async function computeAlerts() {
     }
   } catch (e) { /* API not available — ignore */ }
 
+  // ─── Subscriptions drift (v1.6.0 / C2) ───
+  // Surface subscriptions whose latest charge spiked >5% vs the prior charge.
+  // Feature-gated so a fresh install without subscriptions enabled doesn't
+  // ping a 404. Threshold is the server-side default — we don't pass one.
+  if (typeof isFeatureEnabled !== 'function' || isFeatureEnabled('subscriptions')) {
+    try {
+      const res = await fetch('/api/subscriptions/drift_alerts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const driftAlerts = Array.isArray(data.alerts) ? data.alerts : [];
+        for (const a of driftAlerts) {
+          const ccy = a.currency || '';
+          alerts.push({
+            type: 'subscription_drift',
+            severity: 'warning',
+            title: t('alerts.subscription_drift.title', { name: a.name, pct: a.increase_pct }, `${a.name}: +${a.increase_pct}% vs last charge`),
+            detail: t('alerts.subscription_drift.detail', {
+              prev: formatCurrency(a.prev_amount, ccy),
+              last: formatCurrency(a.last_amount, ccy),
+              ccy: ccy,
+              prevDate: a.prev_date,
+              lastDate: a.last_date,
+            }, `${formatCurrency(a.prev_amount, ccy)} ${ccy} on ${a.prev_date} → ${formatCurrency(a.last_amount, ccy)} ${ccy} on ${a.last_date}. Open Subscriptions to review.`),
+            navigate: '#subscriptions',
+            subscription_id: a.subscription_id,
+          });
+        }
+      }
+    } catch (e) { /* offline or feature off — ignore */ }
+  }
+
   // Migration nudge: pre-1.3.0 installs never wrote `config/reports.json`,
   // which means several reports filter on stale category names and silently
   // return empty. The setup-step-6 wizard creates this file for fresh

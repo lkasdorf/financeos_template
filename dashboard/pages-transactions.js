@@ -145,6 +145,12 @@ function renderTransactionsPage() {
     const noteFull = tx.note || '';
     const noteShort = noteFull.length > 80 ? noteFull.slice(0, 79) + '…' : noteFull;
     const note = noteFull ? `<div class="tx-note" title="${escapeHtml(noteFull)}">${escapeHtml(noteShort)}</div>` : '';
+    // v1.6.0 — 📎 indicator for TXs with attached receipts. Click opens the
+    // read-only preview modal (renderAttachmentGrid from receipts.js).
+    const receiptUrls = parseReceiptList(tx.receipt_url || '');
+    const receiptIcon = receiptUrls.length
+      ? `<button type="button" class="tx-receipt-icon" data-action="showTxReceipts" data-arg1="${escapeHtml(tx.import_id)}" title="${escapeHtml(t('receipts.tx_list.icon_alt', { n: receiptUrls.length }, `${receiptUrls.length} attachment${receiptUrls.length === 1 ? '' : 's'}`))}">📎</button>`
+      : '';
     const fxTitle = t('tx.fx_converted_title', { date: tx.date }, `Converted using FX rate on ${tx.date} (fallback: month rate)`);
     return `
       <tr class="${isChecked ? 'row-selected' : ''}">
@@ -152,13 +158,13 @@ function renderTransactionsPage() {
         <td>${fmtDate(tx.date)}</td>
         <td>${tx.account}</td>
         <td class="fs-10 c-mut2">${tx.type}</td>
-        <td>${payeeLabel}${note}</td>
+        <td>${payeeLabel}${receiptIcon}${note}</td>
         <td class="cat">${catOrType}</td>
         <td>${tags}</td>
         <td class="amt ${typeClass}">${formatCurrency(tx.amount, tx.currency)}</td>
         <td class="hint-sm">${tx.currency}</td>
         <td class="amt c-mut2" title="${escapeHtml(fxTitle)}">${tx.currency === 'EUR' ? '' : formatCurrency(convertToEur(tx.amount, tx.currency, tx.date), 'EUR') + ' €'}</td>
-        <td class="tx-actions"><button class="tx-edit-btn icon-btn" data-import-id="${escapeHtml(tx.import_id)}" title="${editLabel}" aria-label="${editLabel}">✎</button><button class="tx-edit-btn icon-btn" data-duplicate-id="${escapeHtml(tx.import_id)}" title="${duplicateLabel}" aria-label="${duplicateLabel}">⧉</button><button class="tx-edit-btn icon-btn btn-delete-sm" data-delete-id="${escapeHtml(tx.import_id)}" title="${deleteLabel}" aria-label="${deleteLabel}">✕</button></td>
+        <td class="tx-actions">${receiptUrls.length ? `<button class="tx-edit-btn icon-btn" data-action="showTxReceipts" data-arg1="${escapeHtml(tx.import_id)}" title="${escapeHtml(t('receipts.tx_list.btn_title', {}, 'Show attachments'))}" aria-label="${escapeHtml(t('receipts.tx_list.btn_title', {}, 'Show attachments'))}">📎</button>` : ''}<button class="tx-edit-btn icon-btn" data-import-id="${escapeHtml(tx.import_id)}" title="${editLabel}" aria-label="${editLabel}">✎</button><button class="tx-edit-btn icon-btn" data-duplicate-id="${escapeHtml(tx.import_id)}" title="${duplicateLabel}" aria-label="${duplicateLabel}">⧉</button><button class="tx-edit-btn icon-btn btn-delete-sm" data-delete-id="${escapeHtml(tx.import_id)}" title="${deleteLabel}" aria-label="${deleteLabel}">✕</button></td>
       </tr>
     `;
   }).join('');
@@ -282,6 +288,17 @@ function renderTransactionsPage() {
       // Pagination
       if (e.target.id === 'txp-prev') { txPage.page--; renderTransactionsPage(); return; }
       if (e.target.id === 'txp-next') { txPage.page++; renderTransactionsPage(); return; }
+      // v1.6.0 — receipt-icon click in the payee cell. Opens a read-only
+      // modal with thumbnails; clicks inside the grid open the lightbox /
+      // PDF embed from receipts.js.
+      const rcptBtn = e.target.closest('[data-action="showTxReceipts"]');
+      if (rcptBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const tx = state.tx.find(t => t.import_id === rcptBtn.getAttribute('data-arg1'));
+        if (tx) _openTxReceiptsModal(tx);
+        return;
+      }
       // Edit button
       const editBtn = e.target.closest('.tx-edit-btn[data-import-id]');
       if (editBtn) {
@@ -568,5 +585,39 @@ function exportTransactions() {
   }));
   const filters = [txPage.filterType, txPage.filterAccount].filter(Boolean).join('_') || 'all';
   exportXlsx(data, `transactions_${filters}_${new Date().toISOString().slice(0,10)}`, 'Transactions');
+}
+
+// ─── v1.6.0 receipts read-only preview modal ──────────────────────────
+
+function _openTxReceiptsModal(tx) {
+  const urls = parseReceiptList(tx.receipt_url || '');
+  if (!urls.length) return;
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML = `
+    <div class="modal-content modal-receipts">
+      <h3>${escapeHtml(t('receipts.modal.title', {}, 'Attachments'))}</h3>
+      <div class="hint-sm" style="margin-bottom:8px">${escapeHtml(tx.payee || tx.account || '')} · ${escapeHtml(tx.date || '')}</div>
+      <div id="tx-receipts-grid"></div>
+      <div class="modal-footer">
+        <div class="btn-right">
+          <button data-action="closeModal">${escapeHtml(t('common.actions.close', {}, 'Close'))}</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(ov);
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    if (ov.parentNode) ov.parentNode.removeChild(ov);
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  ov.addEventListener('click', (e) => {
+    if (e.target === ov || e.target.closest('[data-action="closeModal"]')) close();
+  });
+  document.addEventListener('keydown', onKey);
+  // Render the grid in read-only mode — receipts.js wires the tile click
+  // into openReceiptViewer (lightbox for images, embed for PDFs).
+  renderAttachmentGrid(document.getElementById('tx-receipts-grid'), urls, { editable: false });
 }
 

@@ -203,6 +203,11 @@ def _build_primary_line(entry: dict, accounts: dict, categories: dict, today: da
         "receipt_url": "",
         "tags": ";".join(all_tags),
         "third_party_id": "",
+        # v1.5.1: optional subscription link carried in-memory only. Not a TX
+        # column — run_due() mirrors this into subscription_log.csv after the
+        # TX is appended. Pass-through reimbursement lines deliberately skip
+        # this (see generate_pass_through_line — it never copies the field).
+        "subscription_id": entry.get("subscription_id", ""),
     }
     line["import_id"] = tx_engine.generate_import_id(
         line["date"], line["account"], float(line["amount"]),
@@ -252,6 +257,9 @@ def build_preview(today: date | None = None) -> dict:
             "next_run_after": next_after,
             "primary": primary,
             "pass_through": pt_line,
+            # v1.5.1: surface the linked subscription_id so the dashboard
+            # preview can render a badge next to the entry. Empty when no link.
+            "subscription_id": entry.get("subscription_id", ""),
         })
     return {
         "today": today.isoformat(),
@@ -299,8 +307,15 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
             "warnings": warnings,
         }
 
+    # v1.5.1: detect subscription-linked entries up-front so subscription_log
+    # is backed up before any write touches it. Strip whitespace before the
+    # truthiness check so a row with "  " is correctly treated as unlinked.
+    has_sub_links = any((e.get("subscription_id") or "").strip() for e in due)
+
     backup_file("transactions", BACKUP_TARGETS["transactions"])
     backup_file("scheduled", BACKUP_TARGETS["scheduled"])
+    if has_sub_links:
+        backup_file("subscription_log", BACKUP_TARGETS["subscription_log"])
 
     all_tx_lines: list[dict] = []
     summaries: list[str] = []
@@ -329,6 +344,37 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     tx_engine.append_transactions(all_tx_lines)
     tx_engine.save_scheduled(scheduled)
 
+    # v1.5.1: mirror SCHED-linked primary lines into subscription_log. Mirrors
+    # the post-append pattern in serve.handle_tx_confirm so the Subscriptions
+    # page picks up SCHED-fired charges without manual re-linking. Pass-through
+    # reimbursement lines never carry subscription_id (generate_pass_through_line
+    # does not copy the field), so iterating all_tx_lines is safe.
+    sub_log_written: list[str] = []
+    if has_sub_links:
+        import subscriptions  # local import: cron may run without dashboard libs preloaded
+        for line in all_tx_lines:
+            sid = (line.get("subscription_id") or "").strip()
+            if not sid:
+                continue
+            try:
+                log_id = subscriptions.append_subscription_log({
+                    "date": line.get("date", ""),
+                    "subscription_id": sid,
+                    "amount": line.get("amount", ""),
+                    "currency": line.get("currency", ""),
+                    "account": line.get("account", ""),
+                    "tx_import_id": line.get("import_id", ""),
+                    "note": "",
+                })
+                sub_log_written.append(log_id)
+            except Exception as exc:
+                # Same trade-off as serve.handle_tx_confirm: log-link failures
+                # do NOT roll back the TX. User can re-link via Edit-TX modal.
+                warnings.append(
+                    f"subscription_log link failed for "
+                    f"{line.get('import_id', '')}: {exc}"
+                )
+
     n_booked = len(due)
     summary_str = ", ".join(summaries[:5])
     if len(summaries) > 5:
@@ -339,10 +385,10 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     # exit codes; the dashboard path stays async (default) for snappy UX.
     if source == "cron":
         os.environ["GIT_COMMIT_SYNC"] = "1"
-    commit_ok = tx_engine.git_commit(commit_msg, files=[
-        "data/transactions.csv",
-        "data/scheduled.csv",
-    ])
+    commit_files = ["data/transactions.csv", "data/scheduled.csv"]
+    if sub_log_written:
+        commit_files.append("data/subscription_log.csv")
+    commit_ok = tx_engine.git_commit(commit_msg, files=commit_files)
 
     return {
         "today": today.isoformat(),
@@ -352,6 +398,9 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
         "commit_ok": bool(commit_ok),
         "commit_msg": commit_msg,
         "warnings": warnings,
+        # v1.5.1: surface how many subscription_log links the run produced.
+        # Empty list when no SCHED entry was subscription-linked.
+        "linked_sub_logs": sub_log_written,
     }
 
 

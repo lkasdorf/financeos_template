@@ -153,6 +153,33 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
         raise
 
 
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Binary equivalent of :func:`_atomic_write_text`.
+
+    Used by the receipts module (v1.6.0) to drop uploaded image/PDF bytes
+    onto disk without risk of a half-written file if the server crashes
+    mid-upload. Same OS-level rename guarantees as the text variant.
+    """
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _atomic_csv_rewrite(
     path: Path,
     fieldnames: list[str],
@@ -192,6 +219,25 @@ def load_categories() -> dict[str, dict]:
         for row in csv.DictReader(f):
             cats[row["path"]] = row
     return cats
+
+
+def load_transaction_by_id(import_id: str) -> dict | None:
+    """Return the transaction row for ``import_id`` or None if missing.
+
+    Used by edit flows that need to read the persisted TX (after an
+    update) to mirror canonical fields into related logs (e.g.
+    subscription_log). Avoids re-deriving fields the caller already
+    overwrote in transactions.csv.
+    """
+    tx_path = DATA_DIR / "transactions.csv"
+    if not tx_path.exists():
+        return None
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get("import_id") == import_id:
+                return row
+    return None
 
 
 def load_existing_import_ids() -> set[str]:
@@ -537,10 +583,14 @@ def delete_tag(tag_name: str) -> bool:
 
 # ── Scheduled Transactions ───────────────────────────────────────────────────
 
-# Column order for scheduled.csv — must match the CSV header exactly
+# Column order for scheduled.csv — must match the CSV header exactly.
+# `subscription_id` (v1.5.1) optionally links a recurring template to a row in
+# subscriptions.csv so every fire auto-populates subscription_log via
+# cron_sched.run_due(). Empty = no link, mirroring manual TX-form behavior.
 SCHEDULED_FIELDS = [
     "sched_id", "name", "account", "amount", "currency", "payee",
     "category", "note", "manual_tags", "frequency", "next_run", "last_run", "active",
+    "subscription_id",
 ]
 
 
@@ -2037,7 +2087,10 @@ def build_manual_lines(form_data: dict) -> dict:
                 "transfer_to_account": "",
                 "transfer_to_amount": "",
                 "receipt_group": receipt_group,
-                "receipt_url": "",
+                # v1.6.0: all split lines share the same uploaded receipts
+                # (one receipt, multiple categories). receipt_url is a
+                # semicolon-separated URL list — see scripts/receipts.py.
+                "receipt_url": form_data.get("receipt_url", "") or "",
                 "tags": tags_str,
                 "third_party_id": "",
             }
@@ -2074,7 +2127,9 @@ def build_manual_lines(form_data: dict) -> dict:
             "transfer_to_account": form_data.get("transfer_to_account", ""),
             "transfer_to_amount": str(form_data.get("transfer_to_amount", "")) if form_data.get("transfer_to_amount") else "",
             "receipt_group": "",
-            "receipt_url": "",
+            # v1.6.0: attached receipts (semicolon-separated URL list) from
+            # the Add-TX form. Empty when nothing was uploaded.
+            "receipt_url": form_data.get("receipt_url", "") or "",
             "tags": tags_str,
             "third_party_id": "",
         }
@@ -2085,6 +2140,13 @@ def build_manual_lines(form_data: dict) -> dict:
         )
         existing_ids.add(line["import_id"])
         line["is_auto_generated"] = False
+        # Attach the optional subscription link only to single-line
+        # user TXs (not splits — splits rarely map to subscriptions
+        # and risk false positives — and never to pass-through
+        # counter-entries, which the link must not mirror).
+        sub_link = (form_data.get("subscription_id") or "").strip()
+        if sub_link and base_type != "transfer":
+            line["subscription_id"] = sub_link
         final_lines.append(line)
 
         # Pass-through

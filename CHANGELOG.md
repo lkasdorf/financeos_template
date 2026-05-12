@@ -18,6 +18,45 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.6.0-rc.1] - 2026-05-12
+
+### Added
+
+- **Receipt attachments on transactions (Photos + PDFs).** Each transaction can now carry one or more receipt files. New module `scripts/receipts.py` handles upload, delete, multipart parsing, and image normalisation; images are re-encoded server-side as JPEG quality 92 so EXIF, GPS, camera model and any other metadata are dropped at the encoder boundary regardless of what the client sent. PDFs are stored as-is. HEIC from iPhone uploads decodes transparently via `pillow-heif`. 256-px JPEG thumbnails are generated for fast list rendering.
+- **Storage layout.** Files live under `data/receipts/YYYY/MM/<hex>.<ext>` (originals) and `data/receipts/thumbs/<hex>.jpg` (thumbnails), keyed by a 16-character random hex so URLs are unguessable. The path is git-ignored by default; back it up via your usual data-volume strategy.
+- **Add-TX form: three input channels.** File picker, drag-and-drop, **and clipboard paste** — copy an image (Snipping Tool / Cmd+Shift+S / browser screenshot) and `Ctrl+V` in the form drops it straight into the upload list, no file-save detour.
+- **Edit-TX modal: receipt gallery.** Existing attachments render as a thumbnail grid with remove (×) buttons. New files can be added via the same picker/drop/paste channels. Save uploads new files, deletes removed ones, then PATCHes the TX in a single round-trip.
+- **Transactions list: 📎 indicator + action button.** A 📎 next to the payee shows the row has receipts; a matching 📎 button in the action column (right side, between the edit/duplicate icons and the existing actions) opens a read-only viewer. Both surfaces dispatch the same `showTxReceipts` handler.
+- **Lightbox + PDF embed.** Click an image thumbnail → full-screen image viewer with ESC-to-close. Click a PDF thumbnail → modal with the native browser PDF viewer (`<embed type="application/pdf">`). No PDF.js dependency needed.
+- **Settings → Receipts tab.** Coverage KPIs (with / without / coverage % / storage MB / file-types breakdown) + a "missing receipts" table listing non-transfer transactions above a per-currency threshold (default TZS 50 000 / EUR 20 / USD 20 / PLN 100 / GBP 20) that don't yet have an attachment, newest first. Click **Attach →** on a row to open the edit modal directly. KPI cards render in a CSS-grid with `repeat(auto-fit, minmax(160px, 1fr))` so they all have the same width regardless of content length.
+- **Bulk ZIP export.** Settings → Receipts → "Bulk ZIP export" section. Pick a date range (default: first of current month → today) plus optional account and tag filters and an "only with receipts" toggle, hit **Export ZIP**. Server builds a tempfile-backed ZIP and streams it back in 64-KB chunks (no double-buffering in memory). ZIP layout: `index.csv` with one row per transaction (date / import_id / account / type / payee / category / amount / currency / tags / files) + `files/<date>_<shortid>_<seq>.<ext>` with the original photos and PDFs, prefix-sorted chronologically. Response headers `X-Tx-Count` / `X-File-Count` power the success toast.
+- **PWA: mobile camera capture + offline blob queue.** Two new buttons in the PWA TX form — 📷 Camera (`<input capture="environment">`) and 📁 Pick (file picker for images + PDFs) — plus clipboard-paste support while the TX pane is visible. Captured files persist in a new IndexedDB store `rcptqueue` (DB version 3, schema-additive upgrade) so they survive across app reloads and browser restarts. `syncQueue()` uploads the blobs ahead of each pending TX, sets `receipt_url` from the returned URLs, then submits the TX through the existing `/api/tx/manual` + `/api/tx/confirm` flow. If the upload fails the TX is held back (`status='error'`) so a transaction never lands without its photos.
+- **Scheduled-TX ↔ Subscription auto-link.** Recurring templates in `data/scheduled.csv` can now reference an optional `subscription_id`. When the template fires (manual via `SCHED` command or via `scripts/cron_sched.py`), `cron_sched.run_due` writes a matching row into `subscription_log.csv` automatically — no more manual re-linking each month. Pass-through reimbursement counter-entries deliberately stay unlinked (only the expense line carries the link). Settings → Scheduled gets a dropdown picker for the field, and SCHED rows show a 🔗 badge with the linked subscription name when set. Migration: `python scripts/migrate_v151_sched_subscription.py` adds the new column to existing CSVs (idempotent, takes a backup first).
+- **Subscriptions drift alert.** New helper `subscriptions.compute_drift_alerts(threshold_pct=5.0)` compares the most recent charge in `subscription_log.csv` against the prior charge per active subscription and surfaces alerts when the increase is at or above the threshold. Hooked into the regular `computeAlerts()` pipeline so drift findings render in the dashboard alerts widget alongside scheduled / balance / fuel alerts. Endpoint: `POST /api/subscriptions/drift_alerts`. Inactive subscriptions and logs with fewer than 2 entries are skipped — there's nothing to compare against, and you can't act on an alert for a cancelled subscription anyway.
+
+### Changed
+
+- `tx_engine.build_manual_lines()` propagates the new `receipt_url` field from the form payload into every generated TX line, including split rows (all split lines share the same uploaded receipts — one receipt photographed once, multiple categories).
+- `tx_engine.SCHEDULED_FIELDS` gained a `subscription_id` column. Existing CRUD entry points (`load_scheduled` / `add_scheduled` / `update_scheduled` / `save_scheduled`) flow it through automatically, no API change for callers.
+- `tx_engine._atomic_write_bytes()` — binary equivalent of the existing `_atomic_write_text`, used by the receipts module so a crashed upload mid-write can't truncate an existing file.
+- `dashboard/styles.css` extended with the receipt grid, tile, pending-state, lightbox, PDF-embed, and 📎-icon styles. Drag-over states use the accent colour so the dropzone is visibly active.
+- Caddy reverse-proxy config (`deploy/Caddyfile`) routes `/data/receipts/*` to the file_server directly (7-day cache; hex filenames are effectively content hashes), so thumbnails and PDFs don't tie up the Python process.
+- 16 new i18n keys for the Bulk ZIP export form (`settings.receipts.export.*`) + 12 new keys for the Receipts tab + 4 keys for the SCHED-Subscription picker + 3 keys for the drift alert. All synced EN ↔ DE.
+
+### Migration
+
+After pulling this release:
+
+1. `pip install -r requirements.txt` — picks up the new `Pillow>=10` and `pillow-heif>=0.13` dependencies (10-15 MB).
+2. `python scripts/migrate_v151_sched_subscription.py` — idempotent; adds the `subscription_id` column to `data/scheduled.csv` if it isn't already present. Takes a backup before rewriting.
+3. Restart the FinanceOS service.
+
+The PWA's IndexedDB schema upgrades on first open after the deploy (v2 → v3, store `rcptqueue` added). Existing TX-queue and auth records are preserved.
+
+### Footer
+
+- `WIZARD_VERSION`: `1.5.0-rc.1` → `1.6.0-rc.1`
+
 ## [1.5.0-rc.1] - 2026-05-10
 
 ### Added

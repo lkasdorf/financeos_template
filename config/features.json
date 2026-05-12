@@ -6,5 +6,6 @@
   "quick_expenses": true,
   "custom_reports": true,
   "scheduled_tx": true,
-  "vehicles": true
+  "vehicles": true,
+  "subscriptions": true
 }

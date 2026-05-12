@@ -716,7 +716,7 @@ def build_expense_tx(fuel_row: dict, vehicle: dict) -> dict:
         note_parts.append(fuel_row["remarks"])
     note = " | ".join(note_parts)
 
-    # Auto-tags rely on standard rules (e.g. business → BUSINESS_<entity>). No
+    # Auto-tags rely on standard rules (e.g. kft → BUSINESS_<entity>). No
     # explicit tags from the fuel layer in Phase 1a; vehicle-level tags
     # may be added in a later phase if multi-vehicle filtering is needed.
     tags = ";".join(

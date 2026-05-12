@@ -1559,14 +1559,14 @@ def _classify_cost_bucket(category: str) -> str:
     if cat == "Bills:Water":
         return "utilities_water"
     # Staff:* MUST be checked before the "rent" substring match below —
-    # otherwise `Staff:PersonB Rent` (Leon's housekeeper rent stipend)
-    # falls into the rent bucket and inflates the SBR rent line by ~700k
-    # in the months he covers PersonB' rent.
+    # otherwise a `Staff:<Name> Rent` stipend (housekeeper / caretaker /
+    # nanny salary that uses the word "Rent" in the category) falls into
+    # the rent bucket and inflates the property rent line.
     if cat_l.startswith("staff:"):
         return "staff"
     # Rent + service charges live under Bills:* in the category tree, so
     # check those before the generic bills:* fallback below — otherwise
-    # rent (the largest line item for Leon) silently shows up as "other
+    # rent (typically the largest line item) silently shows up as "other
     # utilities".
     if "rent" in cat_l:
         return "rent"

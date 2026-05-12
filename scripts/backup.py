@@ -57,6 +57,8 @@ BACKUP_TARGETS = {
     "properties": DATA_DIR / "properties.csv",
     "luku_log": DATA_DIR / "luku_log.csv",
     "water_log": DATA_DIR / "water_log.csv",
+    "subscriptions": DATA_DIR / "subscriptions.csv",
+    "subscription_log": DATA_DIR / "subscription_log.csv",
     "debt_payments": DATA_DIR / "debt_payments.csv",
     "fx_rates": DATA_DIR / "fx_rates.csv",
     "fx_rates_history": DATA_DIR / "fx_rates_history.csv",

@@ -13,6 +13,12 @@
 // nav, keyboard "n").
 let addTxState = { preview: null, context: null, loading: false, prefillAccount: null, prefillTx: null, returnRoute: null };
 
+// v1.6.0 receipt attachments — pending File objects, uploaded inside
+// submitManual() right before /api/tx/manual is called. Reset after a
+// successful confirm. Max 5 files mirrors the server-side cap.
+let _atxReceiptFiles = [];
+let _atxReceiptDetach = null;
+
 async function loadTxContext() {
   if (addTxState.context) return addTxState.context;
   try {
@@ -170,6 +176,29 @@ async function renderAddTxPage() {
             <div id="atx-m-tags" class="tag-picker"></div>
           </div>
         </div>
+        ${isFeatureEnabled('subscriptions') ? `
+        <div class="atx-row" id="atx-m-sub-row">
+          <div class="atx-field fx1">
+            <label>${t('atx.m.label_subscription', {}, 'Link to subscription')}</label>
+            <select id="atx-m-subscription">
+              <option value="">${t('atx.m.subscription_none', {}, '— none —')}</option>
+            </select>
+            <div class="atx-field-hint" id="atx-m-sub-hint" style="font-size:11px;color:var(--muted);margin-top:4px;" hidden></div>
+          </div>
+        </div>
+        ` : ''}
+        <!-- v1.6.0 receipt attachments — Photos + PDFs, drag-drop + paste-supported. -->
+        <div class="atx-row" id="atx-m-receipts-row">
+          <div class="atx-field fx1">
+            <label>${t('receipts.upload.cta', {}, 'Attachments (optional)')}</label>
+            <div id="atx-m-receipt-dropzone" class="receipt-dropzone">
+              <input type="file" id="atx-m-receipt-input" multiple accept="image/*,application/pdf,.heic,.heif" hidden>
+              <button type="button" class="receipt-pick-btn" data-action="atxReceiptPick">${t('receipts.upload.pick_btn', {}, 'Pick files')}</button>
+              <span class="hint-sm">${t('receipts.upload.dropzone', {}, 'or drop files / paste a screenshot')}</span>
+            </div>
+            <div id="atx-m-receipt-grid" class="receipt-grid-host"></div>
+          </div>
+        </div>
         <div class="atx-actions">
           <button data-action="submitManual">${t('atx.m.btn_preview', {}, 'Preview &rarr;')}</button>
         </div>
@@ -183,6 +212,142 @@ async function renderAddTxPage() {
 
   // Load context for dropdowns
   loadTxContext().then(ctx => populateTxDropdowns(ctx));
+
+  // Subscription picker: fetch active subs and wire payee-based
+  // auto-suggestion. Skipped silently if the feature is disabled or
+  // the API fails — the form still works without the dropdown.
+  if (isFeatureEnabled('subscriptions')) {
+    loadSubscriptionPicker('atx-m-subscription');
+    const payeeInput = document.getElementById('atx-m-payee');
+    if (payeeInput) {
+      payeeInput.addEventListener('input', () => {
+        suggestSubscriptionFromPayee(payeeInput.value, 'atx-m-subscription', 'atx-m-sub-hint');
+      });
+      payeeInput.addEventListener('change', () => {
+        suggestSubscriptionFromPayee(payeeInput.value, 'atx-m-subscription', 'atx-m-sub-hint');
+      });
+    }
+  }
+  _initAtxReceiptPickers();
+}
+
+// ─── v1.6.0 receipt attachments (Add-TX) ──────────────────────────────
+
+function _renderAtxReceiptGrid() {
+  const host = document.getElementById('atx-m-receipt-grid');
+  if (!host) return;
+  if (!_atxReceiptFiles.length) {
+    host.innerHTML = '';
+    return;
+  }
+  const removeLabel = escapeHtml(t('receipts.modal.remove', {}, 'Remove'));
+  const tiles = _atxReceiptFiles.map((f, idx) => {
+    const isImage = (f.type || '').startsWith('image/');
+    // URL.createObjectURL is fine here — the blob URL is scoped to the
+    // document and revoked automatically when the page unloads. We could
+    // revoke on remove, but a few stale ones cost nothing on this side.
+    const preview = isImage ? URL.createObjectURL(f) : '';
+    const body = isImage
+      ? `<img src="${preview}" alt="" loading="lazy">`
+      : `<div class="receipt-tile-pdf">📄<span class="receipt-tile-pdf-label">PDF</span></div>`;
+    return `<div class="receipt-tile receipt-tile-pending"><div class="receipt-tile-body">${body}</div><button type="button" class="receipt-tile-remove" data-arg1="${idx}" title="${removeLabel}">×</button><div class="receipt-tile-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div></div>`;
+  }).join('');
+  host.innerHTML = `<div class="receipt-grid">${tiles}</div>`;
+  host.onclick = (e) => {
+    const btn = e.target.closest('.receipt-tile-remove');
+    if (!btn) return;
+    const idx = Number(btn.getAttribute('data-arg1'));
+    _atxReceiptFiles.splice(idx, 1);
+    _renderAtxReceiptGrid();
+  };
+}
+
+function _initAtxReceiptPickers() {
+  const input = document.getElementById('atx-m-receipt-input');
+  const drop = document.getElementById('atx-m-receipt-dropzone');
+  if (!input || !drop) return;
+  // The dropzone-button has data-action="atxReceiptPick" so the global
+  // dispatcher in core.js will call atxReceiptPick() — wire that here.
+  if (typeof window !== 'undefined') window.atxReceiptPick = () => input.click();
+  if (_atxReceiptDetach) _atxReceiptDetach();
+  // Paste handler scoped to the form root so Ctrl+V works while any
+  // field has focus — wider than the dropzone so users don't have to
+  // first click into the receipts box.
+  const pasteRoot = document.getElementById('atx-m-form') || document.getElementById('page-add-tx') || document.body;
+  _atxReceiptDetach = attachFilePickerAndPaste({
+    fileInput: input,
+    dropZone: drop,
+    pasteRoot: pasteRoot,
+    onFiles: (files) => {
+      const room = 5 - _atxReceiptFiles.length;
+      if (room <= 0) {
+        showTxStatus('error', t('receipts.upload.too_many', { max: 5 }, 'Max 5 attachments per transaction'));
+        return;
+      }
+      _atxReceiptFiles.push(...files.slice(0, room));
+      _renderAtxReceiptGrid();
+    },
+  });
+}
+
+// Cached picker data so payee-suggest matches without re-hitting the API.
+const _subPickerCache = { rows: null, byPayee: null };
+
+async function loadSubscriptionPicker(selectId) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  try {
+    const res = await fetch('/api/subscriptions/active_for_picker', { method: 'POST' });
+    const data = await res.json();
+    const rows = data.subscriptions || [];
+    _subPickerCache.rows = rows;
+    _subPickerCache.byPayee = {};
+    for (const r of rows) {
+      const key = (r.payee || '').toLowerCase().trim();
+      if (key) _subPickerCache.byPayee[key] = r;
+    }
+    // Build options grouped visually by group prefix. We use plain
+    // <option> rather than <optgroup> so the suggestion-pre-select
+    // stays simple (optgroups need extra walking to find a child).
+    const opts = [`<option value="">${t('atx.m.subscription_none', {}, '— none —')}</option>`];
+    for (const r of rows) {
+      const label = r.group
+        ? `${r.group} · ${r.name}`
+        : r.name;
+      opts.push(`<option value="${escapeHtml(r.subscription_id)}">${escapeHtml(label)}</option>`);
+    }
+    sel.innerHTML = opts.join('');
+  } catch (e) {
+    // Silent — leave the dropdown with its single "none" placeholder.
+  }
+}
+
+function suggestSubscriptionFromPayee(payeeValue, selectId, hintId) {
+  const sel = document.getElementById(selectId);
+  const hint = document.getElementById(hintId);
+  if (!sel || !_subPickerCache.byPayee) return;
+  // Don't override an explicit user choice. The dropdown switches
+  // back to suggesting only when the user has cleared it.
+  if (sel.value) {
+    if (hint) { hint.hidden = true; hint.textContent = ''; }
+    return;
+  }
+  const key = (payeeValue || '').toLowerCase().trim();
+  const match = key ? _subPickerCache.byPayee[key] : null;
+  if (match) {
+    sel.value = match.subscription_id;
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = t(
+        'atx.m.subscription_suggested',
+        { name: match.name },
+        `Suggested from payee: ${match.name}. Clear to skip.`,
+      );
+    }
+  } else if (hint) {
+    hint.hidden = true;
+    hint.textContent = '';
+  }
 }
 
 function applyQuickExpense(qeId) {
@@ -548,6 +713,24 @@ function updateSplitInfo() {
 
 async function submitManual() {
   const type = document.querySelector('#atx-type-btns button.active')?.getAttribute('data-type') || 'expense';
+
+  // v1.6.0 — upload any pending receipt attachments BEFORE building the
+  // preview. If the upload fails, abort here so the user fixes the
+  // attachment issue without losing form data. URLs come back as relative
+  // paths starting with /data/receipts/...; they're stored verbatim in
+  // transactions.csv:receipt_url as a semicolon-separated list.
+  let receiptUrlStr = '';
+  if (_atxReceiptFiles.length) {
+    showTxLoading(t('receipts.upload.uploading', {}, 'Uploading attachments...'));
+    try {
+      const saved = await uploadReceipts(_atxReceiptFiles);
+      receiptUrlStr = serializeReceiptList(saved.map(s => s.url));
+    } catch (err) {
+      showTxStatus('error', t('receipts.upload.error_generic', { msg: err.message }, `Attachment upload failed: ${err.message}`));
+      return;
+    }
+  }
+
   const formData = {
     date: document.getElementById('atx-m-date')?.value,
     account: document.getElementById('atx-m-account')?.value,
@@ -559,6 +742,8 @@ async function submitManual() {
     tags: Array.from(document.querySelectorAll('#atx-m-tags input:checked')).map(c => c.value).join(';'),
     transfer_to_account: type === 'transfer' ? (document.getElementById('atx-m-transfer-to')?.value || '') : '',
     transfer_to_amount: type === 'transfer' ? parseAmountInputStr(document.getElementById('atx-m-transfer-amount')?.value) : '',
+    subscription_id: type !== 'transfer' ? (document.getElementById('atx-m-subscription')?.value || '') : '',
+    receipt_url: receiptUrlStr,
   };
 
   // Attach splits if active
@@ -631,6 +816,7 @@ function renderTxPreview(data) {
           </div>
           ${line.note ? `<div class="atx-line-secondary">${escapeHtml(line.note)}</div>` : ''}
           ${line.tags ? `<div class="atx-line-tags">${escapeHtml(line.tags)}</div>` : ''}
+          ${line.subscription_id ? `<div class="atx-line-secondary" style="color:var(--accent-dim);font-size:11px;">${t('atx.preview.linked_subscription', { id: line.subscription_id }, `→ linked to subscription: ${line.subscription_id}`)}</div>` : ''}
         </div>
         <div class="atx-line-amount ${typeClass}">${prefix}${fmt(line.amount, line.currency)}</div>
       </div>
@@ -739,6 +925,12 @@ async function confirmTx() {
     const noteInput = document.getElementById('atx-m-note');
     if (noteInput) noteInput.value = '';
     document.querySelectorAll('#atx-m-tags input:checked').forEach(c => c.checked = false);
+
+    // v1.6.0 — drop any pending attachments. The successful confirm
+    // already wrote their URLs to transactions.csv, so the local File
+    // refs are no longer needed.
+    _atxReceiptFiles = [];
+    _renderAtxReceiptGrid();
 
     // Reset splits
     splitLines = [];

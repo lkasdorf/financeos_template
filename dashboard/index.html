@@ -46,6 +46,7 @@
   <symbol id="i-fuel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="15" y1="22" y2="22"/><line x1="4" x2="14" y1="9" y2="9"/><path d="M14 22V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v18"/><path d="M14 13h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9.83a2 2 0 0 0-.59-1.42L18 5"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></symbol>
   <symbol id="i-trending-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></symbol>
+  <symbol id="i-credit-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></symbol>
 </svg>
 
 <!-- Mobile top bar (visible only on mobile) -->
@@ -84,6 +85,7 @@
     <li data-feature="metals"><a href="#metals" data-page="metals"><span class="nav-icon"><svg><use href="#i-gem"/></svg></span><span data-i18n="nav.metals">Metals</span></a></li>
     <li data-feature="vehicles"><a href="#vehicles" data-page="vehicles"><span class="nav-icon"><svg><use href="#i-fuel"/></svg></span><span data-i18n="nav.vehicles">Vehicles</span></a></li>
     <li><a href="#properties" data-page="properties"><span class="nav-icon"><svg><use href="#i-home"/></svg></span><span data-i18n="nav.properties">Properties</span></a></li>
+    <li data-feature="subscriptions"><a href="#subscriptions" data-page="subscriptions"><span class="nav-icon"><svg><use href="#i-credit-card"/></svg></span><span data-i18n="nav.subscriptions">Subscriptions</span></a></li>
     <li id="nav-fx-charts" hidden><a href="#" target="_blank" rel="noopener noreferrer"><span class="nav-icon"><svg><use href="#i-trending-up"/></svg></span><span data-i18n="nav.fx_charts">FX Charts</span><span class="nav-ext" aria-hidden="true">↗</span></a></li>
     <li><a href="#settings" data-page="settings"><span class="nav-icon"><svg><use href="#i-settings"/></svg></span><span data-i18n="nav.settings">Settings</span></a></li>
     <li><a href="#faq" data-page="faq"><span class="nav-icon"><svg><use href="#i-help"/></svg></span><span data-i18n="nav.faq">FAQ</span></a></li>
@@ -222,6 +224,15 @@
     <div class="page-content" id="properties-content"></div>
   </div>
 
+  <!-- ═══ Subscriptions Page ═══ -->
+  <div id="page-subscriptions" class="page" data-feature="subscriptions">
+    <div class="page-header">
+      <h2 data-i18n-html="page.subscriptions.title">Subscrip<span class="accent">tions</span></h2>
+      <div class="page-subtitle" id="subscriptions-meta" data-i18n="page.subscriptions.subtitle">Recurring services &amp; renewals</div>
+    </div>
+    <div class="page-content" id="subscriptions-content"></div>
+  </div>
+
   <!-- ═══ Add TX Page ═══ -->
   <div id="page-add-tx" class="page">
     <div class="page-header">
@@ -258,7 +269,7 @@
   </div>
 
   <footer>
-    <span><span data-brand>FinanceOS</span> <span style="color:var(--muted);">v1.5.0-rc.1</span></span>
+    <span><span data-brand>FinanceOS</span> <span style="color:var(--muted);">v1.6.0-rc.1</span></span>
     <span id="footer-status"></span>
     <span id="footer-updated">—</span>
     <button id="refresh-btn" title="Refresh data (Shift+R)" data-i18n-title="footer.refresh_title" style="background:none;border:1px solid var(--border);border-radius:var(--radius-xs);padding:3px 8px;cursor:pointer;color:var(--muted);display:inline-flex;align-items:center;gap:4px;font-size:11px;font-family:inherit;margin-left:6px;transition:color 0.15s,border-color 0.15s;">
@@ -300,6 +311,7 @@
 <script defer src="reports-deepdive.js"></script>
 <script defer src="reports-audit-budget.js"></script>
 <script defer src="reports.js"></script>
+<script defer src="receipts.js"></script>
 <script defer src="forms-edit-tx.js"></script>
 <script defer src="pages-payees.js"></script>
 <script defer src="settings-finance.js"></script>
@@ -308,6 +320,7 @@
 <script defer src="forms-add-tx.js"></script>
 <script defer src="vehicles.js"></script>
 <script defer src="properties.js"></script>
+<script defer src="subscriptions.js"></script>
 <script defer src="faq.js"></script>
 
 </body>

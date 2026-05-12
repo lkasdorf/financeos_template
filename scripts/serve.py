@@ -60,7 +60,9 @@ import backup
 import fuel
 import fuel_export
 import fx_backfill
+import receipts
 import setup_core
+import subscriptions
 import tx_engine
 import utilities
 from config_loader import get_default, get_reports_config, is_enabled, save_reports_config
@@ -178,6 +180,14 @@ FEATURE_GATED_ROUTES = {
     "/api/vehicles/delete": "vehicles",
     "/api/fuel/list": "vehicles",
     "/api/fuel/add": "vehicles",
+    "/api/subscriptions/list": "subscriptions",
+    "/api/subscriptions/details": "subscriptions",
+    "/api/subscriptions/active_for_picker": "subscriptions",
+    "/api/subscriptions/log_for_tx": "subscriptions",
+    "/api/subscriptions/log_for_subscription": "subscriptions",
+    "/api/subscriptions/add": "subscriptions",
+    "/api/subscriptions/update": "subscriptions",
+    "/api/subscriptions/delete": "subscriptions",
     "/api/fuel/update": "vehicles",
     "/api/fuel/delete": "vehicles",
     "/api/fuel/recon/dismiss": "vehicles",
@@ -553,6 +563,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/properties/water/add": self.handle_water_add,
             "/api/properties/water/update": self.handle_water_update,
             "/api/properties/water/delete": self.handle_water_delete,
+            "/api/subscriptions/list": self.handle_subscriptions_list,
+            "/api/subscriptions/details": self.handle_subscriptions_details,
+            "/api/subscriptions/active_for_picker": self.handle_subscriptions_picker,
+            "/api/subscriptions/log_for_tx": self.handle_subscriptions_log_for_tx,
+            "/api/subscriptions/log_for_subscription": self.handle_subscriptions_log_for_subscription,
+            "/api/subscriptions/drift_alerts": self.handle_subscriptions_drift_alerts,
+            "/api/subscriptions/add": self.handle_subscriptions_add,
+            "/api/subscriptions/update": self.handle_subscriptions_update,
+            "/api/subscriptions/delete": self.handle_subscriptions_delete,
             "/api/setup/status": self.handle_setup_status,
             "/api/setup/mmex-upload": self.handle_setup_mmex_upload,
             "/api/setup/finalize": self.handle_setup_finalize,
@@ -564,6 +583,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/branding/save": self.handle_branding_save,
             "/api/health": self.handle_health,
             "/api/metals/spot": self.handle_metals_spot,
+            # v1.6.0 receipt attachments (Photos + PDFs on transactions).
+            "/api/receipts/upload": self.handle_receipts_upload,
+            "/api/receipts/delete": self.handle_receipts_delete,
+            "/api/receipts/stats": self.handle_receipts_stats,
+            "/api/receipts/export": self.handle_receipts_export,
         }
         # Feature-flag gate: refuse API calls for disabled features.
         gate = FEATURE_GATED_ROUTES.get(self.path)
@@ -703,6 +727,27 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(500, {"error": f"Backup failed: {e}"})
             return
 
+        # Pre-scan for subscription links so we can back up the log
+        # before the first write touches anything. Lines with
+        # subscription_id are user-created (not auto-generated), so the
+        # link only flows from the original expense, never from the
+        # pass-through reimbursement counter-entry.
+        sub_links = [
+            l for l in lines
+            if l.get("subscription_id") and not l.get("is_auto_generated")
+        ]
+        if sub_links:
+            try:
+                backup.backup_file(
+                    "subscription_log",
+                    tx_engine.DATA_DIR / "subscription_log.csv",
+                )
+            except Exception as e:
+                self._respond_json(500, {
+                    "error": f"subscription_log backup failed: {e}",
+                })
+                return
+
         # Append to transactions.csv
         try:
             tx_engine.append_transactions(lines)
@@ -712,6 +757,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         # Mark the prompt_log entry as successfully booked
         tx_engine.mark_prompt_booked(prompt_id)
+
+        # Mirror linked charges into subscription_log. Failures here
+        # are logged but do NOT roll the TX back — the user can re-link
+        # via the Edit-TX modal if a write breaks. Same trade-off as
+        # auto_learn_payees below.
+        sub_log_written = []
+        for line in sub_links:
+            try:
+                log_id = subscriptions.append_subscription_log({
+                    "date": line.get("date", ""),
+                    "subscription_id": line.get("subscription_id", ""),
+                    "amount": line.get("amount", ""),
+                    "currency": line.get("currency", ""),
+                    "account": line.get("account", ""),
+                    "tx_import_id": line.get("import_id", ""),
+                    "note": "",
+                })
+                sub_log_written.append(log_id)
+            except Exception as exc:
+                print(
+                    f"[serve] subscription_log link failed for "
+                    f"{line.get('import_id', '')}: {exc}",
+                    file=sys.stderr,
+                )
 
         # Auto-learn unknown payees for future autocomplete/defaults
         learned = tx_engine.auto_learn_payees(lines)
@@ -724,6 +793,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         files = ["data/transactions.csv", "data/prompt_log.csv"]
         if learned:
             files.append("data/payees.json")
+        if sub_log_written:
+            files.append("data/subscription_log.csv")
         git_ok = tx_engine.git_commit(commit_msg, files=files)
 
         import_ids = [l["import_id"] for l in lines]
@@ -2322,6 +2393,214 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         tx_engine.git_commit(f"Property delete: {pid}", ["data/properties.csv"])
         self._respond_json(200, {"success": True})
 
+    # ── API: /api/subscriptions/* (Subscriptions Subsystem Phase 1) ─────────
+    #
+    # Phase 1 = master-CRUD only. The log-table is created with a header
+    # but stays empty until Phase 2 wires up TX linking. The handlers
+    # mirror the property-CRUD shape so the frontend can use the same
+    # `apiPost(path, body)` wrapper, the same error-banner conventions,
+    # and the same git-commit-after-write atomicity guarantee.
+
+    def handle_subscriptions_list(self):
+        """Return all subscriptions enriched with monthly/yearly equivalents."""
+        try:
+            rows = subscriptions.list_subscriptions_with_summary()
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] subscriptions_list req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "subscriptions_list failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"subscriptions": rows})
+
+    def handle_subscriptions_details(self):
+        """Return a single subscription by id (raw row, no enrichment).
+
+        Used by the edit modal to pre-fill fields. The summary endpoint
+        already carries the same data plus derived totals, so most UI
+        flows can skip this — kept for parity with the properties API.
+        """
+        body = self._read_json_body()
+        sid = (body.get("subscription_id") or "").strip()
+        if not sid:
+            self._respond_json(400, {"error": "subscription_id is required"})
+            return
+        subs = subscriptions.load_subscriptions()
+        if sid not in subs:
+            self._respond_json(404, {"error": f"Subscription '{sid}' not found"})
+            return
+        self._respond_json(200, {"subscription": subs[sid]})
+
+    def handle_subscriptions_picker(self):
+        """Return active subscriptions trimmed to picker-relevant fields.
+
+        Powers the optional "Link to subscription" dropdown on the
+        Add-TX and Edit-TX forms. Inactive rows are filtered out so
+        cancelled subs never end up newly linked to a fresh charge.
+        """
+        try:
+            rows = subscriptions.list_active_for_picker()
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] subscriptions_picker req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            self._respond_json(500, {
+                "error": "subscriptions_picker failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"subscriptions": rows})
+
+    def handle_subscriptions_log_for_tx(self):
+        """Return the subscription_log row linked to a TX, if any.
+
+        Used by the Edit-TX modal to pre-select the picker dropdown
+        when the user opens an already-linked transaction. Returns
+        ``{subscription_id: ""}`` for unlinked TXs so the frontend
+        does not need a separate not-found path.
+        """
+        body = self._read_json_body()
+        tx_id = (body.get("tx_import_id") or "").strip()
+        if not tx_id:
+            self._respond_json(400, {"error": "tx_import_id is required"})
+            return
+        link = subscriptions.find_log_by_tx(tx_id) or {}
+        self._respond_json(200, {
+            "subscription_id": link.get("subscription_id", ""),
+            "log_id": link.get("log_id", ""),
+            "linked": bool(link),
+        })
+
+    def handle_subscriptions_log_for_subscription(self):
+        """Return all log rows for a subscription, newest first."""
+        body = self._read_json_body()
+        sid = (body.get("subscription_id") or "").strip()
+        if not sid:
+            self._respond_json(400, {"error": "subscription_id is required"})
+            return
+        rows = subscriptions.list_log_for_subscription(sid)
+        self._respond_json(200, {"log": rows})
+
+    def handle_subscriptions_drift_alerts(self):
+        """Phase 3 — surface subscriptions whose latest charge spiked.
+
+        Body (optional): ``{"threshold_pct": 5.0}``. Default is 5 % which
+        comfortably ignores currency-conversion jitter on the few non-TZS
+        subscriptions while still catching the typical "annual price bump"
+        Netflix and Spotify ship. Empty/zero is treated as the default —
+        passing 0 would otherwise alert on every charge, which is noise.
+        """
+        body = self._read_json_body() or {}
+        threshold = body.get("threshold_pct")
+        try:
+            threshold = float(threshold) if threshold is not None else subscriptions.DEFAULT_DRIFT_THRESHOLD_PCT
+            if threshold <= 0:
+                threshold = subscriptions.DEFAULT_DRIFT_THRESHOLD_PCT
+        except (TypeError, ValueError):
+            threshold = subscriptions.DEFAULT_DRIFT_THRESHOLD_PCT
+        alerts = subscriptions.compute_drift_alerts(threshold_pct=threshold)
+        self._respond_json(200, {"alerts": alerts, "threshold_pct": threshold})
+
+    def handle_subscriptions_add(self):
+        """Create a new subscription. Body is the full row dict.
+
+        Required: name, currency, amount, billing_months. Returns the
+        assigned subscription_id. Validation lives in the service-layer
+        so a malformed POST cannot leave subscriptions.csv partially
+        written.
+        """
+        body = self._read_json_body()
+        try:
+            sid = subscriptions.add_subscription(body)
+        except ValueError as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            self._respond_json(500, {"error": f"add_subscription failed: {exc}"})
+            return
+        tx_engine.git_commit(
+            f"Subscription add: {body.get('name', sid)}",
+            ["data/subscriptions.csv"],
+        )
+        self._respond_json(200, {"success": True, "subscription_id": sid})
+
+    def handle_subscriptions_update(self):
+        """Patch fields on an existing subscription row."""
+        body = self._read_json_body()
+        sid = (body.get("subscription_id") or "").strip()
+        if not sid:
+            self._respond_json(400, {"error": "subscription_id is required"})
+            return
+        try:
+            ok = subscriptions.update_subscription(sid, body)
+        except Exception as exc:
+            self._respond_json(500, {
+                "error": f"update_subscription failed: {exc}",
+            })
+            return
+        if not ok:
+            self._respond_json(404, {
+                "error": f"Subscription '{sid}' not found",
+            })
+            return
+        tx_engine.git_commit(
+            f"Subscription edit: {sid}", ["data/subscriptions.csv"],
+        )
+        self._respond_json(200, {"success": True})
+
+    def handle_subscriptions_delete(self):
+        """Remove a subscription. Refuses when log entries reference it.
+
+        Phase-1 log is empty so this rarely fires today, but the guard
+        is in place from day one — same precondition the properties
+        and vehicles endpoints enforce, so historical Phase-2 charges
+        won't go missing.
+        """
+        body = self._read_json_body()
+        sid = (body.get("subscription_id") or "").strip()
+        if not sid:
+            self._respond_json(400, {"error": "subscription_id is required"})
+            return
+        try:
+            log_ref = sum(
+                1 for r in subscriptions.load_subscription_log()
+                if r.get("subscription_id") == sid
+            )
+        except Exception:
+            log_ref = 0
+        if log_ref:
+            self._respond_json(409, {
+                "error": (
+                    f"Subscription '{sid}' has {log_ref} log entries. "
+                    f"Archive it (active=false) instead, or delete the "
+                    f"log entries first."
+                ),
+                "log_entries": log_ref,
+            })
+            return
+        try:
+            ok = subscriptions.delete_subscription(sid)
+        except Exception as exc:
+            self._respond_json(500, {
+                "error": f"delete_subscription failed: {exc}",
+            })
+            return
+        if not ok:
+            self._respond_json(404, {
+                "error": f"Subscription '{sid}' not found",
+            })
+            return
+        tx_engine.git_commit(
+            f"Subscription delete: {sid}", ["data/subscriptions.csv"],
+        )
+        self._respond_json(200, {"success": True})
+
     def handle_luku_add(self):
         """Create a LUKU log entry + linked expense (+ reimburse) TX.
 
@@ -2970,6 +3249,204 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         FinanceOSHandler._metals_spot_cache = {"ts": now, "data": payload}
         self._respond_json(200, payload)
 
+    # ── API: /api/receipts ────────────────────────────────────────────
+
+    def handle_receipts_upload(self):
+        """Accept up to MAX_FILES_PER_REQUEST multipart-uploaded files.
+
+        Body: multipart/form-data with one or more file parts named "files"
+        (or anything else with a filename — the name attribute is ignored).
+        Each file is byte-sniffed, validated against the MIME whitelist, and
+        for images re-encoded as JPEG to drop EXIF/GPS metadata at the
+        encoder boundary. PDFs are stored as-is.
+
+        Response: {"saved": [{"url", "thumb_url", "mime", "kind", "size"}, …]}
+
+        Per-file errors are reported in the "errors" array with a 207 status
+        if some files succeeded and others failed, so a partial-batch user
+        can still keep the successes. 400 = nothing usable, 500 = server bug.
+        """
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in ctype.lower():
+            self._respond_json(400, {"error": "expected multipart/form-data"})
+            return
+        body = getattr(self, "_raw_body", b"")
+        try:
+            parts = receipts.parse_multipart(ctype, body)
+        except ValueError as exc:
+            self._respond_json(400, {"error": f"multipart parse failed: {exc}"})
+            return
+        if not parts:
+            self._respond_json(400, {"error": "no files in request"})
+            return
+        if len(parts) > receipts.MAX_FILES_PER_REQUEST:
+            self._respond_json(400, {
+                "error": f"too many files (max {receipts.MAX_FILES_PER_REQUEST})",
+            })
+            return
+
+        saved: list[dict] = []
+        errors: list[dict] = []
+        for part in parts:
+            try:
+                saved.append(receipts.store_upload(
+                    filename=part["filename"],
+                    content_type=part["content_type"],
+                    data=part["data"],
+                ))
+            except ValueError as exc:
+                errors.append({"filename": part.get("filename", ""), "error": str(exc)})
+            except Exception as exc:  # unexpected — surface a request_id for log lookup
+                req_id = secrets.token_hex(4)
+                print(f"[serve] receipts_upload req={req_id}: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                errors.append({
+                    "filename": part.get("filename", ""),
+                    "error": f"server error (request_id={req_id})",
+                })
+
+        if saved and errors:
+            status = 207  # Multi-Status — partial success, frontend keeps the saved ones
+        elif saved:
+            status = 200
+        else:
+            status = 400
+        self._respond_json(status, {"saved": saved, "errors": errors})
+
+    def handle_receipts_delete(self):
+        """Remove receipt files + their thumbnails. Body: {"paths": ["/data/receipts/…", …]}.
+
+        Idempotent — missing files are not an error. Path-traversal attempts
+        return 200 with removed=0 rather than 4xx so a malicious actor learns
+        nothing about what exists.
+        """
+        body = self._read_json_body() or {}
+        paths = body.get("paths")
+        if not isinstance(paths, list):
+            self._respond_json(400, {"error": "paths must be an array"})
+            return
+        removed = receipts.delete_files([p for p in paths if isinstance(p, str)])
+        self._respond_json(200, {"removed": removed})
+
+    def handle_receipts_export(self):
+        """Stream a ZIP of receipt files + index.csv back as a binary blob.
+
+        Body: ``{"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD",
+                 "account": "<alias>", "tag": "<tag>",
+                 "only_with_receipts": true}``
+
+        Synchronous (single-user app, tempfile-backed so memory stays
+        bounded). For very large exports the request will tie up the
+        handler for ~1 minute per 500 MB — acceptable for now. If that
+        ever becomes painful we can switch to the daemon-thread + job_id
+        pattern used by /api/fx/backfill.
+        """
+        body = self._read_json_body() or {}
+        df = (body.get("date_from") or "").strip()
+        dt = (body.get("date_to") or "").strip()
+        if not df or not dt:
+            self._respond_json(400, {"error": "date_from and date_to are required"})
+            return
+        if df > dt:
+            self._respond_json(400, {"error": "date_from must be <= date_to"})
+            return
+        account = (body.get("account") or "").strip()
+        tag = (body.get("tag") or "").strip()
+        only_with = bool(body.get("only_with_receipts", True))
+
+        import csv as _csv
+        tx_path = tx_engine.DATA_DIR / "transactions.csv"
+        try:
+            with tx_path.open("r", newline="", encoding="utf-8") as f:
+                tx_rows = list(_csv.DictReader(f))
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(f"[serve] receipts_export load req={req_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            self._respond_json(500, {"error": "load transactions failed", "request_id": req_id})
+            return
+
+        try:
+            zip_path, stats = receipts.build_export_zip(
+                tx_rows,
+                date_from=df,
+                date_to=dt,
+                account=account,
+                tag=tag,
+                only_with_receipts=only_with,
+            )
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(f"[serve] receipts_export build req={req_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            self._respond_json(500, {"error": "build_export_zip failed", "request_id": req_id})
+            return
+
+        # Stream the ZIP back chunked so a 500 MB year-export doesn't
+        # have to live in memory twice (once for the ZIP, once for the
+        # response buffer). Always unlink the tempfile in finally so
+        # interrupted downloads don't leak.
+        try:
+            size = zip_path.stat().st_size
+            filename = f"receipts_{df}_{dt}.zip"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            # Surface the counts in headers so the frontend can show a
+            # "Exported 23 TXs, 47 files (5.2 MB)" toast without parsing
+            # the ZIP itself.
+            self.send_header("X-Tx-Count", str(stats["tx_count"]))
+            self.send_header("X-File-Count", str(stats["file_count"]))
+            self._send_cors_origin()
+            self.end_headers()
+            with zip_path.open("rb") as zf:
+                while True:
+                    chunk = zf.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        finally:
+            try:
+                zip_path.unlink()
+            except OSError:
+                pass
+
+    def handle_receipts_stats(self):
+        """Coverage + storage KPIs for the Settings → Receipts tab.
+
+        Body (optional): ``{"limit": int, "thresholds": {"TZS": 50000, …}}``.
+        Defaults are reasonable for a typical multi-currency setup — see
+        ``receipts.DEFAULT_RECEIPT_THRESHOLDS``. Response carries both the
+        KPIs and the top-N missing-receipts list so the dashboard can render
+        the tab from a single round-trip.
+        """
+        body = self._read_json_body() or {}
+        limit = body.get("limit", 50)
+        try:
+            limit = max(1, min(500, int(limit)))
+        except (TypeError, ValueError):
+            limit = 50
+        thresholds = body.get("thresholds")
+        if not isinstance(thresholds, dict):
+            thresholds = None
+        # Load TX rows inline — tx_engine has no top-level helper, and the
+        # other endpoints follow the same pattern (DictReader on the CSV).
+        import csv as _csv
+        tx_path = tx_engine.DATA_DIR / "transactions.csv"
+        try:
+            with tx_path.open("r", newline="", encoding="utf-8") as f:
+                tx_rows = list(_csv.DictReader(f))
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(f"[serve] receipts_stats req={req_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            self._respond_json(500, {"error": "load transactions failed", "request_id": req_id})
+            return
+        stats = receipts.compute_stats(tx_rows)
+        missing = receipts.missing_receipts(tx_rows, thresholds=thresholds, limit=limit)
+        self._respond_json(200, {"stats": stats, "missing": missing})
+
     # ── API: /api/health ──────────────────────────────────────────────
 
     def handle_health(self):
@@ -3062,6 +3539,13 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(400, {"error": f"Unknown category: '{updated['category']}'"})
             return
 
+        # subscription_id is not a TX column; pop it out of `updated`
+        # and handle the link mutation separately so update_transaction
+        # never tries to write it to transactions.csv. None means
+        # "field not present in the request" (preserve existing link);
+        # empty string means "explicitly unlink".
+        sub_id_change = updated.pop("subscription_id", None)
+
         # Backup
         try:
             backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
@@ -3069,14 +3553,64 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(500, {"error": f"Backup failed: {e}"})
             return
 
-        # Update
-        if not tx_engine.update_transaction(import_id, updated):
-            self._respond_json(404, {"error": f"Transaction '{import_id}' not found"})
-            return
+        # Update transactions.csv. When the only change was
+        # subscription_id (popped above), `updated` is empty and we
+        # skip the rewrite — but still verify the TX exists so a stray
+        # subscription_log row cannot point at a non-existent TX.
+        if updated:
+            if not tx_engine.update_transaction(import_id, updated):
+                self._respond_json(404, {"error": f"Transaction '{import_id}' not found"})
+                return
+        elif sub_id_change is not None:
+            if tx_engine.load_transaction_by_id(import_id) is None:
+                self._respond_json(404, {"error": f"Transaction '{import_id}' not found"})
+                return
+
+        # Apply subscription-link mutation if requested.
+        sub_log_changed = False
+        if sub_id_change is not None:
+            existing_link = subscriptions.find_log_by_tx(import_id)
+            new_sub_id = (sub_id_change or "").strip()
+            current_sub_id = (existing_link or {}).get("subscription_id", "")
+            if new_sub_id != current_sub_id:
+                try:
+                    backup.backup_file(
+                        "subscription_log",
+                        tx_engine.DATA_DIR / "subscription_log.csv",
+                    )
+                except Exception as e:
+                    self._respond_json(500, {
+                        "error": f"subscription_log backup failed: {e}",
+                    })
+                    return
+                # Always unlink old (no-op if none) before linking new.
+                if existing_link:
+                    subscriptions.unlink_tx(import_id)
+                    sub_log_changed = True
+                if new_sub_id:
+                    # Pull the persisted TX so the log mirrors what's
+                    # actually in transactions.csv after the edit
+                    # (account / amount might have just changed).
+                    persisted = tx_engine.load_transaction_by_id(import_id) or {}
+                    subscriptions.append_subscription_log({
+                        "date": persisted.get("date", ""),
+                        "subscription_id": new_sub_id,
+                        "amount": persisted.get("amount", ""),
+                        "currency": persisted.get("currency", ""),
+                        "account": persisted.get("account", ""),
+                        "tx_import_id": import_id,
+                        "note": "",
+                    })
+                    sub_log_changed = True
 
         # Git commit
         summary = updated.get("payee", "") or updated.get("category", "") or "fields updated"
-        git_ok = tx_engine.git_commit(f"TX edit: {import_id} ({summary})")
+        commit_files = ["data/transactions.csv"]
+        if sub_log_changed:
+            commit_files.append("data/subscription_log.csv")
+        git_ok = tx_engine.git_commit(
+            f"TX edit: {import_id} ({summary})", files=commit_files,
+        )
 
         self._respond_json(200, {
             "success": True,
@@ -3102,13 +3636,39 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(500, {"error": f"Backup failed: {e}"})
             return
 
+        # Look up subscription-link before the delete so we can cascade.
+        # Cascade rationale: a subscription_log row pointing at a TX that
+        # no longer exists is an orphan — the same shape we already
+        # detect in fuel_log reconciliation. Removing it up front is
+        # cheaper than running a sweep later.
+        sub_link = subscriptions.find_log_by_tx(import_id)
+        if sub_link:
+            try:
+                backup.backup_file(
+                    "subscription_log",
+                    tx_engine.DATA_DIR / "subscription_log.csv",
+                )
+            except Exception as e:
+                self._respond_json(500, {
+                    "error": f"subscription_log backup failed: {e}",
+                })
+                return
+
         # Delete
         if not tx_engine.delete_transaction(import_id):
             self._respond_json(404, {"error": f"Transaction '{import_id}' not found"})
             return
 
+        if sub_link:
+            subscriptions.unlink_tx(import_id)
+
         # Git commit
-        git_ok = tx_engine.git_commit(f"TX delete: {import_id}")
+        commit_files = ["data/transactions.csv"]
+        if sub_link:
+            commit_files.append("data/subscription_log.csv")
+        git_ok = tx_engine.git_commit(
+            f"TX delete: {import_id}", files=commit_files,
+        )
 
         self._respond_json(200, {
             "success": True,

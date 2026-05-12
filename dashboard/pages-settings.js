@@ -463,6 +463,7 @@ async function renderSettingsPage() {
     { id: 'scheduled', label: t('settings.tab.scheduled', {}, 'Scheduled'), feature: 'scheduled_tx' },
     { id: 'quickexp', label: t('settings.tab.quickexp', {}, 'Quick Expenses'), feature: 'quick_expenses' },
     { id: 'atmfees', label: t('settings.tab.atmfees', {}, 'ATM Fees') },
+    { id: 'receipts', label: t('settings.tab.receipts', {}, 'Receipts') },
     { id: 'payees', label: t('settings.tab.payees', {}, 'Payees') },
     { id: 'accounts', label: t('settings.tab.accounts', {}, 'Accounts') },
     { id: 'vehicles', label: t('settings.tab.vehicles', {}, 'Vehicles'), feature: 'vehicles' },
@@ -487,6 +488,7 @@ async function renderSettingsPage() {
   else if (settingsTab === 'scheduled') renderScheduledTab();
   else if (settingsTab === 'quickexp') renderQuickExpTab();
   else if (settingsTab === 'atmfees') renderAtmFeesTab();
+  else if (settingsTab === 'receipts') renderReceiptsTab();
   else if (settingsTab === 'payees') renderPayeesPage();
   else if (settingsTab === 'accounts') renderAccountsSettingsTab();
   else if (settingsTab === 'currency') renderCurrencyTab();
@@ -1086,10 +1088,23 @@ async function renderScheduledTab() {
   container.innerHTML = `<div class="loading">${escapeHtml(t('settings.scheduled.loading', {}, 'Loading scheduled...'))}</div>`;
 
   let items = [];
+  // v1.5.1 — also pull the subscriptions picker so we can resolve linked
+  // subscription_ids to names for the inline badge. Failure to load subs is
+  // non-fatal — the list still renders, just without badges.
+  let subsById = {};
   try {
-    const res = await fetch('/api/scheduled/list', { method: 'POST' });
-    const data = await res.json();
+    const [schedRes, subsRes] = await Promise.all([
+      fetch('/api/scheduled/list', { method: 'POST' }),
+      fetch('/api/subscriptions/active_for_picker', { method: 'POST' }).catch(() => null),
+    ]);
+    const data = await schedRes.json();
     items = data.scheduled || [];
+    if (subsRes && subsRes.ok) {
+      const subsData = await subsRes.json();
+      for (const s of (subsData.subscriptions || [])) {
+        subsById[s.subscription_id] = s;
+      }
+    }
   } catch (e) { container.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.categories.load_failed', {}, 'Failed to load'))}</div>`; return; }
 
   const active = items.filter(s => s.active === 'true');
@@ -1113,7 +1128,7 @@ async function renderScheduledTab() {
   items.forEach(s => {
     const overdue = s.active === 'true' && s.next_run && s.next_run <= new Date().toISOString().slice(0,10);
     html += `<tr style="${s.active !== 'true' ? 'opacity:0.5' : ''}">
-      <td><strong>${escapeHtml(s.name)}</strong>${s.note ? `<br><span class="hint-sm">${escapeHtml(s.note)}</span>` : ''}</td>
+      <td><strong>${escapeHtml(s.name)}</strong>${s.subscription_id && subsById[s.subscription_id] ? `<br><span class="sched-sub-badge" title="${escapeHtml(t('settings.scheduled.subscription_badge_title', {}, 'Linked to subscription'))}">🔗 ${escapeHtml(subsById[s.subscription_id].name)}</span>` : ''}${s.note ? `<br><span class="hint-sm">${escapeHtml(s.note)}</span>` : ''}</td>
       <td class="fs-11">${escapeHtml(s.account)}</td>
       <td style="font-size:11px;font-variant-numeric:tabular-nums">${formatCurrency(Number(s.amount), s.currency)} ${s.currency}</td>
       <td class="fs-11">${escapeHtml(s.payee)}</td>
@@ -1144,7 +1159,16 @@ async function toggleScheduled(schedId, active) {
 }
 
 async function showScheduledModal(editId) {
-  const ctx = await loadTxContext();
+  // v1.5.1 — fetch active subscriptions in parallel with TX context for the
+  // optional subscription_id picker. Failure is tolerated: the dropdown
+  // just won't show any options beyond "— No subscription —".
+  const [ctx, subs] = await Promise.all([
+    loadTxContext(),
+    fetch('/api/subscriptions/active_for_picker', { method: 'POST' })
+      .then(r => r.ok ? r.json() : { subscriptions: [] })
+      .then(d => d.subscriptions || [])
+      .catch(() => []),
+  ]);
   let item = null;
   if (editId) {
     try {
@@ -1168,6 +1192,15 @@ async function showScheduledModal(editId) {
   const tagCheckboxes = (ctx.tags || []).filter(t => t.active).map(t =>
     `<label><input type="checkbox" value="${t.tag}" ${existingTags.has(t.tag) ? 'checked' : ''}><span>${escapeHtml(t.tag)}</span></label>`
   ).join('');
+  // v1.5.1 — subscription_id picker, mirrors Add-TX form's "group · name" layout.
+  // Selected value falls back to '' when no link is set.
+  const currentSubId = item?.subscription_id || '';
+  const subOptions = [`<option value="">${escapeHtml(t('settings.scheduled.modal.subscription_none', {}, '— No subscription —'))}</option>`]
+    .concat((subs || []).map(s => {
+      const label = s.group ? `${s.group} · ${s.name}` : s.name;
+      return `<option value="${escapeHtml(s.subscription_id)}" ${s.subscription_id === currentSubId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }))
+    .join('');
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -1222,6 +1255,12 @@ async function showScheduledModal(editId) {
           <div id="sm-tags" class="tag-picker">${tagCheckboxes}</div>
         </div>
       </div>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('settings.scheduled.modal.label_subscription', {}, 'Linked Subscription (optional)')}</label>
+          <select id="sm-subscription">${subOptions}</select>
+          <span class="hint-sm">${escapeHtml(t('settings.scheduled.modal.subscription_link_help', {}, 'When this template fires, the booked TX is auto-linked to the selected subscription.'))}</span>
+        </div>
+      </div>
       <div id="sm-status"></div>
       <div class="modal-footer">
         <div class="btn-left"></div>
@@ -1267,6 +1306,8 @@ async function saveScheduled(editId) {
     note: document.getElementById('sm-note').value.trim(),
     manual_tags: Array.from(document.querySelectorAll('#sm-tags input:checked')).map(c => c.value).join(';'),
     active: document.getElementById('sm-active').value,
+    // v1.5.1 — optional subscription_id link. Empty string when no link is set.
+    subscription_id: document.getElementById('sm-subscription').value,
   };
   if (!data.name || !data.account || !data.amount) {
     document.getElementById('sm-status').innerHTML = `<div class="atx-status error">${t('settings.scheduled.modal.err_required', {}, 'Name, account, and amount are required')}</div>`;
@@ -1652,5 +1693,216 @@ async function deleteAtmFee(feeId) {
     await fetch('/api/atm-fees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: feeId }) });
     renderAtmFeesTab();
   } catch (e) {}
+}
+
+// ─── Receipts Settings Tab (v1.6.0-rc.1.1) ───────────────────────────────
+//
+// Coverage KPIs + "missing receipts" list driven by /api/receipts/stats.
+// Click on a TX row jumps straight to the Edit-TX modal so the user can
+// attach a file in one motion.
+
+async function renderReceiptsTab() {
+  const container = document.getElementById('settings-tab-content');
+  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.receipts.loading', {}, 'Loading receipts stats...'))}</div>`;
+  // Load stats + TX context in parallel — the Export form needs the
+  // account + tag dropdowns from context, and re-fetching after the
+  // stats render would just feel laggy.
+  let stats = null;
+  let missing = [];
+  let ctx = { accounts: [], tags: [] };
+  try {
+    const [statsRes, ctxData] = await Promise.all([
+      fetch('/api/receipts/stats', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 50 }),
+      }),
+      (typeof loadTxContext === 'function' ? loadTxContext().catch(() => ({})) : Promise.resolve({})),
+    ]);
+    const data = await statsRes.json();
+    if (!statsRes.ok || data.error) throw new Error(data.error || `HTTP ${statsRes.status}`);
+    stats = data.stats || null;
+    missing = data.missing || [];
+    if (ctxData && ctxData.accounts) ctx = ctxData;
+  } catch (e) {
+    container.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.receipts.load_failed', { msg: e.message }, `Load failed: ${e.message}`))}</div>`;
+    return;
+  }
+
+  const kpiCard = (label, value, hint) => `
+    <div class="kpi-card" style="padding:14px 16px;border:1px solid var(--border);border-radius:6px;background:var(--surface-2);display:flex;flex-direction:column;">
+      <div class="hint-sm" style="margin-bottom:4px;">${escapeHtml(label)}</div>
+      <div style="font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;">${escapeHtml(value)}</div>
+      ${hint ? `<div class="hint-sm" style="margin-top:4px;">${escapeHtml(hint)}</div>` : ''}
+    </div>
+  `;
+
+  const fmtPct = (n) => `${(Number(n) || 0).toFixed(1)}%`;
+  const fmtBytes = (mb) => `${(Number(mb) || 0).toFixed(2)} MB`;
+  const byExt = Object.entries(stats?.by_extension || {}).sort((a, b) => b[1] - a[1]);
+  const byExtLabel = byExt.length
+    ? byExt.map(([ext, n]) => `${n} ${ext || 'other'}`).join(' · ')
+    : t('settings.receipts.no_files', {}, '— no files yet');
+
+  // v1.6.0-rc.3 — defaults for the Export form. Current month start →
+  // today is the typical monthly-reimbursement workflow; user adjusts the
+  // range when they need an annual or claim-window export.
+  const today = new Date();
+  const isoToday = today.toISOString().slice(0, 10);
+  const firstOfMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+  const accountOptions = (ctx.accounts || []).map(a =>
+    `<option value="${escapeHtml(a.alias)}">${escapeHtml(a.alias)} — ${escapeHtml(a.name || '')}</option>`
+  ).join('');
+  const tagOptions = (ctx.tags || []).filter(t => t.active).map(t =>
+    `<option value="${escapeHtml(t.tag)}">${escapeHtml(t.tag)}</option>`
+  ).join('');
+
+  let html = `
+    <div class="mb-20" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:12px;">
+      ${kpiCard(t('settings.receipts.kpi_coverage', {}, 'Coverage'), fmtPct(stats.coverage_pct), `${stats.with_receipt} / ${stats.total_tx}`)}
+      ${kpiCard(t('settings.receipts.kpi_with', {}, 'With receipt'), stats.with_receipt)}
+      ${kpiCard(t('settings.receipts.kpi_without', {}, 'Without receipt'), stats.without_receipt)}
+      ${kpiCard(t('settings.receipts.kpi_storage', {}, 'Storage'), fmtBytes(stats.storage_mb), `${stats.file_count} files`)}
+      ${kpiCard(t('settings.receipts.kpi_breakdown', {}, 'File types'), byExt.length || 0, byExtLabel)}
+    </div>
+
+    <div class="section mb-20">
+      <h3 style="margin:0 0 8px 0;font-size:14px;">${escapeHtml(t('settings.receipts.export.title', {}, 'Bulk ZIP export'))}</h3>
+      <div class="hint-md" style="margin-bottom:12px;">${escapeHtml(t('settings.receipts.export.help', {}, 'Builds a ZIP with each matching transaction’s receipt files plus an index.csv. Use it for monthly reimbursement bundles, tax audits, or insurance claims.'))}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;align-items:end;">
+        <div class="atx-field"><label>${t('settings.receipts.export.date_from', {}, 'From')}</label>
+          <input type="date" id="rcpt-export-from" value="${firstOfMonth}">
+        </div>
+        <div class="atx-field"><label>${t('settings.receipts.export.date_to', {}, 'To')}</label>
+          <input type="date" id="rcpt-export-to" value="${isoToday}">
+        </div>
+        <div class="atx-field"><label>${t('settings.receipts.export.account', {}, 'Account')}</label>
+          <select id="rcpt-export-account">
+            <option value="">${escapeHtml(t('settings.receipts.export.all_accounts', {}, '— all —'))}</option>
+            ${accountOptions}
+          </select>
+        </div>
+        <div class="atx-field"><label>${t('settings.receipts.export.tag', {}, 'Tag')}</label>
+          <select id="rcpt-export-tag">
+            <option value="">${escapeHtml(t('settings.receipts.export.all_tags', {}, '— all —'))}</option>
+            ${tagOptions}
+          </select>
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px;font-size:12px;">
+        <input type="checkbox" id="rcpt-export-only-with" checked>
+        <span>${escapeHtml(t('settings.receipts.export.only_with', {}, 'Only transactions with attached files (skip empty)'))}</span>
+      </label>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+        <button class="btn-save" id="rcpt-export-btn" data-action="exportReceiptsZip" style="padding:8px 16px;font-size:12px;">${escapeHtml(t('settings.receipts.export.btn', {}, 'Export ZIP'))}</button>
+        <span id="rcpt-export-status" class="hint-sm"></span>
+      </div>
+    </div>
+    <div class="section">
+      <h3 style="margin:0 0 8px 0;font-size:14px;">${escapeHtml(t('settings.receipts.missing_title', { n: missing.length }, `Missing receipts (top ${missing.length})`))}</h3>
+      <div class="hint-md" style="margin-bottom:12px;">${escapeHtml(t('settings.receipts.missing_help', {}, 'Non-transfer transactions above the per-currency threshold without an attachment. Click a row to edit and attach.'))}</div>
+  `;
+
+  if (!missing.length) {
+    html += `<div class="atx-status success">${escapeHtml(t('settings.receipts.missing_empty', {}, '✓ Every relevant transaction has a receipt.'))}</div>`;
+  } else {
+    html += `
+      <table class="tx-table" style="width:100%;">
+        <thead><tr>
+          <th>${t('common.col.date', {}, 'Date')}</th>
+          <th>${t('common.col.account', {}, 'Account')}</th>
+          <th>${t('common.col.payee', {}, 'Payee')}</th>
+          <th>${t('common.col.category', {}, 'Category')}</th>
+          <th style="text-align:right;">${t('common.col.amount', {}, 'Amount')}</th>
+          <th></th>
+        </tr></thead>
+        <tbody>
+    `;
+    for (const m of missing) {
+      html += `
+        <tr>
+          <td>${fmtDate(m.date)}</td>
+          <td class="fs-11">${escapeHtml(m.account)}</td>
+          <td>${escapeHtml(m.payee || '')}</td>
+          <td class="fs-11 c-mut2">${escapeHtml(m.category || '')}</td>
+          <td class="amt" style="text-align:right;">${formatCurrency(Number(m.amount), m.currency)} ${escapeHtml(m.currency)}</td>
+          <td><button class="tx-edit-btn" data-action="editTxFromReceiptsStats" data-arg1="${escapeHtml(m.import_id)}">${escapeHtml(t('settings.receipts.attach_btn', {}, 'Attach →'))}</button></td>
+        </tr>
+      `;
+    }
+    html += `</tbody></table>`;
+  }
+  html += `</div>`;
+  container.innerHTML = html;
+}
+
+// Bridge: open the Edit-TX modal from the receipts-stats table. Doesn't
+// need its own dispatcher entry because the data-action dispatcher in
+// core.js will find this function by name.
+async function editTxFromReceiptsStats(importId) {
+  if (!importId || typeof state === 'undefined' || !state.tx) return;
+  const tx = state.tx.find(r => r.import_id === importId);
+  if (!tx) return;
+  if (typeof openEditModal === 'function') openEditModal(tx);
+}
+
+// v1.6.0-rc.3 — Bulk ZIP export. Submits the filter form, awaits the
+// server-built ZIP as a Blob, then triggers a client-side download via
+// an anonymous <a download>. Header X-Tx-Count / X-File-Count drive the
+// success toast so the user sees "Exported 23 TXs (47 files)".
+async function exportReceiptsZip() {
+  const btn = document.getElementById('rcpt-export-btn');
+  const statusEl = document.getElementById('rcpt-export-status');
+  const df = document.getElementById('rcpt-export-from').value;
+  const dt = document.getElementById('rcpt-export-to').value;
+  if (!df || !dt) {
+    statusEl.textContent = t('settings.receipts.export.err_dates', {}, 'Date range required');
+    return;
+  }
+  if (df > dt) {
+    statusEl.textContent = t('settings.receipts.export.err_order', {}, 'From-date must be <= to-date');
+    return;
+  }
+  const account = document.getElementById('rcpt-export-account').value;
+  const tag = document.getElementById('rcpt-export-tag').value;
+  const onlyWith = document.getElementById('rcpt-export-only-with').checked;
+
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = t('settings.receipts.export.building', {}, 'Building ZIP…');
+  statusEl.textContent = '';
+
+  try {
+    const res = await fetch('/api/receipts/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date_from: df, date_to: dt,
+        account: account || '',
+        tag: tag || '',
+        only_with_receipts: onlyWith,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const txCount = res.headers.get('X-Tx-Count') || '?';
+    const fileCount = res.headers.get('X-File-Count') || '?';
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `receipts_${df}_${dt}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    statusEl.textContent = t('settings.receipts.export.done', { tx: txCount, files: fileCount }, `✓ Exported ${txCount} TXs (${fileCount} files)`);
+  } catch (e) {
+    statusEl.textContent = t('settings.receipts.export.failed', { msg: e.message }, `Export failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 }
 

@@ -1161,6 +1161,10 @@ function navigateTo(pageId) {
       // No feature gate yet — always rendered when the user navigates here.
       if (typeof renderPropertiesPage === 'function') renderPropertiesPage();
     }
+    if (pageId === 'subscriptions') {
+      if (!isFeatureEnabled('subscriptions')) { location.hash = '#dashboard'; return; }
+      if (typeof renderSubscriptionsPage === 'function') renderSubscriptionsPage();
+    }
     if (pageId === 'add-tx') renderAddTxPage();
     if (pageId === 'payees') { settingsTab = 'payees'; navigateTo('settings'); return; }
     if (pageId === 'search') renderSearchPage();
