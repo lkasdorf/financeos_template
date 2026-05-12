@@ -473,6 +473,7 @@ async function renderSettingsPage() {
     { id: 'goals', label: t('settings.tab.goals', {}, 'Goals') },
     { id: 'budgets', label: t('settings.tab.budgets', {}, 'Budgets') },
     { id: 'reports', label: t('settings.tab.reports', {}, 'Reports') },
+    { id: 'autotags', label: t('settings.tab.autotags', {}, 'Auto-Tags') },
     { id: 'branding', label: t('settings.tab.branding', {}, 'Branding') },
     { id: 'backup', label: t('settings.tab.backup', {}, 'Backup') },
     { id: 'language', label: t('settings.tab.language', {}, 'Language') },
@@ -496,6 +497,7 @@ async function renderSettingsPage() {
   else if (settingsTab === 'goals') renderGoalsTab();
   else if (settingsTab === 'budgets') renderBudgetsTab();
   else if (settingsTab === 'reports') renderReportsConfigTab();
+  else if (settingsTab === 'autotags') renderAutoTagsTab();
   else if (settingsTab === 'vehicles') renderVehiclesTab();
   else if (settingsTab === 'properties') renderPropertiesSettingsTab();
   else if (settingsTab === 'branding') renderBrandingTab();

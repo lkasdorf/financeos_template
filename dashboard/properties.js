@@ -89,6 +89,129 @@ async function loadPropertyDetails(propertyId) {
   return await resp.json();
 }
 
+// ── Cost-overview helpers (v2026-05-12.7) ───────────────────────────────────
+//
+// cost_overview comes from /api/properties/details and aggregates every
+// TX carrying the property's cost_tag (e.g. Property_<X>) into buckets +
+// by_month + by_category + tx_list. utilities_electricity and
+// utilities_water buckets overlap with the LUKU/Water logs, so "other"
+// = everything except those two buckets.
+
+// "Other" = everything that's not represented by its own dedicated KPI
+// card / stack series. Rent + Service Charges got promoted to top-level
+// in v2026-05-12.8, Maintenance followed in v2026-05-12.9 — each pulled
+// out so it stops drowning the donut + Other-log signal. Order in the
+// set is irrelevant; this is a lookup table.
+const _OTHER_EXCLUDE_BUCKETS = new Set([
+  'utilities_electricity',
+  'utilities_water',
+  'rent',
+  'service_charges',
+  'maintenance',
+  'staff',
+]);
+
+function _isOtherBucket(bucket) {
+  return !_OTHER_EXCLUDE_BUCKETS.has(bucket || '');
+}
+
+function _costOverviewYearTotals(co, year) {
+  // Returns per-bucket sums for the given calendar year by walking
+  // cost_overview.by_month. Rent + Service Charges + Maintenance are
+  // broken out as top-level fields because they're typically the
+  // three biggest non-utility line items for a rented property and
+  // each deserves its own KPI card + stack series rather than being
+  // swallowed by "Other".
+  const prefix = String(year);
+  let total = 0;
+  let electricity = 0;
+  let water = 0;
+  let rent = 0;
+  let serviceCharges = 0;
+  let maintenance = 0;
+  let staff = 0;
+  for (const m of (co?.by_month || [])) {
+    if (!String(m.month || '').startsWith(prefix)) continue;
+    total += Number(m.total || 0);
+    electricity += Number(m.utilities_electricity || 0);
+    water += Number(m.utilities_water || 0);
+    rent += Number(m.rent || 0);
+    serviceCharges += Number(m.service_charges || 0);
+    maintenance += Number(m.maintenance || 0);
+    staff += Number(m.staff || 0);
+  }
+  const other = total - electricity - water - rent - serviceCharges - maintenance - staff;
+  return {
+    total,
+    electricity,
+    water,
+    rent,
+    service_charges: serviceCharges,
+    maintenance,
+    staff,
+    other,
+  };
+}
+
+function _clampCostOverviewToPeriod(co, period) {
+  // Returns a shallow-cloned cost_overview whose by_month + tx_list +
+  // by_category + totals are clamped to the period window. Used so the
+  // Monthly Cost Breakdown chart, Other-by-Category donut, and Other
+  // Costs log table all honor the active period pill.
+  if (!co || period === 'all') return co;
+  const w = _periodCutoff(period);
+  const fromMonth = w?.from ? w.from.slice(0, 7) : '';
+  const toMonth = w?.to ? w.to.slice(0, 7) : '';
+  const inMonth = (m) => {
+    const mk = String(m.month || '');
+    if (fromMonth && mk < fromMonth) return false;
+    if (toMonth && mk > toMonth) return false;
+    return true;
+  };
+  const inDate = (iso) => {
+    const d = iso || '';
+    if (w?.from && d < w.from) return false;
+    if (w?.to && d > w.to) return false;
+    return true;
+  };
+  const byMonth = (co.by_month || []).filter(inMonth);
+  const txList = (co.tx_list || []).filter((r) => inDate(r.date));
+  // Re-aggregate totals from the filtered by_month so headline figures
+  // in this period match the chart. Recomputing from tx_list would
+  // double-walk; by_month already has bucket sums.
+  const totals = { grand_total: 0 };
+  for (const m of byMonth) {
+    for (const [k, v] of Object.entries(m)) {
+      if (k === 'month' || k === 'total') continue;
+      totals[k] = (totals[k] || 0) + Number(v || 0);
+    }
+    totals.grand_total += Number(m.total || 0);
+  }
+  // Re-aggregate by_category from the filtered tx_list. We preserve the
+  // bucket from the full cost_overview so the donut keeps its color
+  // mapping stable across period switches.
+  const bucketByCategory = new Map();
+  for (const c of (co.by_category || [])) {
+    bucketByCategory.set(c.category, c.bucket);
+  }
+  const byCatMap = new Map();
+  for (const tx of txList) {
+    const cat = tx.category || '';
+    const amount = Number(tx.amount || 0);
+    const entry = byCatMap.get(cat) || {
+      category: cat,
+      amount: 0,
+      count: 0,
+      bucket: bucketByCategory.get(cat) || 'other',
+    };
+    entry.amount += amount;
+    entry.count += 1;
+    byCatMap.set(cat, entry);
+  }
+  const byCategory = Array.from(byCatMap.values()).sort((a, b) => b.amount - a.amount);
+  return { ...co, by_month: byMonth, tx_list: txList, totals, by_category: byCategory };
+}
+
 // ── Period filter ───────────────────────────────────────────────────────────
 
 function _periodCutoff(period) {
@@ -143,6 +266,12 @@ function _availablePropertyYears() {
     const y = (r.date || '').slice(0, 4);
     if (/^\d{4}$/.test(y)) years.add(y);
   }
+  // Property-tagged TX (cost_tag) may exist for years that have no
+  // LUKU/Water purchases (e.g. a year with only repairs). Include those
+  // years in the period pills so the user can filter to them.
+  for (const y of (propertyDetails.cost_overview?.available_years || [])) {
+    if (/^\d{4}$/.test(y)) years.add(y);
+  }
   years.delete(String(new Date().getFullYear()));
   return Array.from(years).sort().reverse();
 }
@@ -165,6 +294,10 @@ function _recomputeKpisForYear(details, year) {
   const avgPrice = lukuPrices.length ? lukuPrices.reduce((a, b) => a + b, 0) / lukuPrices.length : 0;
   const latestLuku = luku.length ? luku.map((r) => r.date).sort().slice(-1)[0] : null;
   const latestWater = water.length ? water.map((r) => r.date).sort().slice(-1)[0] : null;
+  // Property Total / Other Costs for the selected year come from the
+  // full cost_overview (unclamped — we explicitly want the year, not
+  // whatever the period filter would shrink it to).
+  const yearTotals = _costOverviewYearTotals(details.cost_overview, year);
   return {
     ...(details.kpis || {}),
     strom_ytd: stromTotal,
@@ -177,6 +310,12 @@ function _recomputeKpisForYear(details, year) {
     latest_water_date: latestWater,
     days_since_luku: null,
     days_since_water: null,
+    total_ytd: yearTotals.total,
+    other_ytd: yearTotals.other,
+    rent_ytd: yearTotals.rent,
+    service_charges_ytd: yearTotals.service_charges,
+    maintenance_ytd: yearTotals.maintenance,
+    staff_ytd: yearTotals.staff,
   };
 }
 
@@ -212,6 +351,7 @@ function _applyPeriodToDetails(details, period) {
     monthly_water: (details.monthly_water || []).filter(inWindow),
     purchase_freq: (details.purchase_freq || []).filter(inWindow),
     price_trend: (details.price_trend || []).filter((p) => inDateWindow(p.date)),
+    cost_overview: _clampCostOverviewToPeriod(details.cost_overview, period),
     // YTD-cumulative + yearly + seasonality stay full-history — they
     // are explicitly comparison views (current vs. previous, year-over-year),
     // so clamping them by period would erase the comparison baseline.
@@ -336,8 +476,27 @@ function renderDrilldown(details) {
   const wrap = document.createElement('div');
   wrap.className = 'property-drilldown';
 
+  // Inject Property-Total + Other-Costs YTD into kpis before render so
+  // the KPI grid stays a pure renderer. _recomputeKpisForYear already
+  // overrides server-side YTD for year:YYYY mode — for other periods
+  // we re-derive from the UNCLAMPED cost_overview against the current
+  // year (or selected year). Using the clamped details.cost_overview
+  // here would understate totals for rolling windows like 'last_3m'
+  // that don't cover the full calendar year.
+  const ytdYear = _propsYearFromPeriod(propertyPeriod) || new Date().getFullYear();
+  const yearTotals = _costOverviewYearTotals(propertyDetails?.cost_overview, ytdYear);
+  const enrichedKpis = {
+    ...details.kpis,
+    total_ytd: details.kpis?.total_ytd ?? yearTotals.total,
+    other_ytd: details.kpis?.other_ytd ?? yearTotals.other,
+    rent_ytd: details.kpis?.rent_ytd ?? yearTotals.rent,
+    service_charges_ytd: details.kpis?.service_charges_ytd ?? yearTotals.service_charges,
+    maintenance_ytd: details.kpis?.maintenance_ytd ?? yearTotals.maintenance,
+    staff_ytd: details.kpis?.staff_ytd ?? yearTotals.staff,
+  };
+
   wrap.appendChild(renderDrilldownHeader(details));
-  wrap.appendChild(renderKpiGrid(details.kpis));
+  wrap.appendChild(renderKpiGrid(enrichedKpis));
   wrap.appendChild(renderChartsGrid());
   wrap.appendChild(renderLogsSection(details));
   return wrap;
@@ -372,9 +531,15 @@ function renderKpiGrid(kpis) {
   const lukuDays = kpis.days_since_luku;
   const waterDays = kpis.days_since_water;
   const cards = [
+    { label: t('page.properties.kpi.total_ytd', { year: ytdYear }, `Property Total ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.total_ytd || 0)), unit: cur },
+    { label: t('page.properties.kpi.rent_ytd', { year: ytdYear }, `Rent ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.rent_ytd || 0)), unit: cur },
+    { label: t('page.properties.kpi.service_charges_ytd', { year: ytdYear }, `Service Charges ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.service_charges_ytd || 0)), unit: cur },
+    { label: t('page.properties.kpi.maintenance_ytd', { year: ytdYear }, `Maintenance ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.maintenance_ytd || 0)), unit: cur },
+    { label: t('page.properties.kpi.staff_ytd', { year: ytdYear }, `Staff ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.staff_ytd || 0)), unit: cur },
     { label: t('page.properties.kpi.electricity_ytd', { year: ytdYear }, `Electricity ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.strom_ytd)), unit: cur },
-    { label: t('page.properties.kpi.kwh_ytd', { year: ytdYear }, `kWh ${ytdYear}`), val: _propsFmt(kpis.kwh_ytd, { decimals: 0 }), unit: 'kWh' },
     { label: t('page.properties.kpi.water_ytd', { year: ytdYear }, `Water ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.wasser_ytd)), unit: cur },
+    { label: t('page.properties.kpi.other_ytd', { year: ytdYear }, `Other Costs ${ytdYear}`), val: _propsFmt(_propsToDisplay(kpis.other_ytd || 0)), unit: cur },
+    { label: t('page.properties.kpi.kwh_ytd', { year: ytdYear }, `kWh ${ytdYear}`), val: _propsFmt(kpis.kwh_ytd, { decimals: 0 }), unit: 'kWh' },
     { label: t('page.properties.kpi.avg_price', {}, 'Avg Price/kWh'), val: _propsFmt(kpis.avg_tzs_per_kwh, { decimals: 2 }), unit: 'TZS' },
     { label: t('page.properties.kpi.avg_electricity_month', {}, 'Avg Electricity / Month'), val: _propsFmt(_propsToDisplay(kpis.avg_strom_monthly)), unit: cur, note: avgNote },
     { label: t('page.properties.kpi.avg_water_month', {}, 'Avg Water / Month'), val: _propsFmt(_propsToDisplay(kpis.avg_wasser_monthly)), unit: cur, note: avgNote },
@@ -399,6 +564,14 @@ function renderChartsGrid() {
   const wrap = document.createElement('div');
   wrap.className = 'charts-grid charts-grid-properties';
   wrap.innerHTML = `
+    <div class="chart-card" style="grid-column:1/-1;">
+      <h4>${escapeHtml(t('page.properties.chart.monthly_breakdown', {}, 'Monthly Cost Breakdown — Electricity / Water / Other'))}</h4>
+      <canvas id="chart-monthly-breakdown"></canvas>
+    </div>
+    <div class="chart-card">
+      <h4>${escapeHtml(t('page.properties.chart.other_categories', {}, 'Other Costs by Category'))}</h4>
+      <canvas id="chart-other-categories"></canvas>
+    </div>
     <div class="chart-card">
       <h4>${escapeHtml(t('page.properties.chart.luku_cost', {}, 'Monthly Electricity Costs'))}</h4>
       <canvas id="chart-luku-cost"></canvas>
@@ -445,6 +618,11 @@ function renderLogsSection(details) {
   const tAccount = t('common.table.account', {}, 'Account');
   const tTx = t('common.table.tx', {}, 'TX');
   const tEntries = (n) => t('page.properties.entries', { n }, `${n} entries`);
+  // Other property costs = cost_overview.tx_list filtered to non-utility
+  // buckets. Capped to keep the table scannable; the user can drill into
+  // the underlying TX via the TX-id link.
+  const otherCosts = (details.cost_overview?.tx_list || [])
+    .filter((tx) => _isOtherBucket(_lookupBucketForCategory(details.cost_overview, tx.category)));
   wrap.innerHTML = `
     <div class="logs-grid">
       <div class="log-block">
@@ -481,8 +659,60 @@ function renderLogsSection(details) {
           </table>
         </div>
       </div>
+      <div class="log-block" style="grid-column:1/-1;">
+        <h4>${escapeHtml(t('page.properties.other_log', {}, 'Other Property Costs'))} <span class="muted">(${escapeHtml(tEntries(otherCosts.length))})</span></h4>
+        <div class="table-scroll">
+          <table class="data-table" id="table-other-log">
+            <thead><tr>
+              <th>${escapeHtml(tDate)}</th>
+              <th>${escapeHtml(t('common.table.category', {}, 'Category'))}</th>
+              <th>${escapeHtml(t('common.table.payee', {}, 'Payee'))}</th>
+              <th>${escapeHtml(t('common.table.note', {}, 'Note'))}</th>
+              <th class="num">TZS</th>
+              <th>${escapeHtml(tAccount)}</th>
+              <th>${escapeHtml(tTx)}</th>
+            </tr></thead>
+            <tbody>${renderOtherCostsRows(otherCosts)}</tbody>
+          </table>
+        </div>
+      </div>
     </div>`;
   return wrap;
+}
+
+function _lookupBucketForCategory(co, category) {
+  // Lookup helper used by Other-Costs filtering. We map each TX's
+  // category back to its bucket via cost_overview.by_category so the
+  // filter agrees with the server-side _classify_cost_bucket logic
+  // (Bills:Electricity / Bills:Water excluded as those are in the
+  // LUKU + Water log blocks above).
+  if (!co || !category) return 'other';
+  for (const c of (co.by_category || [])) {
+    if (c.category === category) return c.bucket || 'other';
+  }
+  return 'other';
+}
+
+function renderOtherCostsRows(rows) {
+  if (!rows.length) {
+    return `<tr><td colspan="7" class="muted">${escapeHtml(t('page.properties.empty_log', {}, 'No entries'))}</td></tr>`;
+  }
+  const sorted = [...rows].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  return sorted.map((r) => {
+    const txLink = r.import_id
+      ? `<a href="#transactions" data-tx-id="${escapeHtml(r.import_id)}" class="tx-link">${escapeHtml(String(r.import_id).slice(0, 8))}</a>`
+      : '<span class="muted">–</span>';
+    const note = r.note ? escapeHtml(r.note) : '<span class="muted">–</span>';
+    return `<tr>
+      <td>${escapeHtml(r.date || '')}</td>
+      <td>${escapeHtml(r.category || '')}</td>
+      <td>${escapeHtml(r.payee || '')}</td>
+      <td>${note}</td>
+      <td class="num">${_propsFmt(Number(r.amount || 0))}</td>
+      <td>${escapeHtml(r.account || '–')}</td>
+      <td>${txLink}</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderLukuRows(rows) {
@@ -566,6 +796,8 @@ function drawPropertyCharts(details) {
     console.warn('Chart.js not loaded — skipping property charts');
     return;
   }
+  drawMonthlyBreakdownChart(details.cost_overview || { by_month: [] });
+  drawOtherCategoryChart(details.cost_overview || { by_category: [] });
   drawLukuCostChart(details.monthly_luku);
   drawLukuKwhChart(details.monthly_luku);
   drawWaterCostChart(details.monthly_water);
@@ -575,6 +807,143 @@ function drawPropertyCharts(details) {
   drawYtdWaterChart(details.ytd_cumulative || {});
   drawPurchaseFreqChart(details.purchase_freq || []);
   renderSeasonalityHeatmap(details.seasonality || { years: [], strom: {}, water: {} });
+}
+
+function drawMonthlyBreakdownChart(co) {
+  // Stacked bar: Rent / Service Charges / Maintenance / Electricity /
+  // Water / Other per month. Uses the (period-clamped)
+  // cost_overview.by_month so the chart honors the active period pill.
+  // Colors mirror the dashboard-wide bucket palette
+  // (reports-property-cost.js) so the same bucket gets the same hue
+  // wherever it appears. "Other" is grey-muted because it's the
+  // residual long-tail, not a named line item.
+  const ctx = document.getElementById('chart-monthly-breakdown');
+  if (!ctx) return;
+  const months = co.by_month || [];
+  if (!months.length) return;
+  const labels = _propLabels(months.map((m) => ({ month: m.month })));
+  const rent = months.map((m) => Number(m.rent || 0));
+  const serviceCharges = months.map((m) => Number(m.service_charges || 0));
+  const maintenance = months.map((m) => Number(m.maintenance || 0));
+  const staff = months.map((m) => Number(m.staff || 0));
+  const electricity = months.map((m) => Number(m.utilities_electricity || 0));
+  const water = months.map((m) => Number(m.utilities_water || 0));
+  const other = months.map((m) => {
+    const total = Number(m.total || 0);
+    return Math.max(
+      0,
+      total
+        - Number(m.rent || 0)
+        - Number(m.service_charges || 0)
+        - Number(m.maintenance || 0)
+        - Number(m.staff || 0)
+        - Number(m.utilities_electricity || 0)
+        - Number(m.utilities_water || 0),
+    );
+  });
+  const chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: t('page.properties.chart.legend.rent', {}, 'Rent'),
+          data: rent.map(_propsToDisplay),
+          backgroundColor: '#ef4444',
+          stack: 'cost',
+        },
+        {
+          label: t('page.properties.chart.legend.service_charges', {}, 'Service Charges'),
+          data: serviceCharges.map(_propsToDisplay),
+          backgroundColor: '#f97316',
+          stack: 'cost',
+        },
+        {
+          label: t('page.properties.chart.legend.maintenance', {}, 'Maintenance'),
+          data: maintenance.map(_propsToDisplay),
+          backgroundColor: '#a855f7',
+          stack: 'cost',
+        },
+        {
+          label: t('page.properties.chart.legend.staff', {}, 'Staff'),
+          data: staff.map(_propsToDisplay),
+          backgroundColor: '#10b981',
+          stack: 'cost',
+        },
+        {
+          label: t('page.properties.chart.legend.electricity_short', {}, 'Electricity'),
+          data: electricity.map(_propsToDisplay),
+          backgroundColor: '#3b82f6',
+          stack: 'cost',
+        },
+        {
+          label: t('page.properties.chart.legend.water_short', {}, 'Water'),
+          data: water.map(_propsToDisplay),
+          backgroundColor: '#06b6d4',
+          stack: 'cost',
+        },
+        {
+          label: t('page.properties.chart.legend.other', {}, 'Other'),
+          data: other.map(_propsToDisplay),
+          backgroundColor: '#94a3b8',
+          stack: 'cost',
+        },
+      ],
+    },
+    options: {
+      ..._baseChartOptions(_propsCurrencySymbol()),
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => _propsFmt(v) } },
+      },
+    },
+  });
+  propertyCharts.push(chart);
+}
+
+function drawOtherCategoryChart(co) {
+  // Donut of the top 8 non-utility categories. Long-tail beyond 8 is
+  // folded into a single "rest" slice to keep the legend readable.
+  const ctx = document.getElementById('chart-other-categories');
+  if (!ctx) return;
+  const rows = (co.by_category || []).filter((c) => _isOtherBucket(c.bucket));
+  if (!rows.length) return;
+  const TOP = 8;
+  const top = rows.slice(0, TOP);
+  const restAmount = rows.slice(TOP).reduce((acc, c) => acc + Number(c.amount || 0), 0);
+  const labels = top.map((c) => c.category);
+  const data = top.map((c) => _propsToDisplay(Number(c.amount || 0)));
+  if (restAmount > 0) {
+    labels.push(t('page.properties.chart.other_rest', {}, 'Other (rest)'));
+    data.push(_propsToDisplay(restAmount));
+  }
+  const palette = [
+    '#a855f7', '#ef4444', '#f97316', '#10b981',
+    '#84cc16', '#7c3aed', '#0ea5e9', '#f59e0b', '#94a3b8',
+  ];
+  const chart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: labels.map((_, i) => palette[i % palette.length]),
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: (ctx2) => `${ctx2.label}: ${_propsFmt(ctx2.parsed)} ${_propsCurrencySymbol()}`,
+          },
+        },
+      },
+    },
+  });
+  propertyCharts.push(chart);
 }
 
 function drawPriceTrendChart(rows) {

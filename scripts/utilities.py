@@ -492,7 +492,7 @@ def build_luku_tx(luku_row: dict, prop: dict) -> dict:
     cost_tag = (prop.get("cost_tag") or "").strip()
     explicit = [cost_tag] if cost_tag else []
     tags = ";".join(
-        tx_engine.apply_auto_tags(luku_row["account"], payee, explicit)
+        tx_engine.apply_auto_tags(luku_row["account"], payee, explicit, category)
     )
 
     return {
@@ -526,7 +526,7 @@ def build_water_tx(water_row: dict, prop: dict) -> dict:
     cost_tag = (prop.get("cost_tag") or "").strip()
     explicit = [cost_tag] if cost_tag else []
     tags = ";".join(
-        tx_engine.apply_auto_tags(water_row["account"], payee, explicit)
+        tx_engine.apply_auto_tags(water_row["account"], payee, explicit, category)
     )
 
     return {

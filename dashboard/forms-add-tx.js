@@ -176,6 +176,19 @@ async function renderAddTxPage() {
             <div id="atx-m-tags" class="tag-picker"></div>
           </div>
         </div>
+        <!-- Property picker — auto-applies the property's cost_tag at write
+             time so cost-of-living attribution stays a one-click choice
+             instead of remembering tag names. Row hides itself if no
+             active properties are defined. -->
+        <div class="atx-row" id="atx-m-property-row" hidden>
+          <div class="atx-field fx1">
+            <label>${t('atx.m.label_property', {}, 'Link to property')}</label>
+            <select id="atx-m-property">
+              <option value="">${t('atx.m.property_none', {}, '— none —')}</option>
+            </select>
+            <div class="atx-field-hint" style="font-size:11px;color:var(--muted);margin-top:4px;">${t('atx.m.property_hint', {}, 'Attaches the property tag so the cost shows up in the per-property cost-of-living report.')}</div>
+          </div>
+        </div>
         ${isFeatureEnabled('subscriptions') ? `
         <div class="atx-row" id="atx-m-sub-row">
           <div class="atx-field fx1">
@@ -212,6 +225,11 @@ async function renderAddTxPage() {
 
   // Load context for dropdowns
   loadTxContext().then(ctx => populateTxDropdowns(ctx));
+
+  // Property picker: fetch active properties so any non-utility
+  // property cost (repairs, cleaning, rent paid outside the auto-payee
+  // rules, etc.) can be tagged with one click.
+  loadPropertyPicker('atx-m-property');
 
   // Subscription picker: fetch active subs and wire payee-based
   // auto-suggestion. Skipped silently if the feature is disabled or
@@ -292,6 +310,60 @@ function _initAtxReceiptPickers() {
 
 // Cached picker data so payee-suggest matches without re-hitting the API.
 const _subPickerCache = { rows: null, byPayee: null };
+
+// Cached active-properties list so the edit-form picker can map a
+// Property_<X> tag back to its property_id without a second API call.
+const _propertyPickerCache = { rows: null, byCostTag: null };
+
+async function loadPropertyPicker(selectId, opts = {}) {
+  // opts.preselectTag — Property_<X> tag string. If present and known,
+  // pre-selects the matching <option> after the dropdown is populated.
+  // Used by the edit form to reflect the current property assignment.
+  const sel = document.getElementById(selectId);
+  const row = sel ? sel.closest('.atx-row') : null;
+  if (!sel) return;
+  let rows = [];
+  try {
+    const res = await fetch('/api/properties/list', { method: 'POST' });
+    const data = await res.json();
+    rows = (data.properties || []).filter(p => p.active !== false);
+  } catch (e) {
+    // Silent — leave the picker hidden. Form still works.
+  }
+  _propertyPickerCache.rows = rows;
+  _propertyPickerCache.byCostTag = {};
+  for (const r of rows) {
+    const tag = (r.cost_tag || '').trim();
+    if (tag) _propertyPickerCache.byCostTag[tag] = r;
+  }
+  if (!rows.length) {
+    // No active properties → hide the row entirely so we don't add
+    // visual noise to the form.
+    if (row) {
+      row.hidden = true;
+      row.dataset.hasOptions = '0';
+    }
+    return;
+  }
+  const opts2 = [`<option value="">${t('atx.m.property_none', {}, '— none —')}</option>`];
+  for (const r of rows) {
+    opts2.push(`<option value="${escapeHtml(r.property_id)}">${escapeHtml(r.name || r.property_id)}</option>`);
+  }
+  sel.innerHTML = opts2.join('');
+  if (opts.preselectTag) {
+    const match = _propertyPickerCache.byCostTag[opts.preselectTag];
+    if (match) sel.value = match.property_id;
+  }
+  if (row) {
+    row.dataset.hasOptions = '1';
+    // Respect the current type — setTxType() may have hidden us
+    // because a transfer was already selected when the picker
+    // finished loading.
+    const typeBtn = document.querySelector('#atx-type-btns button.active');
+    const currentType = typeBtn ? typeBtn.getAttribute('data-type') : 'expense';
+    row.hidden = currentType === 'transfer';
+  }
+}
 
 async function loadSubscriptionPicker(selectId) {
   const sel = document.getElementById(selectId);
@@ -408,6 +480,14 @@ function setTxType(type) {
   } else {
     payeeRow.style.display = 'flex';
     transferRow.style.display = 'none';
+  }
+  // Property picker is meaningless on transfers (no cost event), hide
+  // the row entirely. Only show it again when the picker actually has
+  // active properties to offer — loadPropertyPicker() flips the flag.
+  const propRow = document.getElementById('atx-m-property-row');
+  if (propRow) {
+    const hasOptions = propRow.dataset.hasOptions === '1';
+    propRow.hidden = type === 'transfer' || !hasOptions;
   }
   // Filter category dropdown by type
   filterCategories(type);
@@ -743,6 +823,7 @@ async function submitManual() {
     transfer_to_account: type === 'transfer' ? (document.getElementById('atx-m-transfer-to')?.value || '') : '',
     transfer_to_amount: type === 'transfer' ? parseAmountInputStr(document.getElementById('atx-m-transfer-amount')?.value) : '',
     subscription_id: type !== 'transfer' ? (document.getElementById('atx-m-subscription')?.value || '') : '',
+    property_id: type !== 'transfer' ? (document.getElementById('atx-m-property')?.value || '') : '',
     receipt_url: receiptUrlStr,
   };
 

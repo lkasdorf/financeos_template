@@ -180,7 +180,7 @@ def _build_primary_line(entry: dict, accounts: dict, categories: dict, today: da
         currency = accounts[account_alias]["currency"]
 
     manual_tags = [t.strip() for t in entry.get("manual_tags", "").split(";") if t.strip()]
-    all_tags = tx_engine.apply_auto_tags(account_alias, payee, manual_tags)
+    all_tags = tx_engine.apply_auto_tags(account_alias, payee, manual_tags, category)
 
     cat_info = categories.get(category, {})
     tx_type = cat_info.get("type", "expense")

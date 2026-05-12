@@ -18,6 +18,35 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.6.0-rc.2] - 2026-05-12
+
+### Added
+
+- **Properties module: full Cost-of-Living view.** The per-property drilldown page now surfaces every transaction carrying the property's `cost_tag` — not just LUKU + Water. New KPI cards for `Property Total {{year}}`, `Rent {{year}}`, `Service Charges {{year}}`, `Maintenance {{year}}`, `Staff {{year}}`, and `Other Costs {{year}}` (residual after the named buckets), all period-aware. A new full-width stacked bar chart "Monthly Cost Breakdown — Rent / Service Charges / Maintenance / Staff / Electricity / Water / Other" sits at the top of the charts grid, plus an "Other Costs by Category" donut for the long-tail (top-8 categories + an "Other (rest)" slice). A third log block "Other Property Costs" lists every non-utility TX with the cost_tag — Maintenance, Staff, Service Charges, etc. — with TX-id links straight back into Transactions. Period-pills now include any year that has property-tagged TX even if it had no LUKU/Water purchases.
+- **Property-Picker in the Add-TX and Edit-TX forms.** A new dropdown row directly under the tag chips lists every active property. Selecting one attaches the property's `cost_tag` automatically — no more memorising tag names. The picker hides for transfer transactions (transfers aren't a cost event) and stays invisible while `data/properties.csv` has no active rows, so vanilla template forks see no UI clutter. In Edit mode the picker pre-selects the TX's current property (reverse-lookup from tags) and switching to a different property swaps the old `Property_<X>` tag for the new one atomically.
+- **Cross-tag bridges in `apply_auto_tags()`.** A new `auto_tag.bridge` map propagates a source tag to additional target tags at TX-write time. Use case: a landlord-relevant cost tag can automatically flow into the per-property cost-of-living tag without bookkeeping. The pass is a fixed-point loop, so chains settle in a single iteration. Configured per-fork via `config/defaults.json` or the new Auto-Tags UI (see below).
+- **Category-prefix auto-tags (`auto_tag.by_category_prefix`).** New rule type: case-sensitive category-prefix → tag. Example: a rule `Staff:Caretaker ` → `Property_HomeABC` (trailing space deliberate) catches every Salary/Bonus/Rent sub-category for that staff member without sweeping unrelated Custody / Loans rows for the same person. Joins `by_account` and `by_payee` as a third additive matcher in the auto-tag pipeline.
+- **Settings → Auto-Tags — full CRUD UI for all four rule maps.** New sub-tab between Reports and Branding. Inline tables for `by_account`, `by_payee`, `by_category_prefix`, and `bridge` with add/edit/delete per row, a shared Save button, Revert-to-last-saved, plus a dedicated "Backfill matching TX" button on the category-prefix section. The backfill runs dry-run first, shows "X transactions / Y total — apply?", then writes through `_atomic_csv_rewrite`. Saves clear the `get_defaults()` lru_cache so the next TX-write picks up new rules without a server restart.
+- **`scripts/category_prefix_tag_backfill.py`** — one-shot tool that walks `transactions.csv` and applies every `by_category_prefix` rule retroactively to expense rows missing the target tag. Dry-run by default, idempotent, atomic write via the same helper TX-engine uses.
+
+### Changed
+
+- **`apply_auto_tags(account, payee, explicit_tags, category="")`** — new optional `category` parameter. Three-arg call sites (fuel_log, ad-hoc helpers) keep working without modification; the manual TX, scheduled-fire, and LUKU/Water booking surfaces all pass the line's category through so prefix-based rules can fire on the right split.
+- **`tx_engine.build_manual_lines()` computes tags per line** instead of once upfront. Split TX with mixed categories (one Staff:Salary split, one Loan:Outgoing split, same person as payee) now correctly tag only the matching split — the loan split stays untagged regardless of payee.
+- **`tx_engine.AUTO_TAG_*` constants** are no longer frozen at import. The four rule maps (`accounts`, `payees`, `category_prefix`, `bridge`) are read via lazy helpers on every `apply_auto_tags()` call so the Auto-Tags UI's save-and-go workflow works without restarts. A dict-like backwards-compat proxy preserves the old `AUTO_TAG_CATEGORY_PREFIX` import for external scripts.
+- **`config_loader`** gained `get_auto_tags_config()` and `save_auto_tags_config()` — atomic write preserves every other top-level key in `defaults.json` and invalidates the `get_defaults()` lru_cache on save.
+- **3 new API endpoints:** `POST /api/auto-tags/get` (current rules + the list of valid Property_<X> tags from `properties.csv` for the bridge-target picker), `POST /api/auto-tags/save` (atomic upsert + git commit), `POST /api/auto-tags/backfill-prefix` (wraps `category_prefix_tag_backfill`, dry-run default).
+- **`/api/properties/details`** response gained a `cost_overview` sub-object — full bucket aggregation, per-month breakdown, by-category roll-up, and TX list — feeding the new KPI cards, the stacked Monthly Breakdown chart, and the Other-Costs log block. Backend logic is shared with the existing Cost-of-Living report so both surfaces stay in sync.
+- **41 new i18n keys** in `en` + `de`: Auto-Tags settings tab labels, hints, column headers, and confirm dialogs (~38 keys), plus 3 new property KPI labels and 3 shared `common.table.*` keys (Category / Note / Payee) reusable for future tables.
+
+### Migration
+
+After pulling this release no schema migration is needed — `cost_overview` is read-only aggregation over existing data and the new auto-tag maps default to empty. Optional follow-ups:
+
+1. Restart `serve.py` (systemd / Docker) so the new `/api/auto-tags/*` endpoints are picked up.
+2. **Settings → Auto-Tags** — add your own rules. Common starters: account `kft` → `BUSINESS_<X>` business tag; payee `landlord co name` → `House_costs`; category prefix `Staff:<Person> ` → `Property_<X>` for any household staff whose pay is genuinely a property cost; bridge `House_costs` → `Property_<X>` to fold landlord-relevant costs into the per-property Cost-of-Living view.
+3. After adding a category-prefix rule, click **Backfill matching TX** on that section to retroactively tag historical transactions (dry-run first; idempotent).
+
 ## [1.6.0-rc.1] - 2026-05-12
 
 ### Added

@@ -65,7 +65,14 @@ import setup_core
 import subscriptions
 import tx_engine
 import utilities
-from config_loader import get_default, get_reports_config, is_enabled, save_reports_config
+from config_loader import (
+    get_auto_tags_config,
+    get_default,
+    get_reports_config,
+    is_enabled,
+    save_auto_tags_config,
+    save_reports_config,
+)
 
 import re as _re
 
@@ -577,6 +584,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "/api/setup/finalize": self.handle_setup_finalize,
             "/api/reports-config/get": self.handle_reports_config_get,
             "/api/reports-config/save": self.handle_reports_config_save,
+            "/api/auto-tags/get": self.handle_auto_tags_get,
+            "/api/auto-tags/save": self.handle_auto_tags_save,
+            "/api/auto-tags/backfill-prefix": self.handle_auto_tags_backfill_prefix,
             "/api/fx/backfill": self.handle_fx_backfill,
             "/api/fx/backfill/status": self.handle_fx_backfill_status,
             "/api/branding/get": self.handle_branding_get,
@@ -2189,6 +2199,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             purchase_freq = utilities.luku_purchase_frequency(luku)
             ytd_cum = utilities.ytd_cumulative(luku, water)
             heatmap = utilities.seasonality_heatmap(luku, water)
+            # Property-cost-tag-tagged TX aggregation — gives the
+            # drilldown page a full Cost-of-Living view alongside the
+            # LUKU/Water-only KPIs. Frontend clamps tx_list / by_month to
+            # the active period filter and recomputes the headline figures.
+            cost_overview = utilities.cost_overview(property_id)
         except Exception as exc:
             req_id = secrets.token_hex(4)
             print(
@@ -2212,6 +2227,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "purchase_freq": purchase_freq,
             "ytd_cumulative": ytd_cum,
             "seasonality": heatmap,
+            "cost_overview": cost_overview,
         })
 
     def handle_properties_excel(self):
@@ -3060,6 +3076,81 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             pass
         self._respond_json(200, {"ok": True, "config": get_reports_config()})
 
+    # ── API: Auto-tag rules ──────────────────────────────────────────
+    # Backs the Settings → Auto-Tags UI. Reads/writes the `auto_tag`
+    # block in config/defaults.json. config_loader clears the
+    # get_defaults() lru_cache on save so the next TX-write picks up
+    # the new rules without a server restart.
+
+    def handle_auto_tags_get(self):
+        """Return the four auto-tag rule maps + the property cost_tags.
+
+        The cost_tags list lets the UI populate the bridge target +
+        category-prefix target dropdowns with valid Property_X tags
+        without forcing the user to type them.
+        """
+        cost_tags = sorted(tx_engine._all_property_cost_tags())
+        self._respond_json(200, {
+            "config": get_auto_tags_config(),
+            "property_cost_tags": cost_tags,
+        })
+
+    def handle_auto_tags_save(self):
+        """Replace auto_tag block with the posted body. Body: {config: {...}}.
+
+        Validation: only the four known sub-keys are honored; anything
+        else is silently dropped to keep the file shape clean. Bridge
+        targets are coerced to lists in case the UI sends scalars.
+        """
+        body = self._read_json_body()
+        cfg = body.get("config")
+        if not isinstance(cfg, dict):
+            self._respond_json(400, {"error": "config must be an object"})
+            return
+        try:
+            save_auto_tags_config(cfg)
+        except (OSError, ValueError) as e:
+            self._respond_json(500, {"error": f"failed to write auto-tags: {e}"})
+            return
+        try:
+            tx_engine.git_commit("Auto-tag rules updated", ["config/defaults.json"])
+        except Exception:  # noqa: BLE001
+            # git commit is best-effort; file is on disk regardless.
+            pass
+        self._respond_json(200, {"ok": True, "config": get_auto_tags_config()})
+
+    def handle_auto_tags_backfill_prefix(self):
+        """Re-run category_prefix_tag_backfill on transactions.csv.
+
+        Body: {dry_run: bool=true}. Returns the per-prefix summary so
+        the dashboard can show "X TX, Y TZS retagged" feedback.
+        """
+        body = self._read_json_body()
+        dry_run = bool(body.get("dry_run", True))
+        try:
+            import category_prefix_tag_backfill
+            result = category_prefix_tag_backfill.backfill(dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] auto_tags_backfill req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "backfill failed", "request_id": req_id,
+            })
+            return
+        if not dry_run and result.get("total_count"):
+            try:
+                tx_engine.git_commit(
+                    f"Auto-tag backfill: {result['total_count']} rows retagged",
+                    ["data/transactions.csv"],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        self._respond_json(200, {"ok": True, "dry_run": dry_run, **result})
+
     # ── API: FX history backfill ─────────────────────────────────────
     # Wraps scripts/fx_backfill.py so the dashboard can extend
     # data/fx_rates_history.csv on demand. The Settings → Currency tab
@@ -3545,6 +3636,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # "field not present in the request" (preserve existing link);
         # empty string means "explicitly unlink".
         sub_id_change = updated.pop("subscription_id", None)
+
+        # property_id is also not a TX column — it materializes as the
+        # property's cost_tag inside the `tags` field. When the picker
+        # changed selection, rewrite the tags string here: drop any
+        # previously-attached property tag, then add the new one (if
+        # any). None = picker not touched, "" = explicit unlink.
+        property_id_change = updated.pop("property_id", None)
+        if property_id_change is not None:
+            existing_tx = tx_engine.load_transaction_by_id(import_id) or {}
+            base_tags_str = updated.get("tags", existing_tx.get("tags", "") or "")
+            current_tags = [t for t in base_tags_str.split(";") if t]
+            known_prop_tags = tx_engine._all_property_cost_tags()
+            cleaned = [t for t in current_tags if t not in known_prop_tags]
+            new_pid = (property_id_change or "").strip()
+            if new_pid:
+                new_tag = tx_engine._resolve_property_cost_tag(new_pid)
+                if not new_tag:
+                    self._respond_json(400, {
+                        "error": f"Unknown property: '{new_pid}'",
+                    })
+                    return
+                if new_tag not in cleaned:
+                    cleaned.append(new_tag)
+            updated["tags"] = ";".join(cleaned)
 
         # Backup
         try:

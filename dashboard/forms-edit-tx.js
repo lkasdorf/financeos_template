@@ -153,6 +153,20 @@ function renderEditModal(tx, ctx, currentSubId = '') {
           <div id="edit-receipt-grid" class="receipt-grid-host"></div>
         </div>
       </div>
+      ${tx.type !== 'transfer' ? `
+      <!-- Property picker. Pre-selection is computed by loadPropertyPicker
+           after the API call returns (it owns the cost_tag ↔ property_id
+           map). data-original holds the resolved property_id once known
+           so the submit handler can suppress no-op updates. -->
+      <div class="atx-row" id="edit-property-row" hidden>
+        <div class="atx-field fx1">
+          <label>${t('atx.m.label_property', {}, 'Link to property')}</label>
+          <select id="edit-property" data-original="">
+            <option value="">${t('atx.m.property_none', {}, '— none —')}</option>
+          </select>
+        </div>
+      </div>
+      ` : ''}
       ${(isFeatureEnabled('subscriptions') && tx.type !== 'transfer') ? `
       <div class="atx-row" id="edit-sub-row">
         <div class="atx-field fx1">
@@ -217,6 +231,40 @@ function renderEditModal(tx, ctx, currentSubId = '') {
         subSel.value = currentSubId || '';
       })
       .catch(() => { /* leave the placeholder */ });
+  }
+
+  // Property picker: pre-select the property whose cost_tag is already
+  // attached to the TX, if any. Reuses the Add-TX loader so the
+  // cost_tag ↔ property_id map is single-sourced.
+  const propSel = document.getElementById('edit-property');
+  if (propSel) {
+    const existingTags = (tx.tags || '').split(';').filter(Boolean);
+    fetch('/api/properties/list', { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        const rows = (data.properties || []).filter(p => p.active !== false);
+        if (!rows.length) {
+          // No active properties — keep the row hidden.
+          return;
+        }
+        const byTag = {};
+        for (const r of rows) {
+          const tag = (r.cost_tag || '').trim();
+          if (tag) byTag[tag] = r;
+        }
+        const opts = [`<option value="">${t('atx.m.property_none', {}, '— none —')}</option>`];
+        for (const r of rows) {
+          opts.push(`<option value="${escapeHtml(r.property_id)}">${escapeHtml(r.name || r.property_id)}</option>`);
+        }
+        propSel.innerHTML = opts.join('');
+        const matched = existingTags.map(t => byTag[t]).find(Boolean);
+        const initial = matched ? matched.property_id : '';
+        propSel.value = initial;
+        propSel.dataset.original = initial;
+        const row = propSel.closest('.atx-row');
+        if (row) row.hidden = false;
+      })
+      .catch(() => { /* leave hidden */ });
   }
 
   document.getElementById('edit-type').addEventListener('change', (e) => {
@@ -371,6 +419,18 @@ async function saveTxEdit(importId) {
     const current = subSel.value || '';
     if (original !== current) {
       updated.subscription_id = current;
+    }
+  }
+
+  // Property link: same change-detection pattern. Backend re-resolves
+  // the cost_tag and rewrites the tags field so we never have to send
+  // the tag itself from the client.
+  const propSelSave = document.getElementById('edit-property');
+  if (propSelSave) {
+    const originalProp = propSelSave.dataset.original || '';
+    const currentProp = propSelSave.value || '';
+    if (originalProp !== currentProp) {
+      updated.property_id = currentProp;
     }
   }
 

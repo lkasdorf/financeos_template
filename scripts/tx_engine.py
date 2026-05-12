@@ -1428,15 +1428,125 @@ def generate_import_id(
 # Auto-tag rules: certain accounts and payees always get specific tags.
 # These are applied automatically on every TX — no user action needed.
 
-# Auto-tag rules are loaded entirely from config/defaults.json
-# (auto_tag.by_account / by_payee). The maps default to empty so the
-# template repo ships with no hardcoded user data; users (and the private
-# repo) populate the JSON with whatever account/payee → tag rules they need.
-AUTO_TAG_ACCOUNTS = config_loader.get_default("auto_tag.by_account", {})
-AUTO_TAG_PAYEES = config_loader.get_default("auto_tag.by_payee", {})
+# Auto-tag rules live in config/defaults.json under the `auto_tag` block.
+# Accessors are functions (not module-level constants) so the Settings →
+# Auto-Tags UI can rewrite the file at runtime and have the next TX-write
+# pick up the new rules immediately — config_loader.save_auto_tags_config
+# clears the get_defaults() lru_cache as part of its save flow, so these
+# lookups always reflect the current on-disk state.
+#
+# Schema:
+#  - by_account:          account_alias_lower -> tag
+#  - by_payee:            payee_name_lower    -> tag
+#  - by_category_prefix:  Category:Prefix     -> tag (case-sensitive)
+#  - bridge:              source_tag          -> [target_tag, ...]
+#
+# Use case for by_category_prefix: 'Staff:Caretaker ' (trailing
+# space) catches every Salary/Bonus/Rent sub-category for that
+# person without sweeping unrelated Custody / Loans rows.
+# Bridge example: a generic landlord-cost tag can auto-propagate
+# into a per-property cost-of-living tag.
 
 
-def apply_auto_tags(account: str, payee: str, explicit_tags: list[str]) -> list[str]:
+def _auto_tag_accounts() -> dict:
+    return config_loader.get_default("auto_tag.by_account", {}) or {}
+
+
+def _auto_tag_payees() -> dict:
+    return config_loader.get_default("auto_tag.by_payee", {}) or {}
+
+
+def _auto_tag_category_prefix() -> dict:
+    return config_loader.get_default("auto_tag.by_category_prefix", {}) or {}
+
+
+def _auto_tag_bridge() -> dict:
+    return config_loader.get_default("auto_tag.bridge", {}) or {}
+
+
+# Backwards-compat alias used by category_prefix_tag_backfill.py and
+# any external scripts that imported the old module-level constant.
+# Re-evaluated on each access so cache invalidation propagates.
+class _AutoTagPrefixProxy:
+    """Dict-like proxy whose contents are re-read on every access."""
+
+    def items(self):
+        return _auto_tag_category_prefix().items()
+
+    def get(self, key, default=None):
+        return _auto_tag_category_prefix().get(key, default)
+
+    def __getitem__(self, key):
+        return _auto_tag_category_prefix()[key]
+
+    def __contains__(self, key):
+        return key in _auto_tag_category_prefix()
+
+    def __iter__(self):
+        return iter(_auto_tag_category_prefix())
+
+    def __bool__(self):
+        return bool(_auto_tag_category_prefix())
+
+    def __len__(self):
+        return len(_auto_tag_category_prefix())
+
+
+AUTO_TAG_CATEGORY_PREFIX = _AutoTagPrefixProxy()
+
+
+def _resolve_property_cost_tag(property_id: str) -> str:
+    """Return the cost_tag for a property_id, or '' if not resolvable.
+
+    Reads properties.csv directly instead of importing scripts/utilities —
+    utilities already imports tx_engine, and a back-edge would create a
+    circular dependency. The schema is stable enough that this thin
+    reader is cheaper than refactoring the shared loader.
+    """
+    if not property_id:
+        return ""
+    path = DATA_DIR / "properties.csv"
+    if not path.exists():
+        return ""
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if (row.get("property_id") or "").strip() == property_id:
+                    return (row.get("cost_tag") or "").strip()
+    except (OSError, csv.Error):
+        return ""
+    return ""
+
+
+def _all_property_cost_tags() -> set[str]:
+    """Return the set of cost_tags declared in properties.csv.
+
+    Used by edit-mode to strip any previously-attached property tag
+    before applying the picker's new selection, so switching a TX from
+    one property to another never leaves the old `Property_X` tag in
+    place.
+    """
+    path = DATA_DIR / "properties.csv"
+    if not path.exists():
+        return set()
+    out: set[str] = set()
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                tag = (row.get("cost_tag") or "").strip()
+                if tag:
+                    out.add(tag)
+    except (OSError, csv.Error):
+        return set()
+    return out
+
+
+def apply_auto_tags(
+    account: str,
+    payee: str,
+    explicit_tags: list[str],
+    category: str = "",
+) -> list[str]:
     """Apply auto-tag rules and merge with any explicitly specified tags.
 
     Auto-tags are additive: they never override or remove explicit tags.
@@ -1446,19 +1556,47 @@ def apply_auto_tags(account: str, payee: str, explicit_tags: list[str]) -> list[
         account: Account alias (e.g. 'business').
         payee: Payee name for payee-based tag rules.
         explicit_tags: Tags explicitly provided by user or scheduled entry.
+        category: Full TX category (e.g. 'Staff:Caretaker Salary') for
+            category-prefix rules. Optional — defaults to '' so existing
+            three-arg callers (fuel_log, ad-hoc helpers) keep working
+            without modification. Pass the category string at the
+            booking surface (tx_engine.build_*, scheduled fire,
+            backfill) so prefix-based rules can fire.
 
     Returns:
         Merged list of all applicable tags.
     """
     tags = list(explicit_tags)
     # Account-based auto-tags (business accounts)
-    auto = AUTO_TAG_ACCOUNTS.get(account.lower())
+    auto = _auto_tag_accounts().get(account.lower())
     if auto and auto not in tags:
         tags.append(auto)
     # Payee-based auto-tags (specific landlords, contacts)
-    auto = AUTO_TAG_PAYEES.get(payee.lower(), "")
+    auto = _auto_tag_payees().get(payee.lower(), "")
     if auto and auto not in tags:
         tags.append(auto)
+    # Category-prefix auto-tags — case-sensitive prefix match so
+    # 'Staff:Caretaker ' (with trailing space) catches Salary/
+    # Bonus/Rent only, not Custody / Loans rows for the same person.
+    cat = (category or "").strip()
+    if cat:
+        for prefix, target in _auto_tag_category_prefix().items():
+            if prefix and cat.startswith(prefix) and target and target not in tags:
+                tags.append(target)
+    # Cross-tag bridges — fixed-point pass so chained mappings settle in
+    # one call. One-way semantics: a landlord-cost tag flows into
+    # a per-property cost-of-living tag, not vice versa — utilities
+    # are property-specific but the landlord doesn't share them.
+    changed = True
+    while changed:
+        changed = False
+        for src, targets in _auto_tag_bridge().items():
+            if src not in tags:
+                continue
+            for target in (targets or []):
+                if target and target not in tags:
+                    tags.append(target)
+                    changed = True
     return tags
 
 
@@ -2050,6 +2188,7 @@ def build_manual_lines(form_data: dict) -> dict:
     base_note = form_data.get("note", "")
     base_tags = form_data.get("tags", "")
     base_currency = form_data.get("currency", "")
+    base_property_id = (form_data.get("property_id") or "").strip()
 
     # Auto-derive currency from account if not specified
     if not base_currency and base_account in accounts:
@@ -2057,8 +2196,20 @@ def build_manual_lines(form_data: dict) -> dict:
 
     # Auto-tags
     explicit_tags = [t for t in base_tags.split(";") if t]
-    all_tags = apply_auto_tags(base_account, base_payee, explicit_tags)
-    tags_str = ";".join(all_tags)
+    # Optional property link: resolve the property's cost_tag and merge
+    # it into explicit tags so the per-property cost-of-living report
+    # picks the row up. The property_id itself is never stored on the
+    # row — only the tag is — so the picker's edit-mode pre-selection
+    # has to do a reverse lookup from tags. Transfers don't get a
+    # property tag because they aren't a cost event.
+    if base_property_id and base_type != "transfer":
+        cost_tag = _resolve_property_cost_tag(base_property_id)
+        if cost_tag and cost_tag not in explicit_tags:
+            explicit_tags.append(cost_tag)
+    # Tags are computed per-line below (passing each line's category in
+    # so category-prefix rules can fire on the right split only —
+    # e.g. a Staff: split that should tag as a property cost must
+    # not affect a sibling Custody / Loans split with the same payee).
 
     final_lines = []
 
@@ -2074,6 +2225,10 @@ def build_manual_lines(form_data: dict) -> dict:
             # a default for all lines.
             sp_note = (sp.get("note") or "").strip()
             line_note = sp_note if sp_note else base_note
+            sp_category = sp.get("category", "")
+            sp_tags_str = ";".join(apply_auto_tags(
+                base_account, base_payee, explicit_tags, sp_category,
+            ))
             line = {
                 "date": base_date,
                 "account": base_account,
@@ -2081,7 +2236,7 @@ def build_manual_lines(form_data: dict) -> dict:
                 "amount": str(sp.get("amount", 0)),
                 "currency": base_currency,
                 "payee": base_payee,
-                "category": sp.get("category", ""),
+                "category": sp_category,
                 "note": line_note,
                 "raw_note": "",
                 "transfer_to_account": "",
@@ -2091,7 +2246,7 @@ def build_manual_lines(form_data: dict) -> dict:
                 # (one receipt, multiple categories). receipt_url is a
                 # semicolon-separated URL list — see scripts/receipts.py.
                 "receipt_url": form_data.get("receipt_url", "") or "",
-                "tags": tags_str,
+                "tags": sp_tags_str,
                 "third_party_id": "",
             }
             line["import_id"] = generate_import_id(
@@ -2114,6 +2269,10 @@ def build_manual_lines(form_data: dict) -> dict:
                 final_lines.append(pt_line)
     else:
         # Single line mode
+        line_category = form_data.get("category", "")
+        line_tags_str = ";".join(apply_auto_tags(
+            base_account, base_payee, explicit_tags, line_category,
+        ))
         line = {
             "date": base_date,
             "account": base_account,
@@ -2121,7 +2280,7 @@ def build_manual_lines(form_data: dict) -> dict:
             "amount": str(form_data.get("amount", 0)),
             "currency": base_currency,
             "payee": base_payee,
-            "category": form_data.get("category", ""),
+            "category": line_category,
             "note": base_note,
             "raw_note": "",
             "transfer_to_account": form_data.get("transfer_to_account", ""),
@@ -2130,7 +2289,7 @@ def build_manual_lines(form_data: dict) -> dict:
             # v1.6.0: attached receipts (semicolon-separated URL list) from
             # the Add-TX form. Empty when nothing was uploaded.
             "receipt_url": form_data.get("receipt_url", "") or "",
-            "tags": tags_str,
+            "tags": line_tags_str,
             "third_party_id": "",
         }
 

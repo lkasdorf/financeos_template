@@ -164,6 +164,83 @@ def get_reports_config() -> dict:
     return merged
 
 
+def get_auto_tags_config() -> dict:
+    """Return the auto-tag rule maps from defaults.json.
+
+    Returns a dict with keys `by_account`, `by_payee`, `by_category_prefix`,
+    and `bridge`. Missing keys default to empty maps so the dashboard's
+    Auto-Tag Settings tab can render even on fresh installs.
+    """
+    cfg = get_default("auto_tag", {}) or {}
+    return {
+        "by_account": cfg.get("by_account", {}) or {},
+        "by_payee": cfg.get("by_payee", {}) or {},
+        "by_category_prefix": cfg.get("by_category_prefix", {}) or {},
+        "bridge": cfg.get("bridge", {}) or {},
+    }
+
+
+def save_auto_tags_config(data: dict) -> None:
+    """Atomically write the auto-tag block back into defaults.json.
+
+    Preserves every other top-level key (server, smart_defaults, etc.)
+    untouched. After write, clears the get_defaults() lru_cache so
+    subsequent reads — including the next call to apply_auto_tags() —
+    see the new rules without a server restart.
+
+    Args:
+        data: dict with the four auto-tag sub-keys. Anything outside
+            the known keys is dropped to keep the file shape clean.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("auto-tag config must be a dict")
+    sanitized = {
+        "by_account": dict(data.get("by_account", {}) or {}),
+        "by_payee": dict(data.get("by_payee", {}) or {}),
+        "by_category_prefix": dict(data.get("by_category_prefix", {}) or {}),
+        "bridge": {
+            k: list(v or [])
+            for k, v in (data.get("bridge", {}) or {}).items()
+        },
+    }
+    # Load the existing defaults file directly (not via the cached
+    # get_defaults()) so we don't accidentally drop other keys.
+    existing: dict = {}
+    if _DEFAULTS_PATH.exists():
+        try:
+            with _DEFAULTS_PATH.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+    existing["auto_tag"] = sanitized
+
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(_DEFAULTS_PATH.parent),
+        prefix=f".{_DEFAULTS_PATH.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _DEFAULTS_PATH)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    # Invalidate the cached defaults so the next get_default() call
+    # picks up the new rules immediately.
+    get_defaults.cache_clear()
+
+
 def save_reports_config(data: dict) -> None:
     """Atomically write the reports config to config/reports.json.
 
