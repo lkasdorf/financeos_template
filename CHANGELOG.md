@@ -18,6 +18,17 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.7.0] - 2026-05-13
+
+Promoted from `v1.7.0-rc.1` after end-of-day verification on the
+upstream maintainer's Pi (`pi-host`): boot-time drift check clean,
+service running on `0.0.0.0:8080` via `tailscale serve` HTTPS at
+`https://pi-host.your-tailnet.ts.net/dashboard/`, all dashboard pages +
+PWA reachable. No functional changes vs rc.1 — same tree at commit
+`831e606`. See the `[1.7.0-rc.1]` section below for the full release
+notes (115 / 115 Code-Review-2026-05-12 findings closed, plus two
+new dashboard features).
+
 ## [1.7.0-rc.1] - 2026-05-13
 
 End-of-day rollup of the full Code-Review 2026-05-12 closure. 25
