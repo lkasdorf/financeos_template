@@ -86,13 +86,44 @@ def load_subscriptions() -> dict[str, dict]:
     return out
 
 
+def _csv_content_changed(path, columns: list[str], rows: list[dict]) -> bool:
+    """Return True if writing ``rows`` to ``path`` would change the file.
+
+    Used to gate backup_file() calls (H-18, Sprint 10): every save_subscriptions
+    used to create a fresh backup, and a rapid edit session of >30 saves
+    could roll the last good snapshot out of the 30-retain ring before any
+    corruption was noticed. Now we skip the backup when the new content
+    matches what's already on disk, which is the common case in edit
+    sessions (open modal → no actual change → save).
+    """
+    if not path.exists():
+        return True
+    import io
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({c: ("" if row.get(c) is None else row.get(c, "")) for c in columns})
+    try:
+        return path.read_text(encoding="utf-8") != buf.getvalue()
+    except OSError:
+        return True
+
+
 def save_subscriptions(subs: dict[str, dict]) -> None:
-    """Atomically rewrite subscriptions.csv from a dict keyed by subscription_id."""
+    """Atomically rewrite subscriptions.csv from a dict keyed by subscription_id.
+
+    H-18 (Sprint 10): backup_file() only fires when the would-be content
+    actually differs from disk. The atomic rewrite still happens (cheap)
+    so the file's mtime stays current and any cron-mtime check still
+    triggers, but the backup ring is no longer spammed by no-op saves.
+    """
     rows = [
         {col: v.get(col, "") for col in SUBSCRIPTION_COLUMNS}
         for v in subs.values()
     ]
-    backup_file("subscriptions", SUBSCRIPTIONS_CSV)
+    if _csv_content_changed(SUBSCRIPTIONS_CSV, SUBSCRIPTION_COLUMNS, rows):
+        backup_file("subscriptions", SUBSCRIPTIONS_CSV)
     tx_engine._atomic_csv_rewrite(SUBSCRIPTIONS_CSV, SUBSCRIPTION_COLUMNS, rows)
 
 
@@ -208,8 +239,14 @@ def load_subscription_log() -> list[dict]:
 
 
 def save_subscription_log(rows: list[dict]) -> None:
-    """Atomically rewrite subscription_log.csv."""
-    backup_file("subscription_log", SUBSCRIPTION_LOG_CSV)
+    """Atomically rewrite subscription_log.csv.
+
+    H-18 (Sprint 10): same content-changed gate as save_subscriptions so
+    the subscription_log backup ring doesn't get rotated out by no-op
+    saves either.
+    """
+    if _csv_content_changed(SUBSCRIPTION_LOG_CSV, SUBSCRIPTION_LOG_COLUMNS, rows):
+        backup_file("subscription_log", SUBSCRIPTION_LOG_CSV)
     tx_engine._atomic_csv_rewrite(
         SUBSCRIPTION_LOG_CSV, SUBSCRIPTION_LOG_COLUMNS, rows,
     )

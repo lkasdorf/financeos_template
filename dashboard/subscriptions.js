@@ -69,6 +69,25 @@ async function _loadSubsAccountsCache() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// M-F1 (Sprint 18) — block javascript: / data: / vbscript: / file: schemes
+// in subscription URLs. Returns the URL unchanged when its scheme parses
+// to http or https (or the URL is scheme-relative); returns '' for any
+// non-navigable or attacker-controlled scheme. Used in the card renderer
+// so paste-and-click of `javascript:alert(1)` never lands in `<a href>`.
+function _safeHref(url) {
+  if (!url) return '';
+  const trimmed = String(url).trim();
+  if (!trimmed) return '';
+  // Allow protocol-relative // and root-relative / paths.
+  if (trimmed.startsWith('//') || trimmed.startsWith('/')) return trimmed;
+  try {
+    const parsed = new URL(trimmed, window.location.origin);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? trimmed : '';
+  } catch (_e) {
+    return '';
+  }
+}
+
 function _fmtAmount(amount, currency) {
   // Subscriptions are quoted in their *own* currency, not the dashboard
   // display currency — converting here would lose information ("the
@@ -248,8 +267,14 @@ function _renderSubscriptionCard(sub) {
   const accountLine = sub.account
     ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(t('page.subscriptions.card.via', { account: sub.account }, `via ${sub.account}`))}</div>`
     : '';
-  const urlLine = sub.url
-    ? `<a href="${escapeHtml(sub.url)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--accent);text-decoration:none;" title="${escapeHtml(sub.url)}">${escapeHtml(t('page.subscriptions.card.account_url', {}, 'Account ↗'))}</a>`
+  // M-F1 (Sprint 18) — refuse javascript:/data:/vbscript: URLs in the
+  // subscription card. escapeHtml protects against breaking out of the
+  // attribute but does NOT block the browser from navigating to a
+  // javascript: URI; one paste-and-click on a malicious sub URL would
+  // execute attacker JS in the dashboard origin. _safeHref strips any
+  // non-http(s) scheme to the empty string.
+  const urlLine = sub.url && _safeHref(sub.url)
+    ? `<a href="${escapeHtml(_safeHref(sub.url))}" target="_blank" rel="noopener noreferrer" style="font-size:11px;color:var(--accent);text-decoration:none;" title="${escapeHtml(sub.url)}">${escapeHtml(t('page.subscriptions.card.account_url', {}, 'Account ↗'))}</a>`
     : '';
 
   return `

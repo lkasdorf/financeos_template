@@ -285,7 +285,7 @@ function renderAccounts() {
     const spark = sparklineSvg(accountDailyBalances(a.alias, 30), 72, 22);
     return `
       <tr>
-        <td><span class="acc-alias" style="margin:0;font-size:10px;">${a.alias}</span>${tag}</td>
+        <td><span class="acc-alias" style="margin:0;font-size:10px;">${escapeHtml(a.alias)}</span>${tag}</td>
         <td class="fs-11">${escapeHtml(a.name)}</td>
         <td style="padding:4px 8px;">${spark}</td>
         <td class="amt ${balClass}">${formatCurrency(showBal, showCur)}${nativeHint}<span class="acc-currency">${showCur}</span></td>
@@ -406,8 +406,12 @@ function renderRecentTx() {
   const sorted = state.tx.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).slice(0, 20);
   const rows = sorted.map(tx => {
     const tags = (tx.tags || '').split(';').filter(Boolean).map(x => `<span class="tag-chip">${escapeHtml(x)}</span>`).join('');
+    // M-F2 (Sprint 18) — t() substitutes raw strings, so transfer_to_account
+    // must be escaped before being passed as a substitution param AND in
+    // the fallback string. Same fix the dropdowns got in H-11/H-12.
+    const transferTarget = escapeHtml(tx.transfer_to_account || '?');
     const label = tx.type === 'transfer'
-      ? t('dashboard.recent.transfer_to', { account: tx.transfer_to_account || '?' }, `→ ${tx.transfer_to_account || '?'}`)
+      ? t('dashboard.recent.transfer_to', { account: transferTarget }, `→ ${transferTarget}`)
       : escapeHtml(tx.payee || '');
     const catOrType = tx.type === 'transfer'
       ? t('dashboard.recent.transfer_category', {}, 'Transfer')
@@ -415,11 +419,11 @@ function renderRecentTx() {
     return `
       <tr>
         <td>${fmtDate(tx.date)}</td>
-        <td>${tx.account}</td>
+        <td>${escapeHtml(tx.account)}</td>
         <td>${label}</td>
         <td class="cat">${catOrType}${tags ? '<br>' + tags : ''}</td>
-        <td class="amt ${tx.type}">${formatCurrency(tx.amount, tx.currency)}</td>
-        <td class="hint-sm">${tx.currency}</td>
+        <td class="amt ${escapeHtml(tx.type)}">${formatCurrency(tx.amount, tx.currency)}</td>
+        <td class="hint-sm">${escapeHtml(tx.currency)}</td>
       </tr>
     `;
   }).join('');

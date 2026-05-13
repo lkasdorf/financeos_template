@@ -1,0 +1,48 @@
+# FinanceOS — Python project metadata + tooling config.
+#
+# Not a packageable distribution (this isn't `pip install financeos`-able);
+# the file is here so test discovery, lint config, and tool defaults live
+# in one place instead of being implicit across pytest invocations.
+# M-T5 (Sprint 21) — was missing entirely.
+
+[project]
+name = "financeos"
+version = "0.0.0"
+description = "Personal finance system — CSV-based, Pi-hosted dashboard."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+# `tests/` is the canonical location. Adding `scripts` to pythonpath so
+# `import tx_engine` works inside test modules without sys.path hackery.
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+# -q for quiet output, --tb=short for compact tracebacks, strict markers
+# so a typo'd @pytest.mark.x fails the run instead of being a no-op.
+addopts = "-q --tb=short --strict-markers"
+filterwarnings = [
+    "error::DeprecationWarning",
+    # bcrypt sometimes raises DeprecationWarning on hash inputs that
+    # span ASCII vs bytes — we already coerce in verify_credentials.
+    "ignore:.*bcrypt.*:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear (mutable defaults, unused loop vars, etc.)
+]
+ignore = [
+    "E501",  # line too long — handled by formatter, not lint
+    "B008",  # function call as default arg — used intentionally in Path()
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E712"]  # comparison to True/False in pytest assertions

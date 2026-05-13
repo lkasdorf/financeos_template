@@ -42,12 +42,12 @@ function renderEditModal(tx, ctx, currentSubId = '') {
 
   // Account options
   const accOptions = activeAccounts.map(a =>
-    `<option value="${a.alias}" ${tx.account === a.alias ? 'selected' : ''}>${a.alias} — ${a.name}</option>`
+    `<option value="${escapeHtml(a.alias)}" ${tx.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)}</option>`
   ).join('');
 
   // Transfer-to options
   const trOptions = activeAccounts.map(a =>
-    `<option value="${a.alias}" ${tx.transfer_to_account === a.alias ? 'selected' : ''}>${a.alias} — ${a.name}</option>`
+    `<option value="${escapeHtml(a.alias)}" ${tx.transfer_to_account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)}</option>`
   ).join('');
 
   // Category options — rendered dynamically so type changes update the list.

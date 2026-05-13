@@ -245,7 +245,14 @@ async function applyFxOverrides() {
     fxSource = 'manual-override';
     updateFxInfo();
     document.getElementById('fx-status').innerHTML = `<div class="atx-status success">${applied} rate(s) overridden. Dashboard recalculated.</div>`;
-    boot(); // re-render dashboard
+    // H-14 (Sprint 13) — boot() resets settingsTab to 'categories' on
+    // its way through navigateTo('settings'), which would yank the user
+    // off the FX Rates sub-tab they just acted on. Save → boot → restore
+    // → re-render, same pattern the accounts-edit save uses.
+    const wasTab = (typeof settingsTab !== 'undefined') ? settingsTab : 'currency';
+    await boot();
+    settingsTab = wasTab;
+    renderSettingsPage();
   } else {
     document.getElementById('fx-status').innerHTML = '<div class="atx-status warning">No valid overrides entered.</div>';
   }
@@ -256,7 +263,11 @@ async function resetFxRates() {
   updateFxInfo();
   document.getElementById('fx-status').innerHTML = '<div class="atx-status success">Rates reset to ' + fxSource + '.</div>';
   renderFxRatesTab();
-  boot();
+  // H-14 — same boot+restore pattern as applyFxOverrides above.
+  const wasTab = (typeof settingsTab !== 'undefined') ? settingsTab : 'currency';
+  await boot();
+  settingsTab = wasTab;
+  renderSettingsPage();
 }
 
 // ─── Settings: Budgets ──────────────────────────────────────────────────
@@ -549,7 +560,7 @@ function showGoalModal(goal, accounts, currencies) {
           <div>
             <label class="fs-12">${t('common.col.account', {}, 'Account')}</label>
             <select id="goal-account" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
-              ${accounts.map(a => `<option value="${a.alias}" ${goal?.account === a.alias ? 'selected' : ''}>${a.alias} (${a.currency})</option>`).join('')}
+              ${accounts.map(a => `<option value="${escapeHtml(a.alias)}" ${goal?.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} (${escapeHtml(a.currency)})</option>`).join('')}
             </select>
           </div>
           <div>

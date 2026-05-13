@@ -108,14 +108,60 @@ def is_auth_required() -> bool:
 
 
 def is_initialized() -> bool:
-    """Mirror of ``serve._setup_refuse_if_initialized`` for auth purposes."""
+    """Decide whether the repo has been through the setup wizard.
+
+    Multi-signal check (C-01 from CODE_REVIEW_2026-05-12): the old
+    implementation looked only at ``data/.setup_state.json`` and
+    returned False on any read/parse error. That made it trivial for
+    a stale or corrupt marker file to silently re-open the setup
+    wizard — which is auth-exempt and can overwrite
+    ``config/auth.json`` + accounts.csv + categories.csv on
+    POST /api/setup/finalize. An attacker on the LAN/Tailscale subnet
+    who could delete the marker (or just catch the moment after a
+    botched deploy) had a no-auth path to wipe the box.
+
+    Fail-closed contract:
+        - Marker says ``{"initialized": true}`` → accept (happy path).
+        - Marker missing/corrupt BUT we observe artefacts that only
+          exist after a successful setup (``config/auth.json`` or a
+          populated ``data/accounts.csv``) → treat as initialized.
+          Better to refuse the wizard once unnecessarily than to let
+          an attacker re-run it on a configured box.
+        - Only return False when every signal points to "fresh install".
+    """
+    # Primary signal: the explicit marker file.
     try:
-        if not _SETUP_STATE_PATH.exists():
-            return False
-        state = json.loads(_SETUP_STATE_PATH.read_text(encoding="utf-8"))
+        if _SETUP_STATE_PATH.exists():
+            state = json.loads(_SETUP_STATE_PATH.read_text(encoding="utf-8"))
+            if state.get("initialized") is True:
+                return True
     except (OSError, json.JSONDecodeError):
-        return False
-    return state.get("initialized") is True
+        # Marker unreadable — don't return early. Fall through to the
+        # corroborating signals so a corrupt marker can't re-open the
+        # wizard on a fully-configured install.
+        pass
+
+    # Corroborating signal #1: auth.json exists. The wizard writes this
+    # at the end of /api/setup/finalize; its presence means a wizard run
+    # completed at some point even if the marker was later lost.
+    auth_config_path = _REPO_ROOT / "config" / "auth.json"
+    if auth_config_path.exists():
+        return True
+
+    # Corroborating signal #2: accounts.csv has data rows beyond the
+    # header. A fresh install ships with header-only; a configured one
+    # has at least the seeded accounts.
+    accounts_csv = _REPO_ROOT / "data" / "accounts.csv"
+    try:
+        if accounts_csv.exists():
+            with accounts_csv.open("r", encoding="utf-8") as fh:
+                line_count = sum(1 for _ in fh)
+            if line_count > 1:  # header + at least one row
+                return True
+    except OSError:
+        pass
+
+    return False
 
 
 # ── Path classification ───────────────────────────────────────────────────
@@ -176,7 +222,19 @@ def verify_credentials(user: str, password: str) -> bool:
         return False
     try:
         return bcrypt.checkpw(password.encode("utf-8"), expected.encode("ascii"))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        # M-S6 (Sprint 16) — surface corrupt-hash / malformed-input on
+        # stderr instead of silently returning False. Previously the two
+        # cases were indistinguishable from a wrong password, so an
+        # admin staring at a stuck 401 loop had no signal whether the
+        # auth.json hash was the problem. The user-facing response is
+        # unchanged (fail-closed) — this is purely a diagnostic improvement.
+        import sys as _sys
+        print(
+            f"[auth.warn] bcrypt.checkpw raised {type(exc).__name__}: {exc} "
+            f"(corrupt hash in config/auth.json, or malformed password input)",
+            file=_sys.stderr,
+        )
         return False
 
 
@@ -204,6 +262,7 @@ def _record_failure(ip: str) -> float:
         for key in list(_failure_state):
             if now - _failure_state[key]["last"] > _FAILURE_TTL:
                 _failure_state.pop(key, None)
+                _ip_locks.pop(key, None)
         entry = _failure_state.setdefault(ip, {"fails": 0.0, "last": now})
         entry["fails"] += 1
         entry["last"] = now
@@ -214,6 +273,28 @@ def _record_success(ip: str) -> None:
     """Reset failure count for ``ip`` after a successful authentication."""
     with _failure_lock:
         _failure_state.pop(ip, None)
+        _ip_locks.pop(ip, None)
+
+
+# M-S5 (Sprint 16) — per-IP serialization lock. Without this, ThreadingHTTPServer
+# lets N concurrent attempts from the same IP each call verify_credentials,
+# get their increment-and-sleep delay, and then sleep IN PARALLEL — so the
+# effective rate-limit collapses to bcrypt cost (~100 ms with rounds=12)
+# instead of the documented 0.5 s × n_fails. With this lock, all auth
+# attempts from the same IP queue, the sleep actually slows the sequence,
+# and N parallel attackers see the per-IP rate-limit they were supposed to.
+# Locks are cleaned up alongside _failure_state in _record_failure's GC.
+_ip_locks: dict[str, threading.Lock] = {}
+
+
+def _acquire_ip_lock(ip: str) -> threading.Lock:
+    """Return (creating if needed) the per-IP serialization lock."""
+    with _failure_lock:
+        lock = _ip_locks.get(ip)
+        if lock is None:
+            lock = threading.Lock()
+            _ip_locks[ip] = lock
+        return lock
 
 
 # ── Middleware ────────────────────────────────────────────────────────────
@@ -235,16 +316,22 @@ def check_request(handler) -> bool:
         client_ip = addr[0] or "unknown"
 
     auth_header = handler.headers.get("Authorization", "")
-    creds = _decode_basic(auth_header)
-    if creds is not None and verify_credentials(*creds):
-        _record_success(client_ip)
-        return True
+    # M-S5 (Sprint 16) — hold the per-IP lock across the verify + sleep
+    # so concurrent attempts from one source serialize. Without this the
+    # documented "0.5 s × n_fails" throttle collapses to bcrypt cost for
+    # any attacker willing to fire requests in parallel from one IP.
+    ip_lock = _acquire_ip_lock(client_ip)
+    with ip_lock:
+        creds = _decode_basic(auth_header)
+        if creds is not None and verify_credentials(*creds):
+            _record_success(client_ip)
+            return True
 
-    delay = _record_failure(client_ip)
-    if delay > 0:
-        time.sleep(delay)
-    _send_challenge(handler)
-    return False
+        delay = _record_failure(client_ip)
+        if delay > 0:
+            time.sleep(delay)
+        _send_challenge(handler)
+        return False
 
 
 def _send_challenge(handler) -> None:

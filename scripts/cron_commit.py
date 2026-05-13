@@ -313,11 +313,30 @@ def main() -> int:
                 # tick still retries cheaply if this one is slow.
                 push_result = run(["git", "push", "origin", "main"], timeout=60)
                 if push_result.returncode != 0:
-                    # Non-zero exit so cron/systemd see the failure. The
-                    # next run still retries — this just makes failures
-                    # observable instead of silent (memory note: SSH
-                    # passphrase issues used to swallow failures here).
-                    print(f"[cron_commit] push failed: {push_result.stderr.strip()}", file=sys.stderr)
+                    # M-PD2 (Sprint 20) — rate-limit the stderr spam.
+                    # Cron runs every 15 min, so a multi-day SSH-auth
+                    # outage used to fill journalctl with identical
+                    # lines. Now we count consecutive failures in a
+                    # state file and only emit the full message on
+                    # powers of 2 (1, 2, 4, 8, 16, …) — log grows
+                    # logarithmically instead of linearly. cron still
+                    # sees the non-zero exit each time.
+                    _fail_state = REPO_ROOT / "data" / ".cron_commit_fail_count"
+                    try:
+                        _prev = int(_fail_state.read_text().strip())
+                    except (OSError, ValueError):
+                        _prev = 0
+                    _cur = _prev + 1
+                    try:
+                        _fail_state.write_text(str(_cur))
+                    except OSError:
+                        pass
+                    if _cur == 1 or (_cur & (_cur - 1)) == 0:
+                        print(
+                            f"[cron_commit] push failed (consecutive: {_cur}): "
+                            f"{push_result.stderr.strip()}",
+                            file=sys.stderr,
+                        )
                     return 1
                 # Heartbeat: record last successful push for monitoring
                 # (cron_integrity can flag stale heartbeats).
@@ -326,6 +345,13 @@ def main() -> int:
                     heartbeat.write_text(datetime.now().isoformat() + "\n")
                 except Exception:
                     pass  # heartbeat is best-effort
+                # M-PD2: clear the consecutive-failure counter so the
+                # next failure (whenever it lands) is logged as #1
+                # rather than continuing an old run.
+                try:
+                    (REPO_ROOT / "data" / ".cron_commit_fail_count").unlink(missing_ok=True)
+                except OSError:
+                    pass
 
             return 0
         except subprocess.TimeoutExpired as e:

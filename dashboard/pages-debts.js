@@ -14,7 +14,7 @@ async function showDebtModal(editId) {
       const ctx = await loadTxContext();
       const active = ctx.accounts.filter(a => a.status === 'active');
       accOptions = active.map(a =>
-        `<option value="${a.alias}">${a.alias} — ${a.name} [${a.currency}]</option>`
+        `<option value="${escapeHtml(a.alias)}">${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
       ).join('');
     } catch (e) { accOptions = ''; }
   }
@@ -172,7 +172,7 @@ async function deleteDebt(debtId) {
   try {
     await fetch('/api/debts/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: debtId }) });
     renderDebtsPage();
-  } catch (e) {}
+  } catch (e) { console.warn('[debts:silent-catch]', e); }
 }
 
 async function showPayDebtModal(debtId) {
@@ -183,7 +183,7 @@ async function showPayDebtModal(debtId) {
   const ctx = await loadTxContext();
   const activeAccounts = ctx.accounts.filter(a => a.status === 'active');
   const accOptions = activeAccounts.map(a =>
-    `<option value="${a.alias}">${a.alias} — ${a.name} [${a.currency}]</option>`
+    `<option value="${escapeHtml(a.alias)}">${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
 
   const dirLabel = debt.type === 'owed_by_me' ? 'Pay from account' : 'Receive into account';
@@ -228,11 +228,11 @@ async function showPayDebtModal(debtId) {
       <div id="pay-status"></div>
       <div class="modal-footer">
         <div class="btn-left">
-          <button data-action="payDebtFull" data-arg1="${debtId}" class="hint-sm">Pay full amount</button>
+          <button data-action="payDebtFull" data-arg1="${escapeHtml(debtId)}" class="hint-sm">Pay full amount</button>
         </div>
         <div class="btn-right">
           <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
-          <button class="btn-save" data-action="submitPayment" data-arg1="${debtId}">Record Payment</button>
+          <button class="btn-save" data-action="submitPayment" data-arg1="${escapeHtml(debtId)}">Record Payment</button>
         </div>
       </div>
     </div>
@@ -324,7 +324,7 @@ async function showDebtHistory(debtId) {
     });
     const data = await res.json();
     payments = data.payments || [];
-  } catch (e) {}
+  } catch (e) { console.warn('[debts:silent-catch]', e); }
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';

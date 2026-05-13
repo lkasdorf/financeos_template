@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -99,16 +100,46 @@ else:
             pass
 
 
+_lock_local = threading.local()
+
+
 @contextmanager
 def tx_write_lock():
-    """Hold an exclusive cross-process lock on transactions.csv."""
+    """Hold an exclusive cross-process lock on transactions.csv.
+
+    Reentrant per-thread: nested ``with tx_write_lock():`` from the same
+    thread (e.g. an outer cascade wrapping inner ``@with_tx_lock``-decorated
+    callees) only acquires the OS lock once. Without this, ``msvcrt``'s
+    ``LK_LOCK`` (Windows) and ``fcntl.flock`` on a fresh fd (POSIX) both
+    deadlock on the second acquire by the same process — closing the
+    review's C-02 hazard before C-03 wraps update_fuel_entry and
+    update_luku/water_entry cascades in an outer lock.
+
+    Cross-thread / cross-process semantics are unchanged — other threads
+    and processes still block on the OS lock until the holder fully exits.
+    """
+    depth = getattr(_lock_local, "depth", 0)
+    if depth > 0:
+        # Already held by this thread; just bump the counter and yield
+        # without re-acquiring the OS lock.
+        _lock_local.depth = depth + 1
+        try:
+            yield
+        finally:
+            _lock_local.depth -= 1
+        return
+
     lock_path = DATA_DIR / ".transactions.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a") as fh:
         _lock_fh(fh)
+        _lock_local.depth = 1
         try:
             yield
         finally:
+            # Reset depth BEFORE unlocking so a second acquire on the same
+            # thread (after this yield returns) starts cleanly.
+            _lock_local.depth = 0
             _unlock_fh(fh)
 
 
@@ -275,13 +306,38 @@ def _slugify(text: str) -> str:
 
 
 def add_payee(data: dict) -> str:
-    """Add a payee to payees.json. Returns the auto-generated slug ID.
+    """Add a payee to payees.json. Returns the existing or new slug ID.
+
+    L-B1 (Sprint 23, acknowledged) — batch-imports that call this in a
+    loop with mixed `default_category` values keep the FIRST seen
+    category per payee. The case-insensitive dedup logic below (M-B9)
+    returns the existing id without updating fields, so categories
+    typed differently across a batch do not overwrite each other.
+    Desired behaviour: first booking sets the default; later edits go
+    through Settings → Payees.
 
     If the slugified payee name collides with an existing ID, appends
-    a numeric suffix (e.g. 'payee-2') to ensure uniqueness.
+    a numeric suffix (e.g. 'acme-2') to ensure uniqueness.
+
+    M-B9 (Sprint 17): case-insensitive de-dup against the existing
+    payee name AND its aliases. Previously `add_payee({"payee": "Acme"})`
+    followed by `add_payee({"payee": "ACME"})` produced two records
+    (the slugifier collapsed them to the same id but the second got
+    `acme-2`). Now we return the existing id when the name or any
+    alias case-folds onto an existing payee.
     """
     payees = load_payees()
-    pid = _slugify(data.get("payee", ""))
+    new_payee = (data.get("payee", "") or "").strip()
+    if not new_payee:
+        raise ValueError("payee name is required")
+    needle = new_payee.casefold()
+    for existing in payees:
+        if (existing.get("payee", "") or "").casefold() == needle:
+            return existing["id"]
+        for alias in (existing.get("aliases") or []):
+            if (alias or "").casefold() == needle:
+                return existing["id"]
+    pid = _slugify(new_payee)
     # Ensure unique id by appending numeric suffix on collision
     existing_ids = {p["id"] for p in payees}
     base = pid
@@ -291,7 +347,7 @@ def add_payee(data: dict) -> str:
         n += 1
     entry = {
         "id": pid,
-        "payee": data.get("payee", ""),
+        "payee": new_payee,
         "aliases": data.get("aliases", []),
         "default_category": data.get("default_category", ""),
         "default_account": data.get("default_account", ""),
@@ -537,9 +593,14 @@ def load_tags() -> list[dict]:
 
 
 def save_tags(tags: list[dict]) -> None:
-    """Write tags to data/tags.csv."""
+    """Write tags to data/tags.csv.
+
+    H-28 (Sprint 11): the `auto_rule` column was dropped — auto-tag rules
+    live in config/defaults.json:auto_tag (see config_loader). The CSV is
+    now purely a display-friendly tag catalog with active flag.
+    """
     tags_path = DATA_DIR / "tags.csv"
-    fieldnames = ["tag", "description", "auto_rule", "active"]
+    fieldnames = ["tag", "description", "active"]
     _atomic_csv_rewrite(tags_path, fieldnames, tags)
 
 
@@ -551,7 +612,6 @@ def add_tag(data: dict) -> bool:
     tags.append({
         "tag": data.get("tag", ""),
         "description": data.get("description", ""),
-        "auto_rule": data.get("auto_rule", ""),
         "active": data.get("active", "true"),
     })
     save_tags(tags)
@@ -695,7 +755,15 @@ def _create_debt_origination_tx(debt: dict, amount: float, account: str) -> str 
     owed_to_me (I lent)  -> expense on account, category Loans:Outgoing
     owed_by_me (I borrowed) -> income on account,  category Loans:Incoming
 
-    Returns the new import_id, or None if no account was given.
+    Returns the on-disk import_id (post-collision-resolution).
+
+    H-16 (Sprint 10): the read of existing_ids and the append_transactions
+    write were previously separated, so a concurrent writer between the
+    two could produce the same import_id (append_transactions then bumped
+    it with `_2`, but the caller still returned the pre-bump value). Now
+    we hold tx_write_lock across the read+append, and return whatever
+    import_id the line dict carries after append finishes (mutated in
+    place by append_transactions' H-01 re-validation).
     """
     if not account:
         return None
@@ -710,32 +778,30 @@ def _create_debt_origination_tx(debt: dict, amount: float, account: str) -> str 
     if debt.get("note"):
         tx_note += f" — {debt['note']}"
 
-    existing_ids = set()
-    tx_path = DATA_DIR / "transactions.csv"
-    if tx_path.exists():
-        with open(tx_path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                existing_ids.add(row.get("import_id", ""))
-
-    import_id = generate_import_id(
-        date.today().isoformat(), account, amount,
-        debt["person_name"], tx_category, tx_note, existing_ids
-    )
-    line = {
-        "import_id": import_id,
-        "date": date.today().isoformat(),
-        "account": account,
-        "type": tx_type,
-        "amount": amount,
-        "currency": tx_currency,
-        "payee": debt["person_name"],
-        "category": tx_category,
-        "note": tx_note,
-        "tags": "",
-        "third_party_id": debt["id"],
-    }
-    append_transactions([line])
-    return import_id
+    with tx_write_lock():
+        existing_ids = load_existing_import_ids()
+        import_id = generate_import_id(
+            date.today().isoformat(), account, amount,
+            debt["person_name"], tx_category, tx_note, existing_ids
+        )
+        line = {
+            "import_id": import_id,
+            "date": date.today().isoformat(),
+            "account": account,
+            "type": tx_type,
+            "amount": amount,
+            "currency": tx_currency,
+            "payee": debt["person_name"],
+            "category": tx_category,
+            "note": tx_note,
+            "tags": "",
+            "third_party_id": debt["id"],
+        }
+        append_transactions([line])
+        # append_transactions may have rewritten line["import_id"] on a
+        # collision against on-disk state — return the final value so
+        # callers (API → client) get the actual on-disk ID.
+        return line["import_id"]
 
 
 def add_debt(data: dict) -> dict:
@@ -926,7 +992,11 @@ def pay_debt(debt_id: str, amount: float, currency: str,
     save_debts(debts)
 
     # Create a corresponding TX in transactions.csv so the payment
-    # shows up in account balances and cash flow reports
+    # shows up in account balances and cash flow reports.
+    # H-16 (Sprint 10): the existing_ids read + append are now wrapped in
+    # tx_write_lock so a concurrent writer can't produce a duplicate
+    # generated id, and we return the line dict's final import_id (post
+    # H-01 re-validation) so the caller sees the on-disk value.
     import_id = None
     if account:
         accounts = load_accounts()
@@ -940,34 +1010,27 @@ def pay_debt(debt_id: str, amount: float, currency: str,
         if note:
             tx_note += f" — {note}"
 
-        # Load existing IDs for collision avoidance
-        existing_ids = set()
-        tx_path = DATA_DIR / "transactions.csv"
-        if tx_path.exists():
-            import csv as csv_mod
-            with open(tx_path, newline="", encoding="utf-8") as f:
-                for row in csv_mod.DictReader(f):
-                    existing_ids.add(row.get("import_id", ""))
-
-        import_id = generate_import_id(
-            date.today().isoformat(), account, amount,
-            debt["person_name"], tx_category, tx_note, existing_ids
-        )
-
-        line = {
-            "import_id": import_id,
-            "date": date.today().isoformat(),
-            "account": account,
-            "type": tx_type,
-            "amount": amount,
-            "currency": tx_currency,
-            "payee": debt["person_name"],
-            "category": tx_category,
-            "note": tx_note,
-            "tags": "",
-            "third_party_id": debt_id,
-        }
-        append_transactions([line])
+        with tx_write_lock():
+            existing_ids = load_existing_import_ids()
+            import_id = generate_import_id(
+                date.today().isoformat(), account, amount,
+                debt["person_name"], tx_category, tx_note, existing_ids
+            )
+            line = {
+                "import_id": import_id,
+                "date": date.today().isoformat(),
+                "account": account,
+                "type": tx_type,
+                "amount": amount,
+                "currency": tx_currency,
+                "payee": debt["person_name"],
+                "category": tx_category,
+                "note": tx_note,
+                "tags": "",
+                "third_party_id": debt_id,
+            }
+            append_transactions([line])
+            import_id = line["import_id"]
 
     return {"payment_id": payment_id, "import_id": import_id}
 
@@ -1140,6 +1203,98 @@ def lookup_atm_fee(bank: str, amount: float) -> dict | None:
                 and abs(float(item.get("amount", 0) or 0) - float(amount)) < 0.5):
             return item
     return None
+
+
+# ── ATM-fee auto-cascade for Dashboard manual TX ─────────────────────────
+#
+# When the user books a cash withdrawal via Add TX (type=transfer from a
+# bank in atm_fees.csv into a cash-like account at a preset amount), the
+# build_manual_lines() pipeline calls _expand_atm_fees() to produce the
+# same 4-row batch the legacy `TX atm` terminal flow produced: the user's
+# transfer line + fee_net + levy + VAT. All three fee rows are flagged
+# is_auto_generated so they appear in the Add-TX preview with the auto
+# badge but skip user-input validation. Per CLAUDE.md the `ATM` tag is
+# only carried by the transfer line — the fee rows stay untagged.
+
+_ATM_CASHLIKE_TYPES = {"cash", "mobile_money"}
+
+
+def expand_atm_fees(
+    transfer_line: dict,
+    accounts: dict,
+    existing_ids: set,
+) -> list[dict]:
+    """Return auto-generated fee rows for a matching ATM withdrawal, or [].
+
+    Match key is (account, amount) against active rows in atm_fees.csv.
+    Only fires when the destination account is cash-like (cash or
+    mobile_money), so an internal 400k crdb→sav transfer is NOT expanded.
+    Side effect: ensures the `ATM` tag is present on transfer_line.
+    """
+    if transfer_line.get("type") != "transfer":
+        return []
+    src = transfer_line.get("account", "")
+    dst = transfer_line.get("transfer_to_account", "")
+    if not src or not dst:
+        return []
+    dst_type = (accounts.get(dst, {}) or {}).get("type", "")
+    if dst_type not in _ATM_CASHLIKE_TYPES:
+        return []
+    try:
+        amount = float(transfer_line.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        return []
+    preset = lookup_atm_fee(src, amount)
+    if not preset:
+        return []
+
+    # Ensure the transfer keeps its ATM tag (idempotent — user may have
+    # set it manually already). Only the transfer carries the tag; the
+    # fee rows below stay untagged per the legacy `TX atm` convention.
+    cur_tags = [tt for tt in (transfer_line.get("tags") or "").split(";") if tt]
+    if "ATM" not in cur_tags:
+        cur_tags.append("ATM")
+        transfer_line["tags"] = ";".join(cur_tags)
+
+    fee_net = float(preset.get("fee_net", 0) or 0)
+    levy = float(preset.get("levy", 0) or 0)
+    vat_rate = float(preset.get("vat_rate", 0) or 0)
+    vat_amount = round(fee_net * vat_rate, 2)
+    payee = src.upper()
+    bank_currency = (accounts.get(src, {}) or {}).get("currency", "TZS")
+    date_iso = transfer_line.get("date", "")
+
+    fee_amounts = [fee_net, levy, vat_amount]
+    fee_lines: list[dict] = []
+    for amt in fee_amounts:
+        if amt <= 0:
+            continue
+        row = {
+            "date": date_iso,
+            "account": src,
+            "type": "expense",
+            "amount": f"{amt:.2f}",
+            "currency": bank_currency,
+            "payee": payee,
+            "category": "Fees:Bank Fees",
+            "note": "",
+            "raw_note": "",
+            "transfer_to_account": "",
+            "transfer_to_amount": "",
+            "receipt_group": "",
+            "receipt_url": "",
+            "tags": "",
+            "third_party_id": "",
+        }
+        row["import_id"] = generate_import_id(
+            row["date"], row["account"], float(row["amount"]),
+            row["payee"], row["category"], row["note"], existing_ids,
+        )
+        existing_ids.add(row["import_id"])
+        row["is_auto_generated"] = True
+        fee_lines.append(row)
+
+    return fee_lines
 
 
 # ── Custom Reports CRUD ──────────────────────────────────────────────────────
@@ -1386,15 +1541,36 @@ def parse_amount(text: str) -> float:
         '1,500' -> 1,500 (comma stripped)
 
     Returns:
-        Float amount value.
+        Float amount value (always finite, non-negative).
+
+    Raises:
+        ValueError: when the text parses to NaN, infinity, or a
+            negative number. M-B4 (Sprint 17) — without this guard
+            `NaN <= 0` is False, so downstream `if amount <= 0:` style
+            validations let NaN/inf slip through into transactions.csv.
     """
     text = text.strip().lower()
+    # L-B5 (Sprint 23) — length cap before float() so `'1e400'` and
+    # similarly absurd inputs can't return inf. Combined with the
+    # NaN/inf/negative rejection below (M-B4) the parser now refuses
+    # the entire pathological-input set rather than half of it.
+    if len(text) > 32:
+        raise ValueError(f"amount string too long (max 32 chars, got {len(text)})")
     multipliers = {"k": 1_000, "m": 1_000_000}
+    raw: float
     for suffix, mult in multipliers.items():
         if text.endswith(suffix):
-            return float(text[:-1]) * mult
-    # Strip commas used as thousands separators
-    return float(text.replace(",", ""))
+            raw = float(text[:-1]) * mult
+            break
+    else:
+        # Strip commas used as thousands separators.
+        raw = float(text.replace(",", ""))
+    import math as _math
+    if _math.isnan(raw) or _math.isinf(raw):
+        raise ValueError(f"amount must be a finite number (got {text!r})")
+    if raw < 0:
+        raise ValueError(f"amount must be non-negative (got {raw})")
+    return raw
 
 
 # ── Import ID ────────────────────────────────────────────────────────────────
@@ -1411,6 +1587,14 @@ def generate_import_id(
 
     This is the primary key for transactions and must be deterministic
     (same input -> same ID) for idempotency in re-imports.
+
+    M-B1 (Sprint 17): the 12-hex-char truncation yields a 2^48 space.
+    With a stale `existing_ids` snapshot, two parallel callers could
+    independently compute the same `_2` / `_3` suffix. This is
+    mitigated by `append_transactions` re-validating every line's
+    `import_id` against the live on-disk set under `tx_write_lock`
+    (H-01 fix). Callers that don't go through `append_transactions`
+    must take the lock themselves before computing IDs.
     """
     raw = f"{dt}{account}{amount}{payee}{category}{note}"
     base = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
@@ -1587,8 +1771,14 @@ def apply_auto_tags(
     # one call. One-way semantics: a landlord-cost tag flows into
     # a per-property cost-of-living tag, not vice versa — utilities
     # are property-specific but the landlord doesn't share them.
+    # M-B3 (Sprint 17) — hard max-iteration cap defends against a
+    # pathological bridge config (cycles only matter if dedup misses
+    # them, e.g. case-mismatched tag names). Tags are deduped per-target
+    # so normal configs converge in 2–3 iterations; 16 is generous.
     changed = True
-    while changed:
+    max_iter = 16
+    while changed and max_iter > 0:
+        max_iter -= 1
         changed = False
         for src, targets in _auto_tag_bridge().items():
             if src not in tags:
@@ -1611,9 +1801,58 @@ def apply_auto_tags(
 # `f"Income:{ptp} Reimbursement"` in generate_pass_through_line(), which
 # already covers every payee without needing a hard-coded list.
 _REIMBURSEMENT_CATEGORIES_FALLBACK: dict[str, str] = {}
-REIMBURSEMENT_CATEGORIES = config_loader.get_default(
-    "pass_through.reimbursement_categories", _REIMBURSEMENT_CATEGORIES_FALLBACK
-)
+
+
+def _reimbursement_categories() -> dict[str, str]:
+    """Live read of ``pass_through.reimbursement_categories`` from
+    config/defaults.json.
+
+    Replaces the module-level ``REIMBURSEMENT_CATEGORIES`` constant that
+    was captured once at import time (H-17 from CODE_REVIEW_2026-05-12):
+    after the Settings UI mutated the config via ``save_auto_tags_config``
+    + cache invalidation, the in-process constant remained stale and
+    pass-through reimbursement lookups silently used the old category
+    map. Always go through this helper at call time so hot-reload works.
+    """
+    return config_loader.get_default(
+        "pass_through.reimbursement_categories",
+        _REIMBURSEMENT_CATEGORIES_FALLBACK,
+    )
+
+
+class _ReimbursementCategoriesProxy:
+    """Backwards-compatible read-only mapping proxy.
+
+    Some external callers still reference ``tx_engine.REIMBURSEMENT_CATEGORIES``
+    as if it were a plain dict (``.get`` / ``in`` / iteration). Expose a
+    proxy that delegates each access to :func:`_reimbursement_categories`
+    so existing call sites get the live config without code changes.
+    Mirrors the ``_AutoTagPrefixProxy`` pattern.
+    """
+
+    def get(self, key, default=None):
+        return _reimbursement_categories().get(key, default)
+
+    def __getitem__(self, key):
+        return _reimbursement_categories()[key]
+
+    def __contains__(self, key):
+        return key in _reimbursement_categories()
+
+    def __iter__(self):
+        return iter(_reimbursement_categories())
+
+    def items(self):
+        return _reimbursement_categories().items()
+
+    def keys(self):
+        return _reimbursement_categories().keys()
+
+    def values(self):
+        return _reimbursement_categories().values()
+
+
+REIMBURSEMENT_CATEGORIES = _ReimbursementCategoriesProxy()
 
 
 def generate_pass_through_line(
@@ -1642,6 +1881,14 @@ def generate_pass_through_line(
     # Look up the reimbursement category, with a dynamic fallback
     reimb_cat = REIMBURSEMENT_CATEGORIES.get(ptp, f"Income:{ptp} Reimbursement")
 
+    # M-B2 (Sprint 17) — verbatim tag copy is intentional. Leon's pattern
+    # for House_4C / Property_* is that the reimbursement leg keeps the
+    # same tags as the expense leg, so all reports (cost-of-living and
+    # the rare "TX tagged X" queries) see the matched pair together.
+    # The finding flagged this as a leak risk, but the current behaviour
+    # was explicitly chosen on 2026-05-13 — see memory financeos_property_tags
+    # and the Nile-Advocates legal-TX edit that brought the pair into
+    # sync that day. Closed as no-change with rationale captured here.
     line = {
         "date": expense_line["date"],
         "account": expense_line["account"],
@@ -1658,6 +1905,13 @@ def generate_pass_through_line(
         "receipt_url": "",
         "tags": expense_line.get("tags", ""),
         "third_party_id": "",
+        # H-15: explicit FK back to the expense leg. The income leg
+        # alone carries the link — the expense leg is the canonical
+        # source and lookup direction is income.counter_entry_id ==
+        # expense.import_id. Without this, find_reimbursement_id had
+        # to do a fragile (date, account, amount, payee, category)
+        # tuple match that broke after manual edits.
+        "counter_entry_id": expense_line.get("import_id", ""),
         "is_auto_generated": True,
     }
     line["import_id"] = generate_import_id(
@@ -1726,6 +1980,16 @@ TX_COLUMNS = [
     "import_id", "date", "account", "type", "amount", "currency",
     "payee", "category", "note", "raw_note", "transfer_to_account",
     "transfer_to_amount", "receipt_group", "receipt_url", "tags", "third_party_id",
+    # H-15 (CODE_REVIEW_2026-05-12): explicit FK linking a pass-through
+    # reimbursement income row back to its expense partner's
+    # `import_id`. Closes the silent-orphan risk where editing the
+    # expense's date/amount/payee desynchronized the field-tuple lookup
+    # in find_reimbursement_id and left a dangling counter-entry.
+    # Only the INCOME (reimbursement) leg carries this FK; the expense
+    # leg leaves it blank. Lookup direction is therefore "find rows
+    # whose counter_entry_id matches the expense's import_id" — single
+    # direction is sufficient for delete-cascade + edit-sync flows.
+    "counter_entry_id",
 ]
 
 
@@ -1768,8 +2032,17 @@ def _dv1_check_currency(body: dict, errors: list) -> None:
 
 
 def _dv1_check_account(body: dict, accounts: dict, errors: list, field: str = "account") -> None:
-    if body.get(field) and body[field] not in accounts:
-        errors.append(f"account '{body[field]}' does not exist")
+    # M-B5 (Sprint 17) — distinguish missing/empty from wrong-value.
+    # Previously `body.get(field)` returned `""` for an empty string,
+    # which is falsy, so the whole check was skipped and a quick-expense
+    # could be created with `account=""`. The two cases now produce
+    # different error messages so the UI can route them correctly.
+    val = body.get(field)
+    if val is None or val == "":
+        errors.append(f"{field} is required")
+        return
+    if val not in accounts:
+        errors.append(f"{field} '{val}' does not exist")
 
 
 def _dv1_check_category(body: dict, categories: dict, errors: list, field: str = "category") -> None:
@@ -1847,8 +2120,49 @@ def append_transactions(lines: list[dict]) -> None:
 
     Amounts are normalized to 2 decimal places for consistency.
     Lines are written in TX_COLUMNS order regardless of dict key order.
+
+    Durability: flush + fsync are forced before close so a power loss
+    mid-batch cannot leave a torn final row. Without this the buffered
+    write may live in the kernel page cache for seconds while callers
+    have already been told the TX is persisted.
+
+    Collision re-validation (H-01): the caller may have computed
+    ``line["import_id"]`` minutes earlier (Manual-TX two-step flow:
+    /api/tx/manual previews, /api/tx/confirm writes). Between those
+    requests a concurrent writer (cron_sched, another tab) can land
+    a TX with the same content-derived hash. Under the
+    ``@with_tx_lock`` we hold here, re-read the on-disk import_ids
+    set and bump any colliding line's id via
+    :func:`generate_import_id` before the write. Callers don't have
+    to do anything — they get the (possibly mutated) line dict back.
     """
     tx_path = DATA_DIR / "transactions.csv"
+
+    # H-01 — re-validate import_ids against live state under the lock.
+    on_disk_ids = load_existing_import_ids()
+    for line in lines:
+        line_id = line.get("import_id", "")
+        if not line_id:
+            # Older callers may have skipped id generation entirely.
+            # Generate now so the row is queryable.
+            line["import_id"] = generate_import_id(
+                line.get("date", ""), line.get("account", ""),
+                float(line.get("amount") or 0), line.get("payee", ""),
+                line.get("category", ""), line.get("note", ""),
+                on_disk_ids,
+            )
+        elif line_id in on_disk_ids:
+            # Collision against on-disk state — regenerate with the
+            # tiebreaker (`_2`, `_3`, ...) against the current snapshot
+            # plus any other batch lines we've already accepted.
+            line["import_id"] = generate_import_id(
+                line.get("date", ""), line.get("account", ""),
+                float(line.get("amount") or 0), line.get("payee", ""),
+                line.get("category", ""), line.get("note", ""),
+                on_disk_ids,
+            )
+        on_disk_ids.add(line["import_id"])
+
     with open(tx_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         for line in lines:
@@ -1862,6 +2176,8 @@ def append_transactions(lines: list[dict]) -> None:
                     val = f"{float(val):.2f}"
                 row.append(val)
             writer.writerow(row)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 @with_tx_lock
@@ -2315,6 +2631,15 @@ def build_manual_lines(form_data: dict) -> dict:
             if pt_line:
                 existing_ids.add(pt_line["import_id"])
                 final_lines.append(pt_line)
+
+        # ATM-fee auto-cascade — see expand_atm_fees() above for the
+        # match heuristic (transfer + cash-like destination + amount
+        # matches an active atm_fees.csv preset). Fee rows are flagged
+        # is_auto_generated so the Add-TX preview shows them with the
+        # auto badge and the validator skips them.
+        if base_type == "transfer":
+            for fee_row in expand_atm_fees(line, accounts, existing_ids):
+                final_lines.append(fee_row)
 
     # Validate
     errors = []

@@ -219,7 +219,7 @@ function renderBusinessReimbursementsReport(entityId) {
           </tr></thead><tbody>
             ${bizExpenses.filter(tx => tx.date && tx.date.startsWith(year)).sort((a, b) => a.date.localeCompare(b.date)).map(tx => `<tr>
               <td>${fmtDate(tx.date)}</td>
-              <td>${tx.account}</td>
+              <td>${escapeHtml(tx.account)}</td>
               <td>${escapeHtml(tx.payee || '')}</td>
               <td class="cat">${escapeHtml(tx.category || '')}</td>
               <td class="amt expense">${formatCurrency(tx.amount, tx.currency)}</td>
@@ -303,7 +303,7 @@ function renderBusinessReimbursementsReport(entityId) {
               ${unmatchedExp.length ? `<div style="margin-bottom:8px;font-weight:500;color:var(--negative);">${t('reports.kf.unmatched.exp_without', { n: unmatchedExp.length }, `Expenses without Reimbursement (${unmatchedExp.length})`)}</div>
               <table class="tx-table"><thead><tr>${txTableHead}</tr></thead><tbody>
                 ${unmatchedExp.map(tx => `<tr>
-                  <td>${fmtDate(tx.date)}</td><td>${tx.account}</td><td>${escapeHtml(tx.payee||'')}</td>
+                  <td>${fmtDate(tx.date)}</td><td>${escapeHtml(tx.account)}</td><td>${escapeHtml(tx.payee||'')}</td>
                   <td class="cat">${escapeHtml(tx.category||'')}</td><td class="amt expense">${formatCurrency(tx.amount, tx.currency)} ${tx.currency}</td>
                   <td class="hint-sm">${escapeHtml(tx.note||'')}</td>
                 </tr>`).join('')}
@@ -311,7 +311,7 @@ function renderBusinessReimbursementsReport(entityId) {
               ${unmatchedRei.length ? `<div style="margin:12px 0 8px;font-weight:500;color:var(--positive);">${t('reports.kf.unmatched.rei_without', { n: unmatchedRei.length }, `Reimbursements without Expense (${unmatchedRei.length})`)}</div>
               <table class="tx-table"><thead><tr>${txTableHead}</tr></thead><tbody>
                 ${unmatchedRei.map(tx => `<tr>
-                  <td>${fmtDate(tx.date)}</td><td>${tx.account}</td><td>${escapeHtml(tx.payee||'')}</td>
+                  <td>${fmtDate(tx.date)}</td><td>${escapeHtml(tx.account)}</td><td>${escapeHtml(tx.payee||'')}</td>
                   <td class="cat">${escapeHtml(tx.category||'')}</td><td class="amt income">${formatCurrency(tx.amount, tx.currency)} ${tx.currency}</td>
                   <td class="hint-sm">${escapeHtml(tx.note||'')}</td>
                 </tr>`).join('')}

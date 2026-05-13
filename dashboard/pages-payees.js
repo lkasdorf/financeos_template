@@ -206,7 +206,7 @@ async function showPayeeTxOverlay(payeeName) {
             const sign = tx.type === 'income' ? '+' : tx.type === 'transfer' ? '' : '-';
             return `<tr>
               <td>${fmtDate(tx.date)}</td>
-              <td class="fs-12">${tx.account}</td>
+              <td class="fs-12">${escapeHtml(tx.account)}</td>
               <td class="cat fs-12">${escapeHtml(tx.category || '')}</td>
               <td style="font-size:11px;color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(tx.note || '')}</td>
               <td class="amt ${amtClass}">${sign}${formatCurrency(tx.amount, tx.currency)} ${tx.currency}</td>
@@ -235,11 +235,11 @@ async function showPayeeModal(editId) {
     const data = await res.json();
     allPayees = data.payees || [];
     if (editId) payee = allPayees.find(p => p.id === editId);
-  } catch (e) {}
+  } catch (e) { console.warn('[payees:silent-catch]', e); }
 
   const isEdit = !!payee;
   const accOptions = ctx.accounts.filter(a => a.status === 'active').map(a =>
-    `<option value="${a.alias}" ${payee && payee.default_account === a.alias ? 'selected' : ''}>${a.alias} — ${a.name}</option>`
+    `<option value="${escapeHtml(a.alias)}" ${payee && payee.default_account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)}</option>`
   ).join('');
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
     `<option value="${c.path}" ${payee && payee.default_category === c.path ? 'selected' : ''}>${c.path}</option>`
@@ -347,5 +347,5 @@ async function deletePayee(id) {
     await fetch('/api/payees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
     closeModal();
     renderPayeesPage();
-  } catch (e) {}
+  } catch (e) { console.warn('[payees:silent-catch]', e); }
 }

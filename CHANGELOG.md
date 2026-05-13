@@ -18,6 +18,148 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.7.0-rc.1] - 2026-05-13
+
+End-of-day rollup of the full Code-Review 2026-05-12 closure. 25
+sprints, 115/115 findings closed (13 Critical + 32 High + 41 Medium +
+29 Low). Two new dashboard features land alongside the hardening.
+
+### Added
+
+- **Accounts overview: opt-in multi-currency Balance columns.**
+  Chip-strip toggle "Also show in: [TZS] [EUR] [USD] [PLN]" above
+  the accounts table. Each active chip adds a `Balance (CUR)` column
+  showing every account converted into that currency, plus a
+  `Total {{group}} (≈ CUR)` row per group. Selection persists in
+  `localStorage` (`lp-accounts-extra-cols`). Native-currency totals
+  stay unchanged.
+- **ATM-fee auto-cascade in Add TX.** `build_manual_lines()` detects
+  a bank→cash-like transfer with an exact-amount match against
+  `data/atm_fees.csv` and expands it into a 4-row batch (transfer +
+  fee_net + levy + VAT). Fee rows are flagged `is_auto_generated`
+  so the preview shows them with the auto badge. The transfer line
+  picks up the `ATM` tag automatically.
+- **Boot-time `requirements.txt` drift check** via `importlib.metadata`.
+  Prints a `[warn]` block when the venv lags the pinned dependencies
+  — catches the bcrypt-style outage after a deploy that bumped
+  `requirements.txt` but didn't `pip install -r` in the active venv.
+- **Boot-time `auto_tag` schema validator** rejects typo'd rule keys
+  (`by_acccount` with three c's etc.) at save time and warns on boot
+  when the on-disk config has issues.
+- **Decimal accumulators for money** in `cost_overview` and
+  `ytd_cumulative` — multi-month cumulative sums no longer drift
+  cents through float-arithmetic. Float only at the JSON boundary.
+- **Single-flight locks + pre-scan size caps** on `/api/backup/export`
+  (200 MB, excludes `data/receipts/`) and `/api/receipts/export`
+  (500 MB). Second concurrent caller gets HTTP 429.
+- **Argv allowlist** on `/api/backup/create` — `target` is validated
+  against `backup.BACKUP_TARGETS` before reaching `subprocess.run`.
+- **Request-body cap** of 60 MB on every `do_POST` so a hostile
+  Content-Length can't OOM the Python server.
+- **Per-IP serialization lock** for the auth throttle so the sleep-
+  delay actually slows N concurrent attackers from one source.
+- **AES-key rotation on PWA logout** — the encrypted-creds blob plus
+  the wrapping key get wiped in one IDB transaction.
+- **IDB-quota soft-limit warn** via `navigator.storage.estimate()`
+  plus a compensating delete if a queued receipt blob fails to write
+  after its TX row landed.
+- **`syncQueue` in-flight promise lock** + automatic retry of error
+  rows up to 5 attempts with per-row `retry_count`.
+- **`/api/health` minimal payload** for unauthenticated callers when
+  the server is in `auth.mode=basic` — drops hostname / git status /
+  data-dir size from the response.
+- **`pyproject.toml`** with pytest + ruff config; **MIT LICENSE** at
+  repo root.
+
+### Changed
+
+- **Properties Settings UI fully internationalized.** 35 dormant
+  `settings.properties.*` keys were finally wired up; DE-locale users
+  no longer see the Properties tab in English.
+- **CRDB-reconciliation Pass-2 aggregation** only fires on real
+  receipt-group splits. Three separate same-day same-payee
+  transactions no longer collapse into one bucket that the first
+  bank line over-claims.
+- **`add_payee` case-insensitive dedup** — `add_payee({"payee": "Acme"})`
+  followed by `add_payee({"payee": "ACME"})` returns the existing id
+  instead of creating a second record.
+- **`generate_import_id` collision re-validation** happens under
+  `tx_write_lock` so two concurrent writers can't both produce the
+  same `_2` suffix.
+- **Pass-through reimbursement category map** picks up Settings
+  changes without a server restart (Proxy class replaces the
+  module-level dict that was captured at import time).
+- **Forecast widget** classifies scheduled income vs expense by
+  category prefix and uses `max(actual+sched, baseline)` instead of
+  additive projection — no more double-counting of recurring
+  scheduled entries that are already in the 6-month average.
+
+### Fixed
+
+- **Trailing-slash redirect** for directory URLs (`/dashboard` →
+  `/dashboard/`) behind reverse proxies. The cache-bust handler used
+  to short-circuit `SimpleHTTPRequestHandler`'s redirect and ship
+  index.html at the un-slashed URL, which broke every relative href.
+- **Subscription URL filter** rejects `javascript:` / `data:` /
+  `vbscript:` / `file:` schemes before they reach the anchor's
+  `href`. Paste-and-click no longer fires arbitrary script in the
+  dashboard origin.
+- **24+ XSS render paths** now escape `account.alias`, `account.name`,
+  `tx.account`, and related fields — covers `<option>` dropdowns,
+  every transaction table render, the recent-TX widget, sidebar
+  account links, the receipt lightbox, the pay-debt modal, and the
+  quick-expense chip.
+- **`SimpleHTTPRequestHandler` jail-check** against `REPO_ROOT` so a
+  symlink inside the repo pointing outside it can't pivot
+  cache-bust into serving arbitrary HTML from disk.
+- **SQLite magic-byte check** on the MMEX-upload path refuses
+  non-SQLite payloads upfront — junk uploads never hit the parser.
+- **Bcrypt errors surface to stderr** so a corrupt-hash on disk is
+  diagnostically distinguishable from a wrong-password rejection.
+- **Account-input length caps** — alias 32 chars max
+  (`[a-z][a-z0-9_]{0,31}`), name 64 chars max — enforced on both
+  add and update, plus client-side `maxlength` + `pattern`.
+- **`parse_amount` rejects** NaN, infinity, negative numbers, and
+  inputs longer than 32 characters — earlier validators that did
+  `amount <= 0` checks silently let NaN/inf slip into
+  `transactions.csv`.
+- **PWA receipt-paste handler** was probing the wrong DOM element
+  (`#view-tx`) since v1.6.0; now checks `screen-main.classList.contains
+  ('active')` and the paste-to-attach flow works again.
+- **Backup retention ring** no longer rotates valid snapshots out
+  during rapid edit sessions of `subscriptions.csv` and
+  `subscription_log.csv` — backup only runs when the new content
+  actually differs from disk.
+
+### Security
+
+- **CSRF gate** on every mutating `/api/*` POST. Same-origin
+  Host==Origin shortcut covers Tailscale MagicDNS / Cloudflare
+  Tunnel / ngrok without forcing the operator to extend
+  `FINANCEOS_CORS_HOSTS` for every new hostname.
+- **Multi-signal setup-wizard initialization check** — marker file
+  alone is no longer trusted; presence of `config/auth.json` or a
+  populated `data/accounts.csv` also blocks the wizard from being
+  reachable on a tampered marker.
+- **`counter_entry_id` FK column** on `transactions.csv` makes
+  pass-through pairs explicitly linked instead of triple-field
+  matching — survives manual edits.
+- **Atomic cascade writes** under a reentrant `tx_write_lock` for
+  fuel + utilities CRUD (update / delete / add all see the cascade
+  as all-or-nothing).
+- **PWA-XSS hardening** in the queue renderer (payee / account /
+  date / currency all routed through `escapeHtml`).
+- **Privacy-verify pipeline gate** — the template-export pipeline
+  scans the output tree for 30 sensitive terms and refuses to ship
+  if any non-whitelisted hit remains.
+
+### Notes
+
+- 168 commits in the private repo land in this single public-repo
+  commit. Sprint-level decomposition is in the private CHANGELOG;
+  this entry summarises the user-visible deltas.
+- Pre-rc.1 was v1.6.0-rc.2 (2026-05-12).
+
 ## [1.6.0-rc.2] - 2026-05-12
 
 ### Added

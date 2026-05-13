@@ -130,10 +130,30 @@ window.DEFAULTS = {
 window.SMART_DEFAULTS = {
   ui: { default_display_currency: window.DEFAULTS.currency.primary || 'USD' },
 };
+// L-F6 (Sprint 24) — deep-merge helper used by loadDefaults() and
+// loadSmartDefaults() so a partial config/defaults.json doesn't wipe
+// nested objects. Previously `Object.assign(DEFAULTS, fileJson)`
+// replaced entire sub-trees: a defaults.json that only set
+// `currency.primary` would also drop `currency.fallback_tzs_per_usd`
+// from the in-memory copy.
+function _deepMerge(target, source) {
+  if (!source || typeof source !== 'object') return target;
+  for (const key of Object.keys(source)) {
+    const sv = source[key];
+    if (sv && typeof sv === 'object' && !Array.isArray(sv)
+        && target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {
+      _deepMerge(target[key], sv);
+    } else {
+      target[key] = sv;
+    }
+  }
+  return target;
+}
+
 async function loadDefaults() {
   try {
     const res = await fetch('../config/defaults.json', { cache: 'no-store' });
-    if (res.ok) Object.assign(window.DEFAULTS, await res.json());
+    if (res.ok) _deepMerge(window.DEFAULTS, await res.json());
   } catch { /* keep defaults */ }
 }
 
@@ -235,7 +255,9 @@ function _blendHex(aHex, bHex, amount) {
 async function loadSmartDefaults() {
   try {
     const res = await fetch('../config/smart_defaults.json', { cache: 'no-store' });
-    if (res.ok) Object.assign(window.SMART_DEFAULTS, await res.json());
+    // L-F6 — same deep-merge as loadDefaults so a partial overlay
+    // doesn't replace nested objects in SMART_DEFAULTS.
+    if (res.ok) _deepMerge(window.SMART_DEFAULTS, await res.json());
   } catch { /* keep defaults */ }
 }
 
@@ -1166,7 +1188,19 @@ function navigateTo(pageId) {
       if (typeof renderSubscriptionsPage === 'function') renderSubscriptionsPage();
     }
     if (pageId === 'add-tx') renderAddTxPage();
-    if (pageId === 'payees') { settingsTab = 'payees'; navigateTo('settings'); return; }
+    if (pageId === 'payees') {
+      // L-F5 (Sprint 24) — the inner navigateTo('settings') hits the
+      // `if (pageId === 'settings')` branch below and stomps
+      // settingsTab back to 'categories'. Land on the Settings page
+      // directly here instead of recursing, so the payees tab survives.
+      const settingsPage = document.getElementById('page-settings');
+      if (settingsPage) settingsPage.classList.add('active');
+      const settingsLink = document.querySelector('.sidebar-nav > li > a[data-page="settings"]');
+      if (settingsLink) settingsLink.classList.add('active');
+      settingsTab = 'payees';
+      renderSettingsPage();
+      return;
+    }
     if (pageId === 'search') renderSearchPage();
     if (pageId === 'alerts') renderAlertsPage();
     if (pageId === 'custom-reports') renderCustomReportsPage();
@@ -1191,6 +1225,22 @@ function navigateTo(pageId) {
       if (moreFaqLink && moreBtn) { moreBtn.classList.add('active'); moreFaqLink.classList.add('active'); }
       if (typeof renderFaqPage === 'function') renderFaqPage();
     }
+  }
+
+  // M-F4 (Sprint 18) — fallback for unknown hash routes. If none of the
+  // page-id branches above activated a `.page` element (typo'd anchor,
+  // legacy bookmark, copy-paste of an outdated hash), the dashboard
+  // would otherwise render blank. Bounce to #dashboard with a console
+  // warn so the user sees something and the typo surfaces in the log.
+  if (!document.querySelector('.page.active')) {
+    console.warn('[navigateTo] unknown route:', pageId, '— falling back to dashboard');
+    const fallback = document.getElementById('page-dashboard');
+    if (fallback) fallback.classList.add('active');
+    const fallbackLink = document.querySelector('.sidebar-nav > li > a[data-page="dashboard"]');
+    if (fallbackLink) fallbackLink.classList.add('active');
+    // Rewrite the URL hash so a refresh doesn't loop into the unknown
+    // route again. Use replaceState to avoid clogging the back stack.
+    try { history.replaceState(null, '', '#dashboard'); } catch (e) { /* ignore */ }
   }
 }
 
@@ -1839,7 +1889,7 @@ function populateAccountsSidebar() {
     for (const a of g.accounts) {
       const bal = state.balances[a.alias] || 0;
       const fmtBal = formatCurrency(bal, a.currency);
-      html += `<li><a href="#account:${a.alias}" data-alias="${a.alias}">${a.alias}<span class="sub-balance">${fmtBal}</span></a></li>`;
+      html += `<li><a href="#account:${encodeURIComponent(a.alias)}" data-alias="${escapeHtml(a.alias)}">${escapeHtml(a.alias)}<span class="sub-balance">${fmtBal}</span></a></li>`;
     }
   }
   sub.innerHTML = html;

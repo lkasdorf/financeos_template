@@ -9,11 +9,17 @@ openpyxl>=3.1,<4.0
 # Receipt-Attachments (v1.6.0): EXIF strip + 256px JPEG thumbnails. All uploads
 # are re-encoded as JPEG so metadata is dropped at the encoder boundary —
 # camera model, GPS, timestamps all go away even if the user disabled stripping.
-Pillow>=10.0,<12.0
+# H-30 (Sprint 15): cap raised to <13.0 — Pillow 12 was released and the
+# installed version on Pi + dev is 12.1.1; the old <12.0 cap was a fiction
+# (no install would have respected it). 12 is API-compatible for the JPEG
+# encode / thumbnail / EXIF-strip surface we use.
+Pillow>=10.0,<13.0
 # HEIC support for iPhone uploads. Pure-Python wheel on Pi, ~2 MB on disk.
 # After deploy, run `pip install -r requirements.txt` in the Pi venv —
 # silent ImportError otherwise will throw 500s on the first HEIC upload.
-pillow-heif>=0.13,<1.0
+# H-30 (Sprint 15): cap raised to <2.0 — pillow-heif 1.x is the current
+# line (installed 1.3.0), the old <1.0 cap was a fiction.
+pillow-heif>=0.13,<2.0
 # Optional dev-only dependency: enables `python scripts/serve.py --reload`
 # (auto-restart on Python-code change). Not needed for production / Pi.
 # watchdog>=3.0,<5.0
@@ -22,3 +28,7 @@ pillow-heif>=0.13,<1.0
 # stay on host cron and skip this. Saves Docker / Synology / Unraid users
 # from wiring a separate cron daemon.
 # apscheduler>=3.10,<4.0
+# Dev-only dependency: runs the test suite in tests/. Production / Pi cron
+# never imports pytest. Uncomment on a contributor workstation, then
+# `pip install -r requirements.txt` and `python -m pytest tests/`.
+# pytest>=8.0,<10.0

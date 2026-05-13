@@ -145,9 +145,42 @@ def calculate_next_run(frequency: str, from_date: date) -> date:
         return date(next_year, next_month, day)
 
 
+def _missed_periods(frequency: str, last_due: date, today: date) -> int:
+    """Return the number of full periods skipped between ``last_due``
+    and ``today`` because cron only fires once per due-entry.
+
+    Used by ``_filter_due`` to surface multi-month Pi downtime (M-B7,
+    Sprint 17). 0 means at most one fire would have produced the
+    expected sequence; >0 means N intermediate periods got silently
+    skipped — operator must decide whether to backfill manually.
+
+    Defensive: returns 0 on any frequency-parse error so a single bad
+    row can't blow up the whole _filter_due pass.
+    """
+    try:
+        count = 0
+        cur = last_due
+        # Hard cap to keep a malformed frequency from looping forever.
+        for _ in range(120):
+            nxt = calculate_next_run(frequency, cur)
+            if nxt > today:
+                break
+            count += 1
+            cur = nxt
+        return count
+    except (ValueError, RuntimeError):
+        return 0
+
+
 def _filter_due(scheduled: list[dict], today: date) -> tuple[list[dict], list[str]]:
     """Return (due_entries, warnings). An entry is due when active=true AND
     next_run is a parseable ISO date <= today.
+
+    M-B7 (Sprint 17): when next_run is multiple periods in the past
+    (multi-month Pi downtime), only ONE fire happens and the missed
+    intermediate periods would have been silently skipped. We now
+    surface the missed count as a warning so the operator can decide
+    whether to manually backfill or accept the gap.
     """
     due: list[dict] = []
     warnings: list[str] = []
@@ -164,6 +197,19 @@ def _filter_due(scheduled: list[dict], today: date) -> tuple[list[dict], list[st
             continue
         if run_date <= today:
             due.append(entry)
+            # M-B7 — measure how many cycles got skipped past run_date.
+            # _missed_periods counts strict-future iterations from
+            # run_date itself, so a one-period overdue returns 0 (only
+            # one fire was due) and the warning only triggers on real
+            # gaps of two or more periods.
+            missed = _missed_periods(entry.get("frequency", ""), run_date, today)
+            if missed > 0:
+                warnings.append(
+                    f"{entry.get('sched_id', '?')}: next_run was {next_run} and "
+                    f"{missed} intermediate period(s) would have fired between then "
+                    f"and {today.isoformat()} — only one TX is being booked now. "
+                    f"Manually backfill the missed periods if needed."
+                )
     return due, warnings
 
 
@@ -319,61 +365,69 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
 
     all_tx_lines: list[dict] = []
     summaries: list[str] = []
-    for entry in due:
-        primary = _build_primary_line(entry, accounts, categories, today, existing_ids)
-        existing_ids.add(primary["import_id"])
-        all_tx_lines.append(primary)
-
-        acc_info = accounts.get(entry.get("account", ""), {})
-        if acc_info.get("pass_through_payee") and primary["type"] == "expense":
-            pt_line = tx_engine.generate_pass_through_line(primary, acc_info, existing_ids)
-            if pt_line:
-                existing_ids.add(pt_line["import_id"])
-                pt_line.pop("is_auto_generated", None)
-                all_tx_lines.append(pt_line)
-
-        summaries.append(f"{entry.get('name', '?')} ({entry.get('payee', '?')})")
-
-        entry["last_run"] = today.isoformat()
-        try:
-            entry["next_run"] = calculate_next_run(entry.get("frequency", ""), today).isoformat()
-        except ValueError as e:
-            warnings.append(f"Could not calculate next_run for {entry.get('sched_id', '?')}: {e}")
-            entry["next_run"] = (today + timedelta(days=30)).isoformat()
-
-    tx_engine.append_transactions(all_tx_lines)
-    tx_engine.save_scheduled(scheduled)
-
-    # v1.5.1: mirror SCHED-linked primary lines into subscription_log. Mirrors
-    # the post-append pattern in serve.handle_tx_confirm so the Subscriptions
-    # page picks up SCHED-fired charges without manual re-linking. Pass-through
-    # reimbursement lines never carry subscription_id (generate_pass_through_line
-    # does not copy the field), so iterating all_tx_lines is safe.
     sub_log_written: list[str] = []
-    if has_sub_links:
-        import subscriptions  # local import: cron may run without dashboard libs preloaded
-        for line in all_tx_lines:
-            sid = (line.get("subscription_id") or "").strip()
-            if not sid:
-                continue
+
+    # H-19 (Sprint 10): hold tx_write_lock across the full cascade
+    # (append_transactions → save_scheduled → subscription_log append)
+    # so a concurrent dashboard delete between the TX append and the
+    # subscription_log append can't leave orphan log rows referencing a
+    # since-removed import_id. The lock is reentrant (C-02) so nested
+    # acquires from append_transactions / save_scheduled are fine.
+    with tx_engine.tx_write_lock():
+        for entry in due:
+            primary = _build_primary_line(entry, accounts, categories, today, existing_ids)
+            existing_ids.add(primary["import_id"])
+            all_tx_lines.append(primary)
+
+            acc_info = accounts.get(entry.get("account", ""), {})
+            if acc_info.get("pass_through_payee") and primary["type"] == "expense":
+                pt_line = tx_engine.generate_pass_through_line(primary, acc_info, existing_ids)
+                if pt_line:
+                    existing_ids.add(pt_line["import_id"])
+                    pt_line.pop("is_auto_generated", None)
+                    all_tx_lines.append(pt_line)
+
+            summaries.append(f"{entry.get('name', '?')} ({entry.get('payee', '?')})")
+
+            entry["last_run"] = today.isoformat()
             try:
-                log_id = subscriptions.append_subscription_log({
-                    "date": line.get("date", ""),
-                    "subscription_id": sid,
-                    "amount": line.get("amount", ""),
-                    "currency": line.get("currency", ""),
-                    "account": line.get("account", ""),
-                    "tx_import_id": line.get("import_id", ""),
-                    "note": "",
-                })
-                sub_log_written.append(log_id)
-            except Exception as exc:
-                # Same trade-off as serve.handle_tx_confirm: log-link failures
-                # do NOT roll back the TX. User can re-link via Edit-TX modal.
-                warnings.append(
-                    f"subscription_log link failed for "
-                    f"{line.get('import_id', '')}: {exc}"
-                )
+                entry["next_run"] = calculate_next_run(entry.get("frequency", ""), today).isoformat()
+            except ValueError as e:
+                warnings.append(f"Could not calculate next_run for {entry.get('sched_id', '?')}: {e}")
+                entry["next_run"] = (today + timedelta(days=30)).isoformat()
+
+        tx_engine.append_transactions(all_tx_lines)
+        tx_engine.save_scheduled(scheduled)
+
+        # v1.5.1: mirror SCHED-linked primary lines into subscription_log. Mirrors
+        # the post-append pattern in serve.handle_tx_confirm so the Subscriptions
+        # page picks up SCHED-fired charges without manual re-linking. Pass-through
+        # reimbursement lines never carry subscription_id (generate_pass_through_line
+        # does not copy the field), so iterating all_tx_lines is safe.
+        if has_sub_links:
+            import subscriptions  # local import: cron may run without dashboard libs preloaded
+            for line in all_tx_lines:
+                sid = (line.get("subscription_id") or "").strip()
+                if not sid:
+                    continue
+                try:
+                    log_id = subscriptions.append_subscription_log({
+                        "date": line.get("date", ""),
+                        "subscription_id": sid,
+                        "amount": line.get("amount", ""),
+                        "currency": line.get("currency", ""),
+                        "account": line.get("account", ""),
+                        "tx_import_id": line.get("import_id", ""),
+                        "note": "",
+                    })
+                    sub_log_written.append(log_id)
+                except Exception as exc:
+                    # Same trade-off as serve.handle_tx_confirm: log-link failures
+                    # do NOT roll back the TX. User can re-link via Edit-TX modal.
+                    warnings.append(
+                        f"subscription_log link failed for "
+                        f"{line.get('import_id', '')}: {exc}"
+                    )
 
     n_booked = len(due)
     summary_str = ", ".join(summaries[:5])

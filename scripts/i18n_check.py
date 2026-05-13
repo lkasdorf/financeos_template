@@ -225,6 +225,29 @@ def collect() -> dict:
         and not matches_dynamic(k)
     )
 
+    # L-PD3 (Sprint 23) — flag placeholder-count mismatches between EN and
+    # DE for the same key. Catches e.g. EN "{n} accounts" vs DE "Konten"
+    # where the DE side dropped the {n} substitution, which would render
+    # as a literal "Konten" with the count silently lost.
+    import re as _re_local
+    # Match both single-brace {name} and double-brace {{name}} forms;
+    # t() in dashboard/i18n.js supports both.
+    placeholder_re = _re_local.compile(r"\{\{?(\w+)\}?\}")
+    placeholder_mismatches: list[dict] = []
+    for key in sorted(en_keys & de_keys):
+        en_val = en.get(key, "")
+        de_val = de.get(key, "")
+        if not isinstance(en_val, str) or not isinstance(de_val, str):
+            continue
+        en_ph = set(placeholder_re.findall(en_val))
+        de_ph = set(placeholder_re.findall(de_val))
+        if en_ph != de_ph:
+            placeholder_mismatches.append({
+                "key": key,
+                "missing_in_de": sorted(en_ph - de_ph),
+                "extra_in_de": sorted(de_ph - en_ph),
+            })
+
     return {
         "static_uses": static_uses,
         "dynamic_uses": dynamic_uses,
@@ -236,6 +259,7 @@ def collect() -> dict:
         "missing_in_de": missing_in_de,
         "de_orphans_vs_en": de_orphans_vs_en,
         "unreferenced": unreferenced,
+        "placeholder_mismatches": placeholder_mismatches,
     }
 
 
@@ -289,6 +313,24 @@ def print_report(result: dict) -> None:
             print(f"    {key}")
         print()
 
+    # L-PD3 (Sprint 23) — placeholder-count mismatch is a HARD error.
+    # A DE string that dropped {n} or {{currency}} silently renders the
+    # literal text instead of the substitution, which the user only
+    # spots if they happen to switch locales and look at that screen.
+    mismatches = result.get("placeholder_mismatches", [])
+    if mismatches:
+        hard_errors += len(mismatches)
+        print(f"[ERROR] placeholder-mismatch  ({len(mismatches)})")
+        print("  Same key, different placeholder set in EN vs DE:")
+        for m in mismatches:
+            bits = []
+            if m["missing_in_de"]:
+                bits.append("missing-in-de=" + ",".join(m["missing_in_de"]))
+            if m["extra_in_de"]:
+                bits.append("extra-in-de=" + ",".join(m["extra_in_de"]))
+            print(f"    {m['key']}  ({'; '.join(bits)})")
+        print()
+
     if hard_errors == 0 and not result["de_orphans_vs_en"] and not result["unreferenced"]:
         print("All i18n keys accounted for. EN/DE parity intact.")
     elif hard_errors == 0:
@@ -313,12 +355,13 @@ def main() -> int:
             "missing_in_de": result["missing_in_de"],
             "de_orphans_vs_en": result["de_orphans_vs_en"],
             "unreferenced": result["unreferenced"],
+            "placeholder_mismatches": result["placeholder_mismatches"],
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print_report(result)
 
-    return 1 if (result["missing_in_en"] or result["missing_in_de"]) else 0
+    return 1 if (result["missing_in_en"] or result["missing_in_de"] or result["placeholder_mismatches"]) else 0
 
 
 if __name__ == "__main__":

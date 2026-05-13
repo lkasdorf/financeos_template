@@ -28,9 +28,33 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import sys
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+
+# H-20 (Sprint 14) — Decimal helper for money accumulators so multi-month
+# cumulative sums don't drift cents (e.g. `0.1 + 0.2 = 0.30000000000000004`).
+# Convention: parse incoming row['amount'] via _money() once, accumulate in
+# Decimal, then drop back to float only at the JSON-serialization boundary
+# (the return-dict).
+_MONEY_QUANT = Decimal("0.01")
+
+
+def _money(value) -> Decimal:
+    """Parse a number-like value into a Decimal, quantized to 2 dp.
+
+    Tolerates None / empty / malformed input by returning Decimal('0.00').
+    Strings go through Decimal(str(...)) to avoid float intermediates that
+    would re-introduce the binary-float rounding we're trying to escape.
+    """
+    if value is None or value == "":
+        return Decimal("0.00")
+    try:
+        return Decimal(str(value)).quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
+    except (ArithmeticError, ValueError):
+        return Decimal("0.00")
 
 # Local sibling modules — tx_engine carries the shared TX writer + locking.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -437,23 +461,35 @@ def next_water_id() -> str:
 
 
 def append_luku_log(row: dict) -> None:
-    """Append a single LUKU entry to luku_log.csv (creates header if missing)."""
+    """Append a single LUKU entry to luku_log.csv (creates header if missing).
+
+    Durability: flush + fsync force the buffered append to disk before the
+    handle closes, so a power loss between the TX commit and the next sync
+    cannot leave a torn final row.
+    """
     new_file = not LUKU_LOG_CSV.exists() or LUKU_LOG_CSV.stat().st_size == 0
     with open(LUKU_LOG_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=LUKU_LOG_COLUMNS)
         if new_file:
             writer.writeheader()
         writer.writerow({c: row.get(c, "") for c in LUKU_LOG_COLUMNS})
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def append_water_log(row: dict) -> None:
-    """Append a single water entry to water_log.csv (creates header if missing)."""
+    """Append a single water entry to water_log.csv (creates header if missing).
+
+    Same durability contract as :func:`append_luku_log`.
+    """
     new_file = not WATER_LOG_CSV.exists() or WATER_LOG_CSV.stat().st_size == 0
     with open(WATER_LOG_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=WATER_LOG_COLUMNS)
         if new_file:
             writer.writeheader()
         writer.writerow({c: row.get(c, "") for c in WATER_LOG_COLUMNS})
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def write_luku_log(rows: list[dict]) -> None:
@@ -614,38 +650,44 @@ def add_luku_entry(
         "note": note,
     }
 
-    # Backups before any write — FinanceOS hard rule
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    if LUKU_LOG_CSV.exists():
-        backup_file("luku_log", LUKU_LOG_CSV)
+    # Atomic across existing_ids snapshot + append + log persist so
+    # another writer can't invalidate our id-collision window (H-01)
+    # and a concurrent observer can't see a TX without its log row
+    # or vice versa (C-03). Reentrant via C-02 — inner @with_tx_lock
+    # decorators see depth > 0 and skip the OS lock re-acquire.
+    with tx_engine.tx_write_lock():
+        # Backups before any write — FinanceOS hard rule
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        if LUKU_LOG_CSV.exists():
+            backup_file("luku_log", LUKU_LOG_CSV)
 
-    # Build expense + (optional) reimbursement TXs
-    existing_ids = tx_engine.load_existing_import_ids()
-    expense_line = build_luku_tx(luku_row, prop)
-    expense_line["import_id"] = tx_engine.generate_import_id(
-        expense_line["date"], expense_line["account"],
-        float(expense_line["amount"]), expense_line["payee"],
-        expense_line["category"], expense_line["note"], existing_ids,
-    )
-    existing_ids.add(expense_line["import_id"])
-
-    lines_to_write = [expense_line]
-    reimb_id = None
-    if acc.get("type") == "pass_through":
-        reimb_line = tx_engine.generate_pass_through_line(
-            expense_line, acc, existing_ids,
+        # Build expense + (optional) reimbursement TXs
+        existing_ids = tx_engine.load_existing_import_ids()
+        expense_line = build_luku_tx(luku_row, prop)
+        expense_line["import_id"] = tx_engine.generate_import_id(
+            expense_line["date"], expense_line["account"],
+            float(expense_line["amount"]), expense_line["payee"],
+            expense_line["category"], expense_line["note"], existing_ids,
         )
-        if reimb_line is not None:
-            existing_ids.add(reimb_line["import_id"])
-            reimb_id = reimb_line["import_id"]
-            lines_to_write.append(reimb_line)
+        existing_ids.add(expense_line["import_id"])
 
-    # Persist TX(s) first; if this fails, no log row is written.
-    tx_engine.append_transactions(lines_to_write)
+        lines_to_write = [expense_line]
+        reimb_id = None
+        if acc.get("type") == "pass_through":
+            reimb_line = tx_engine.generate_pass_through_line(
+                expense_line, acc, existing_ids,
+            )
+            if reimb_line is not None:
+                existing_ids.add(reimb_line["import_id"])
+                reimb_id = reimb_line["import_id"]
+                lines_to_write.append(reimb_line)
 
-    # Link expense TX back into log row, then persist
-    luku_row["tx_import_id"] = expense_line["import_id"]
-    append_luku_log(luku_row)
+        # Persist TX(s) first; if this fails, no log row is written.
+        tx_engine.append_transactions(lines_to_write)
+
+        # Link expense TX back into log row, then persist
+        luku_row["tx_import_id"] = expense_line["import_id"]
+        append_luku_log(luku_row)
 
     return {
         "luku_id": luku_id,
@@ -695,33 +737,35 @@ def add_water_entry(
         "note": note,
     }
 
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    if WATER_LOG_CSV.exists():
-        backup_file("water_log", WATER_LOG_CSV)
+    # See add_luku_entry for the atomicity rationale — same shape.
+    with tx_engine.tx_write_lock():
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        if WATER_LOG_CSV.exists():
+            backup_file("water_log", WATER_LOG_CSV)
 
-    existing_ids = tx_engine.load_existing_import_ids()
-    expense_line = build_water_tx(water_row, prop)
-    expense_line["import_id"] = tx_engine.generate_import_id(
-        expense_line["date"], expense_line["account"],
-        float(expense_line["amount"]), expense_line["payee"],
-        expense_line["category"], expense_line["note"], existing_ids,
-    )
-    existing_ids.add(expense_line["import_id"])
-
-    lines_to_write = [expense_line]
-    reimb_id = None
-    if acc.get("type") == "pass_through":
-        reimb_line = tx_engine.generate_pass_through_line(
-            expense_line, acc, existing_ids,
+        existing_ids = tx_engine.load_existing_import_ids()
+        expense_line = build_water_tx(water_row, prop)
+        expense_line["import_id"] = tx_engine.generate_import_id(
+            expense_line["date"], expense_line["account"],
+            float(expense_line["amount"]), expense_line["payee"],
+            expense_line["category"], expense_line["note"], existing_ids,
         )
-        if reimb_line is not None:
-            existing_ids.add(reimb_line["import_id"])
-            reimb_id = reimb_line["import_id"]
-            lines_to_write.append(reimb_line)
+        existing_ids.add(expense_line["import_id"])
 
-    tx_engine.append_transactions(lines_to_write)
-    water_row["tx_import_id"] = expense_line["import_id"]
-    append_water_log(water_row)
+        lines_to_write = [expense_line]
+        reimb_id = None
+        if acc.get("type") == "pass_through":
+            reimb_line = tx_engine.generate_pass_through_line(
+                expense_line, acc, existing_ids,
+            )
+            if reimb_line is not None:
+                existing_ids.add(reimb_line["import_id"])
+                reimb_id = reimb_line["import_id"]
+                lines_to_write.append(reimb_line)
+
+        tx_engine.append_transactions(lines_to_write)
+        water_row["tx_import_id"] = expense_line["import_id"]
+        append_water_log(water_row)
 
     return {
         "water_id": water_id,
@@ -735,33 +779,40 @@ def add_water_entry(
 def _find_reimbursement_id(expense_row: dict, account: dict) -> str | None:
     """Locate the auto-generated reimbursement TX paired to an expense.
 
-    Pass-through expenses always have a matching income row on the same
-    account+date+amount+payee+category. We replicate the lookup used by
-    tx_engine.generate_pass_through_line so the pair stays in sync on
-    delete. Mirrors fuel.find_reimbursement_id.
+    FK-first lookup (H-15 from CODE_REVIEW_2026-05-12) — mirrors
+    :func:`fuel.find_reimbursement_id`. See that docstring for the full
+    rationale; we prefer ``counter_entry_id == expense.import_id``
+    over the legacy field-tuple match.
     """
     ptp = account.get("pass_through_payee", "").strip()
     if not ptp:
         return None
+
+    expense_id = (expense_row.get("import_id") or "").strip()
     reimb_cat = tx_engine.REIMBURSEMENT_CATEGORIES.get(
         ptp, f"Income:{ptp} Reimbursement"
     )
     target_amount = f"{float(expense_row['amount']):.2f}"
-    target = (
+    target_tuple = (
         expense_row["date"], expense_row["account"], "income",
         target_amount, ptp, reimb_cat,
     )
+
     tx_path = DATA_DIR / "transactions.csv"
+    legacy_match = None
     with open(tx_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            current = (
-                row["date"], row["account"], row["type"],
-                f"{float(row['amount']):.2f}" if row["amount"] else "",
-                row["payee"], row["category"],
-            )
-            if current == target:
+            if expense_id and (row.get("counter_entry_id") or "").strip() == expense_id:
                 return row["import_id"]
-    return None
+            if legacy_match is None:
+                current = (
+                    row["date"], row["account"], row["type"],
+                    f"{float(row['amount']):.2f}" if row["amount"] else "",
+                    row["payee"], row["category"],
+                )
+                if current == target_tuple:
+                    legacy_match = row["import_id"]
+    return legacy_match
 
 
 def _delete_log_entry(
@@ -807,38 +858,46 @@ def _delete_log_entry(
     if target is None:
         raise ValueError(f"{id_field} '{log_id}' not found")
 
-    # Backups first — FinanceOS hard rule
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    if log_csv.exists():
-        backup_file(backup_stem, log_csv)
+    # Cascade-delete is atomic: another writer landing between the
+    # reimbursement-delete and the expense-delete would see a transient
+    # pass-through balance > 0, and a writer landing between
+    # delete_transaction and write_fn would see an orphan log row
+    # pointing at a non-existent TX. Outer lock (C-03) closes both
+    # windows; reentrant (C-02) means inner @with_tx_lock callees
+    # don't deadlock.
+    with tx_engine.tx_write_lock():
+        # Backups first — FinanceOS hard rule
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        if log_csv.exists():
+            backup_file(backup_stem, log_csv)
 
-    tx_import_id = (target.get("tx_import_id") or "").strip()
-    tx_deleted = False
-    reimb_deleted = False
+        tx_import_id = (target.get("tx_import_id") or "").strip()
+        tx_deleted = False
+        reimb_deleted = False
 
-    if tx_import_id:
-        # Find the linked expense TX so we can also kill its reimbursement
-        # counter-entry on pass-through accounts.
-        accounts = tx_engine.load_accounts()
-        with open(DATA_DIR / "transactions.csv", newline="", encoding="utf-8") as f:
-            for tx in csv.DictReader(f):
-                if tx["import_id"] == tx_import_id:
-                    expense_row = tx
-                    break
-            else:
-                expense_row = None
+        if tx_import_id:
+            # Find the linked expense TX so we can also kill its reimbursement
+            # counter-entry on pass-through accounts.
+            accounts = tx_engine.load_accounts()
+            with open(DATA_DIR / "transactions.csv", newline="", encoding="utf-8") as f:
+                for tx in csv.DictReader(f):
+                    if tx["import_id"] == tx_import_id:
+                        expense_row = tx
+                        break
+                else:
+                    expense_row = None
 
-        if expense_row is not None:
-            acc = accounts.get(expense_row["account"], {})
-            if acc.get("type") == "pass_through":
-                reimb_id = _find_reimbursement_id(expense_row, acc)
-                if reimb_id:
-                    reimb_deleted = bool(tx_engine.delete_transaction(reimb_id))
-        tx_deleted = bool(tx_engine.delete_transaction(tx_import_id))
+            if expense_row is not None:
+                acc = accounts.get(expense_row["account"], {})
+                if acc.get("type") == "pass_through":
+                    reimb_id = _find_reimbursement_id(expense_row, acc)
+                    if reimb_id:
+                        reimb_deleted = bool(tx_engine.delete_transaction(reimb_id))
+            tx_deleted = bool(tx_engine.delete_transaction(tx_import_id))
 
-    # Remove the log row last
-    new_rows = [r for r in rows if r.get(id_field) != log_id]
-    write_fn(new_rows)
+        # Remove the log row last
+        new_rows = [r for r in rows if r.get(id_field) != log_id]
+        write_fn(new_rows)
 
     return {
         "log_id": log_id,
@@ -898,8 +957,14 @@ def update_luku_entry(luku_id: str, **fields) -> dict:
         "note": fields.get("note", target.get("note", "")),
     }
     old_tx = target.get("tx_import_id", "")
-    delete_luku_entry(luku_id)
-    result = add_luku_entry(**merged)
+    # delete_luku_entry + add_luku_entry both take the lock internally
+    # (C-03). Wrapping them in one outer acquire means an observer
+    # never sees the in-between state (log row gone, new log row not
+    # yet written). Reentrant lock (C-02) makes the inner acquires
+    # cheap depth-bumps.
+    with tx_engine.tx_write_lock():
+        delete_luku_entry(luku_id)
+        result = add_luku_entry(**merged)
     result["replaced_luku_id"] = luku_id
     result["replaced_tx_import_id"] = old_tx
     return result
@@ -921,8 +986,10 @@ def update_water_entry(water_id: str, **fields) -> dict:
         "note": fields.get("note", target.get("note", "")),
     }
     old_tx = target.get("tx_import_id", "")
-    delete_water_entry(water_id)
-    result = add_water_entry(**merged)
+    # See update_luku_entry for the outer-lock rationale.
+    with tx_engine.tx_write_lock():
+        delete_water_entry(water_id)
+        result = add_water_entry(**merged)
     result["replaced_water_id"] = water_id
     result["replaced_tx_import_id"] = old_tx
     return result
@@ -1049,8 +1116,14 @@ def ytd_cumulative(
     today_d = _d.fromisoformat(today) if today else _d.today()
     cur_year = today_d.year
 
-    def _per_day(rows: list[dict], year: int) -> dict[str, float]:
-        bucket: dict[str, float] = {}
+    # H-20 (Sprint 14) — Decimal accumulators. Iterating ~365 days with
+    # float += float was the worst-case drift site in the codebase: each
+    # day's small bill (e.g. 28553.71) compounds binary-float rounding.
+    # Bucket values are Decimal too so per-day fetch+add stays exact.
+    _ZERO = Decimal("0.00")
+
+    def _per_day(rows: list[dict], year: int) -> dict[str, Decimal]:
+        bucket: dict[str, Decimal] = {}
         for r in rows:
             try:
                 d = _d.fromisoformat(r["date"])
@@ -1058,12 +1131,9 @@ def ytd_cumulative(
                 continue
             if d.year != year:
                 continue
-            try:
-                amt = float(r.get("total_price") or 0)
-            except (TypeError, ValueError):
-                continue
+            amt = _money(r.get("total_price"))
             key = d.isoformat()
-            bucket[key] = bucket.get(key, 0.0) + amt
+            bucket[key] = bucket.get(key, _ZERO) + amt
         return bucket
 
     cur_strom_day = _per_day(luku_rows, cur_year)
@@ -1076,19 +1146,20 @@ def ytd_cumulative(
     cur_water_cum: list[float] = []
     prev_strom_cum: list[float] = []
     prev_water_cum: list[float] = []
-    cs = cw = ps = pw = 0.0
+    cs = cw = ps = pw = _ZERO
     cur = _d(cur_year, 1, 1)
     while cur <= today_d:
-        cs += cur_strom_day.get(cur.isoformat(), 0.0)
-        cw += cur_water_day.get(cur.isoformat(), 0.0)
+        cs += cur_strom_day.get(cur.isoformat(), _ZERO)
+        cw += cur_water_day.get(cur.isoformat(), _ZERO)
         prev_iso = _d(cur_year - 1, cur.month, cur.day).isoformat()
-        ps += prev_strom_day.get(prev_iso, 0.0)
-        pw += prev_water_day.get(prev_iso, 0.0)
+        ps += prev_strom_day.get(prev_iso, _ZERO)
+        pw += prev_water_day.get(prev_iso, _ZERO)
         days.append(cur.isoformat())
-        cur_strom_cum.append(cs)
-        cur_water_cum.append(cw)
-        prev_strom_cum.append(ps)
-        prev_water_cum.append(pw)
+        # Convert to float only at the JSON-output boundary.
+        cur_strom_cum.append(float(cs))
+        cur_water_cum.append(float(cw))
+        prev_strom_cum.append(float(ps))
+        prev_water_cum.append(float(pw))
         cur = cur + timedelta(days=1)
     return {
         "days": days,
@@ -1652,8 +1723,14 @@ def cost_overview(property_id: str, year: str = "") -> dict:
     if not tx_path.exists():
         return empty
 
-    by_bucket: dict[str, float] = {b: 0.0 for b in COST_BUCKET_ORDER}
-    by_month: dict[str, dict[str, float]] = {}
+    # H-20 (Sprint 14) — Decimal accumulators for bucket/month/category
+    # rollups. Multi-year cost-of-living reports cross thousands of TX,
+    # each adding into the same per-bucket and per-month accumulators;
+    # float += float accrues cents of drift that show up between the
+    # grand total and the row-sum at the bottom of the UI table.
+    _Z = Decimal("0.00")
+    by_bucket: dict[str, Decimal] = {b: _Z for b in COST_BUCKET_ORDER}
+    by_month: dict[str, dict] = {}
     by_category: dict[str, dict] = {}
     tx_rows: list[dict] = []
     available_years: set[str] = set()
@@ -1676,32 +1753,44 @@ def cost_overview(property_id: str, year: str = "") -> dict:
                 available_years.add(year_part)
             if is_year_filter and year_part != year_str:
                 continue
-            try:
-                amount = float(row.get("amount") or 0)
-            except (TypeError, ValueError):
-                amount = 0.0
+            amount = _money(row.get("amount"))
             category = row.get("category") or ""
             bucket = _classify_cost_bucket(category)
-            by_bucket[bucket] = by_bucket.get(bucket, 0.0) + amount
+            by_bucket[bucket] = by_bucket.get(bucket, _Z) + amount
             month_key = date_str[:7] if len(date_str) >= 7 else "0000-00"
             month_row = by_month.setdefault(
                 month_key,
-                {b: 0.0 for b in COST_BUCKET_ORDER} | {"month": month_key, "total": 0.0},
+                {b: _Z for b in COST_BUCKET_ORDER} | {"month": month_key, "total": _Z},
             )
             month_row[bucket] += amount
             month_row["total"] += amount
             cat_entry = by_category.setdefault(
-                category, {"category": category, "amount": 0.0, "count": 0, "bucket": bucket},
+                category, {"category": category, "amount": _Z, "count": 0, "bucket": bucket},
             )
             cat_entry["amount"] += amount
             cat_entry["count"] += 1
             tx_rows.append(row)
 
-    grand = sum(by_bucket.values())
+    grand = sum(by_bucket.values(), _Z)
 
-    months_sorted = [by_month[k] for k in sorted(by_month.keys())]
+    # Convert Decimal accumulators back to float at the JSON-output
+    # boundary. Round-trip through quantize first so the wire-format
+    # always has exactly 2 dp.
+    def _f(d: Decimal) -> float:
+        return float(d.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP))
+
+    bucket_out = {b: _f(v) for b, v in by_bucket.items()}
+    months_sorted = []
+    for k in sorted(by_month.keys()):
+        m = by_month[k]
+        months_sorted.append({
+            **{b: _f(m[b]) for b in COST_BUCKET_ORDER},
+            "month": m["month"],
+            "total": _f(m["total"]),
+        })
     categories_sorted = sorted(
-        by_category.values(), key=lambda c: (-c["amount"], c["category"]),
+        ({**c, "amount": _f(c["amount"])} for c in by_category.values()),
+        key=lambda c: (-c["amount"], c["category"]),
     )
     tx_rows.sort(key=lambda r: r.get("date", ""), reverse=True)
 
@@ -1709,7 +1798,7 @@ def cost_overview(property_id: str, year: str = "") -> dict:
         "property": prop,
         "cost_tag": cost_tag,
         "year": year_str if is_year_filter else "all",
-        "totals": by_bucket | {"grand_total": grand},
+        "totals": bucket_out | {"grand_total": _f(grand)},
         "by_month": months_sorted,
         "by_category": categories_sorted,
         "tx_list": tx_rows[:500],

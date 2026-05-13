@@ -4,6 +4,31 @@ async function computeAlerts() {
   const alerts = [];
   const today = new Date().toISOString().slice(0, 10);
 
+  // 0. cron_integrity report (M-PD5, Sprint 20) — surface the issues
+  //    file the nightly check writes into the dashboard's Alerts page.
+  //    The file only exists when issues were found, so a 404 is the
+  //    happy path. Each report line becomes one detail entry; we cap
+  //    at 5 to keep the alert card readable and append a "+N more"
+  //    note for the rest.
+  try {
+    const res = await fetch('/data/integrity_report.txt', { cache: 'no-store' });
+    if (res.ok) {
+      const text = await res.text();
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      if (lines.length) {
+        const shown = lines.slice(0, 5);
+        const more = lines.length > 5 ? ` (+${lines.length - 5} more)` : '';
+        alerts.push({
+          type: 'integrity',
+          severity: 'warning',
+          title: `Data integrity: ${lines.length} issue${lines.length === 1 ? '' : 's'}`,
+          detail: shown.join(' · ') + more,
+          link: '#alerts',
+        });
+      }
+    }
+  } catch (e) { console.warn('[alerts:integrity]', e); }
+
   // 1. Overdue Scheduled TX
   try {
     const res = await fetch('/api/scheduled/list', { method: 'POST' });

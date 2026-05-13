@@ -19,11 +19,44 @@ function gotoDebtsPage() {
   navigateTo('debts');
 }
 
+// Pool of currencies offered as opt-in "show balance in …" columns on the
+// Accounts overview. Restricted to ones we reliably have rates for via the
+// existing fxRates loader. User-selected subset persists in localStorage so
+// the choice survives reloads (same pattern as displayCurrency).
+const ACCOUNTS_FX_CHIPS = ['TZS', 'EUR', 'USD', 'PLN'];
+const ACCOUNTS_FX_KEY = 'lp-accounts-extra-cols';
+
+function readAccountsExtraCols() {
+  let arr = [];
+  try {
+    const raw = localStorage.getItem(ACCOUNTS_FX_KEY);
+    if (raw) arr = JSON.parse(raw);
+  } catch (e) { arr = []; }
+  if (!Array.isArray(arr)) arr = [];
+  // Keep canonical order (TZS → EUR → USD → PLN) and drop any currency we
+  // don't have an FX rate for, so a row never tries to convert blindly.
+  return ACCOUNTS_FX_CHIPS.filter(c => arr.includes(c) && (c === 'TZS' || fxRates[c]));
+}
+
+function writeAccountsExtraCols(arr) {
+  try { localStorage.setItem(ACCOUNTS_FX_KEY, JSON.stringify(arr)); } catch (e) { console.warn('[accounts-fx:storage]', e); }
+}
+
+function toggleAccountsExtraCol(currency) {
+  const cur = readAccountsExtraCols();
+  const idx = cur.indexOf(currency);
+  if (idx >= 0) cur.splice(idx, 1);
+  else cur.push(currency);
+  writeAccountsExtraCols(cur);
+  renderAccountsOverview();
+}
+
 function renderAccountsOverview() {
   const content = document.getElementById('accounts-overview-content');
   if (!content || !state.accounts.length) return;
 
   const cur = displayCurrency;
+  const extraCols = readAccountsExtraCols();
   const groups = [
     { label: t('accounts_overview.group.own', {}, 'Own Accounts'), accounts: state.accounts.filter(a => a.owner === 'self' && a.status === 'active' && a.type !== 'pass_through') },
     { label: t('accounts_overview.group.passthrough', {}, 'Pass-Through'), accounts: state.accounts.filter(a => a.owner === 'self' && a.status === 'active' && a.type === 'pass_through') },
@@ -35,20 +68,76 @@ function renderAccountsOverview() {
   const nw = netWorthByCurrency(state.accounts, state.balances);
   const nwTotal = Object.values(nw).reduce((s, v) => s + v.total, 0);
 
-  let html = '';
+  // Multi-select chip strip — toggles extra "Balance in X" columns. Default
+  // empty (no chips active) renders the original two-column layout exactly.
+  const chipStrip = `
+    <div class="acc-fx-row">
+      <span class="acc-fx-label">${t('accounts_overview.fx_toggle_label', {}, 'Also show in')}</span>
+      <span class="acc-fx-chips">
+        ${ACCOUNTS_FX_CHIPS.map(c => `<button type="button" class="acc-fx-chip${extraCols.includes(c) ? ' active' : ''}" data-fx-toggle="${c}">${c}</button>`).join('')}
+      </span>
+    </div>
+  `;
+
+  // Total column count after extras — the existing 5 columns (Account,
+  // Currency, Type, Balance, auto-convert) plus one per opt-in chip.
+  const totalCols = 5 + extraCols.length;
+  const valueColspan = totalCols - 3; // label always spans the first 3 cols
+
+  let html = chipStrip;
   for (const g of groups) {
     if (!g.accounts.length) continue;
+    const extraHeaders = extraCols.map(c =>
+      `<th class="amt">${t('accounts_overview.col_balance_in', { currency: c }, `Balance (${c})`)}</th>`
+    ).join('');
+
     const rows = g.accounts.map(a => {
       const bal = state.balances[a.alias] || 0;
       const converted = a.currency === cur ? bal : convertTo(bal, a.currency, cur);
       const balClass = bal < 0 ? 'negative' : '';
       const ownerBadge = a.owner !== 'self' ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">(${a.owner})</span>` : '';
+      const extraCells = extraCols.map(c => {
+        const v = a.currency === c ? bal : convertTo(bal, a.currency, c);
+        const cls = v < 0 ? 'negative' : '';
+        return `<td class="amt label-sm ${cls}">${formatCurrency(v, c)}<span class="acc-currency">${c}</span></td>`;
+      }).join('');
       return `<tr class="ptr" data-action="gotoAccountDetail" data-arg1="${escapeHtml(a.alias)}">
-        <td><strong>${escapeHtml(a.name)}</strong>${ownerBadge}<br><span class="label-sm">${a.alias}</span></td>
+        <td><strong>${escapeHtml(a.name)}</strong>${ownerBadge}<br><span class="label-sm">${escapeHtml(a.alias)}</span></td>
         <td class="label-sm">${a.currency}</td>
         <td class="label-sm">${a.type}</td>
         <td class="amt ${balClass} fw-500">${formatCurrency(bal, a.currency)}<span class="acc-currency">${a.currency}</span></td>
         ${a.currency !== cur ? `<td class="amt label-sm">${formatCurrency(converted, cur)} ${cur}</td>` : `<td></td>`}
+        ${extraCells}
+      </tr>`;
+    }).join('');
+
+    // Native totals (sum per native currency, no conversion) — unchanged
+    // behaviour, just widened so it spans the new extra columns too.
+    const byCur = {};
+    g.accounts.forEach(a => {
+      if (!byCur[a.currency]) byCur[a.currency] = 0;
+      byCur[a.currency] += state.balances[a.alias] || 0;
+    });
+    const nativeTotalRows = Object.entries(byCur).map(([c, total]) =>
+      `<tr style="font-weight:600;border-top:1px solid var(--border);">
+        <td colspan="3">${t('accounts_overview.total_label', { group: g.label, currency: c }, `Total ${g.label} (${c})`)}</td>
+        <td class="amt" colspan="${valueColspan}">${formatCurrency(total, c)}<span class="acc-currency">${c}</span></td>
+      </tr>`
+    ).join('');
+
+    // Converted grand totals — one row per active chip currency, sums every
+    // account in the group after converting into the chip currency. Visually
+    // marked with "≈" so it's not mistaken for a native sum.
+    const convertedTotalRows = extraCols.map(c => {
+      let sum = 0;
+      g.accounts.forEach(a => {
+        const bal = state.balances[a.alias] || 0;
+        sum += a.currency === c ? bal : convertTo(bal, a.currency, c);
+      });
+      const cls = sum < 0 ? 'negative' : '';
+      return `<tr style="font-weight:600;color:var(--muted);">
+        <td colspan="3">${t('accounts_overview.total_label_converted', { group: g.label, currency: c }, `Total ${g.label} (≈ ${c})`)}</td>
+        <td class="amt ${cls}" colspan="${valueColspan}">${formatCurrency(sum, c)}<span class="acc-currency">${c}</span></td>
       </tr>`;
     }).join('');
 
@@ -56,23 +145,11 @@ function renderAccountsOverview() {
       <div class="section">
         <div class="section-title">${g.label}</div>
         <table class="tx-table">
-          <thead><tr><th>${t('accounts_overview.col_account', {}, 'Account')}</th><th>${t('accounts_overview.col_currency', {}, 'Currency')}</th><th>${t('accounts_overview.col_type', {}, 'Type')}</th><th class="amt">${t('accounts_overview.col_balance', {}, 'Balance')}</th><th class="amt"></th></tr></thead>
+          <thead><tr><th>${t('accounts_overview.col_account', {}, 'Account')}</th><th>${t('accounts_overview.col_currency', {}, 'Currency')}</th><th>${t('accounts_overview.col_type', {}, 'Type')}</th><th class="amt">${t('accounts_overview.col_balance', {}, 'Balance')}</th><th class="amt"></th>${extraHeaders}</tr></thead>
           <tbody>
             ${rows}
-            ${(() => {
-              const byCur = {};
-              g.accounts.forEach(a => {
-                if (!byCur[a.currency]) byCur[a.currency] = 0;
-                byCur[a.currency] += state.balances[a.alias] || 0;
-              });
-              // Rename map var to avoid shadowing the global t() function.
-              return Object.entries(byCur).map(([c, total]) =>
-                `<tr style="font-weight:600;border-top:1px solid var(--border);">
-                  <td colspan="3">${t('accounts_overview.total_label', { group: g.label, currency: c }, `Total ${g.label} (${c})`)}</td>
-                  <td class="amt" colspan="2">${formatCurrency(total, c)}<span class="acc-currency">${c}</span></td>
-                </tr>`
-              ).join('');
-            })()}
+            ${nativeTotalRows}
+            ${convertedTotalRows}
           </tbody>
         </table>
       </div>
@@ -96,6 +173,19 @@ function renderAccountsOverview() {
   `;
 
   content.innerHTML = html;
+
+  // Chip-strip event delegation. Registered once on the container — the
+  // container itself survives renderAccountsOverview() re-renders, only its
+  // innerHTML is replaced, so the listener stays alive.
+  if (!content._fxDelegated) {
+    content.addEventListener('click', (e) => {
+      const chip = e.target.closest('.acc-fx-chip[data-fx-toggle]');
+      if (!chip) return;
+      const ccy = chip.getAttribute('data-fx-toggle');
+      if (ccy) toggleAccountsExtraCol(ccy);
+    });
+    content._fxDelegated = true;
+  }
 }
 
 // ─── Account Detail ──────────────────────────────────────────────────────
@@ -190,7 +280,7 @@ function renderAccountPage() {
     let label, typeClass;
     if (tx.type === 'transfer') {
       if (isTransferIn) {
-        label = `← ${tx.account}`;
+        label = `← ${escapeHtml(tx.account)}`;
         typeClass = 'income';
       } else {
         label = `→ ${tx.transfer_to_account || '?'}`;

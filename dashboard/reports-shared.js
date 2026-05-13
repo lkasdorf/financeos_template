@@ -373,7 +373,7 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
           <td>${fmtDate(tx.date)}</td>
           <td>${escapeHtml(tx.payee || '')}</td>
           <td>${escapeHtml(tx.note || '')}</td>
-          <td>${tx.account}</td>
+          <td>${escapeHtml(tx.account)}</td>
           <td class="amt expense">${formatCurrency(tx.amount, currency)}</td>
           <td></td>
         </tr>`;
@@ -406,7 +406,7 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
       const tags = (tx.tags || '').split(';').filter(Boolean).map(x => `<span class="tag-chip">${escapeHtml(x)}</span>`).join('');
       return `<tr>
         <td>${fmtDate(tx.date)}</td>
-        <td>${tx.account}</td>
+        <td>${escapeHtml(tx.account)}</td>
         <td>${escapeHtml(tx.payee || '')}</td>
         <td class="cat">${escapeHtml(tx.category || '')}${tags ? '<br>' + tags : ''}</td>
         <td>${escapeHtml(tx.note || '')}</td>
@@ -492,7 +492,7 @@ function renderExpenseYearly(filtered, currency, opts) {
       const tags = (tx.tags || '').split(';').filter(Boolean).map(x => `<span class="tag-chip">${escapeHtml(x)}</span>`).join('');
       return `<tr>
         <td>${fmtDate(tx.date)}</td>
-        <td>${tx.account}</td>
+        <td>${escapeHtml(tx.account)}</td>
         <td>${escapeHtml(tx.payee || '')}</td>
         <td class="cat">${escapeHtml(tx.category || '')}${tags ? '<br>' + tags : ''}</td>
         <td>${escapeHtml(tx.note || '')}</td>

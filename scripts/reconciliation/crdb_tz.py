@@ -199,9 +199,11 @@ class CrdbTzAdapter(BankAdapter):
 
         # Direct match index: (date, rounded_int_amount) with ±2-day shifts.
         existing_keys: set[tuple[str, int]] = set()
-        # Aggregation index: (date, canonical_payee) → summed amount
-        # for that day. One bucket per (day, payee).
-        by_date_payee: dict[tuple[str, str], float] = {}
+        # Aggregation index: (date, canonical_payee) → list of FOS rows
+        # for that day. Pass 2 only uses buckets that are clearly a
+        # single split (shared receipt_group, multiple rows summing to
+        # one bank line) — see ambiguity guard below.
+        by_date_payee: dict[tuple[str, str], list[dict]] = {}
 
         for t in existing_tx:
             if target_account and t.get("account") != target_account:
@@ -225,7 +227,43 @@ class CrdbTzAdapter(BankAdapter):
             canon = canon_of(t.get("payee", ""))
             if canon:
                 key = (iso, canon)
-                by_date_payee[key] = by_date_payee.get(key, 0.0) + amt
+                by_date_payee.setdefault(key, []).append({
+                    "amount": amt,
+                    "receipt_group": (t.get("receipt_group") or "").strip(),
+                })
+
+        # M-B8 (Sprint 22) — Pass-2 aggregation now requires the FOS
+        # bucket to be a designed receipt-split (all rows share the
+        # same non-empty receipt_group). Without that guard, three
+        # separate same-day Same-Payee TX (e.g. three Google purchases
+        # at 28976.27 + 32199 + 9605) would collapse into one bucket
+        # and the first bank line whose amount coincidentally summed
+        # would over-claim. April 2026 statement had 12 of 49 bank
+        # rows hit this shape — risk is real, not theoretical.
+        #
+        # Trade-off: aggregation only catches actual splits now. A
+        # genuine "single receipt, multiple non-split FOS rows" is
+        # rare and the user reviews unmatched anyway.
+        def _bucket_is_safe(bucket: list[dict]) -> tuple[bool, float]:
+            """Bucket qualifies for Pass-2 only when all rows share
+            one non-empty receipt_group (a real receipt-split). Returns
+            (qualified, sum) so the caller can compare against bank
+            amount without re-walking.
+            """
+            if not bucket:
+                return (False, 0.0)
+            if len(bucket) == 1:
+                # Single-row "bucket" is just the Pass-1 case — but
+                # Pass-1 already failed (cent rounding diff?), let it
+                # through so e.g. 305.10 vs 305.00 still matches.
+                return (True, bucket[0]["amount"])
+            rgs = {r["receipt_group"] for r in bucket}
+            # Multi-row bucket is safe ONLY when every row is part of
+            # the same designed receipt-group. Any non-split row or
+            # mixed receipt_groups → ambiguous → no aggregation.
+            if "" in rgs or len(rgs) > 1:
+                return (False, 0.0)
+            return (True, sum(r["amount"] for r in bucket))
 
         # Buckets we have already consumed by aggregation matches —
         # prevents two bank rows claiming the same split set.
@@ -252,8 +290,13 @@ class CrdbTzAdapter(BankAdapter):
                         bucket_key = (target_date, canon)
                         if bucket_key in consumed_aggs:
                             continue
-                        bucket_sum = by_date_payee.get(bucket_key)
-                        if bucket_sum is None:
+                        bucket = by_date_payee.get(bucket_key)
+                        if not bucket:
+                            continue
+                        # M-B8 (Sprint 22) — only aggregate when the bucket
+                        # is a designed receipt-split. See _bucket_is_safe.
+                        qualified, bucket_sum = _bucket_is_safe(bucket)
+                        if not qualified:
                             continue
                         if abs(bucket_sum - row.amount) < 1.0:
                             consumed_aggs.add(bucket_key)

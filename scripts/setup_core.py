@@ -33,7 +33,7 @@ ACCOUNTS_HEADER = [
     "pass_through_payee", "initial_balance", "initial_balance_date", "notes",
 ]
 CATEGORIES_HEADER = ["path", "type", "active", "note", "pnl", "essential"]
-TAGS_HEADER = ["tag", "description", "auto_rule", "active"]
+TAGS_HEADER = ["tag", "description", "active"]
 TRANSACTIONS_HEADER = [
     "import_id", "date", "account", "type", "amount", "currency", "payee",
     "category", "note", "raw_note", "transfer_to_account",
@@ -481,7 +481,6 @@ def _convert_tags(
         rows.append({
             "tag": name,
             "description": "",
-            "auto_rule": "",
             "active": "true",
         })
     return rows, id_to_name

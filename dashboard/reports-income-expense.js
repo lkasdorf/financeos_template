@@ -510,7 +510,7 @@ function renderDiningMonthly(diningTx, year) {
           return `<tr>
             <td>${fmtDate(tx.date)}</td>
             <td>${escapeHtml(tx.payee || '')}</td>
-            <td class="fs-11">${tx.account}</td>
+            <td class="fs-11">${escapeHtml(tx.account)}</td>
             <td><span style="color:${cls === 'business' ? colorBusiness : colorPersonal};font-size:11px;font-weight:500">${escapeHtml(cls === 'business' ? labelBusiness : labelPersonal)}</span></td>
             <td class="amt">${formatCurrency(amt, 'TZS')}</td>
             <td style="font-size:11px;color:var(--muted)">${escapeHtml(tx.note || '')}</td>

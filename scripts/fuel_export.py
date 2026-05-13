@@ -1,7 +1,7 @@
 """Per-vehicle fuel-log export to .xlsx.
 
-Replicates the structure of the original Vehicle_Fuel.xlsx workbook so a
-Leon-style spreadsheet user can keep their existing pivot/chart muscle
+Replicates the structure of a typical fuel-tracking workbook so a
+spreadsheet user can keep their existing pivot/chart muscle
 memory:
 
     Sheet "Cost" with columns:
@@ -55,7 +55,7 @@ _COLUMNS: list[tuple[str, str | None]] = [
     ("Column1",             None),
 ]
 
-# Width in Excel character units, matching the original Vehicle sheet so
+# Width in Excel character units, matching a typical fuel sheet so
 # the file looks identical out of the box.
 _COL_WIDTHS = {
     "A": 11.27,  "B": 18.27,  "C": 20.45,  "D": 18.36,

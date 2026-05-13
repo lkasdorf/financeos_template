@@ -180,6 +180,66 @@ def get_auto_tags_config() -> dict:
     }
 
 
+# Sprint 11 (H-29) — validator that catches typos in the auto_tag block
+# of defaults.json before they silently no-op. A misspelled rule key
+# (e.g. `by_acccount`) is the failure mode; without a validator the
+# typo sits in the file for weeks because apply_auto_tags only iterates
+# the four known keys and ignores everything else.
+_AUTO_TAG_RULE_TYPES = {"by_account", "by_payee", "by_category_prefix", "bridge"}
+
+
+def validate_auto_tag_config(data: dict) -> list[str]:
+    """Return a list of validation errors for an auto_tag config dict.
+
+    Empty list means the config is structurally valid. Called by
+    save_auto_tags_config() before write, and by serve.py at boot
+    against the on-disk defaults.json (H-29). Catches:
+      - non-dict top-level
+      - unknown rule keys (typos)
+      - non-dict rule values
+      - bridge values that aren't list-of-strings
+      - empty/whitespace tag names
+
+    The validator never mutates — callers decide whether to raise,
+    warn, or surface the error list to the user.
+    """
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["auto_tag config must be a dict"]
+    for key, value in data.items():
+        if key not in _AUTO_TAG_RULE_TYPES:
+            errors.append(
+                f"unknown rule key '{key}' — expected one of: "
+                f"{sorted(_AUTO_TAG_RULE_TYPES)}"
+            )
+            continue
+        if not isinstance(value, dict):
+            errors.append(f"{key}: must be a dict, got {type(value).__name__}")
+            continue
+        if key == "bridge":
+            for src_tag, targets in value.items():
+                if not isinstance(src_tag, str) or not src_tag.strip():
+                    errors.append(f"bridge: source tag must be non-empty string")
+                if not isinstance(targets, list):
+                    errors.append(
+                        f"bridge['{src_tag}']: must be a list of tag names, "
+                        f"got {type(targets).__name__}"
+                    )
+                    continue
+                for t in targets:
+                    if not isinstance(t, str) or not t.strip():
+                        errors.append(
+                            f"bridge['{src_tag}']: target tag must be non-empty string"
+                        )
+        else:
+            for trigger, tag in value.items():
+                if not isinstance(trigger, str) or not trigger.strip():
+                    errors.append(f"{key}: trigger key must be non-empty string")
+                if not isinstance(tag, str) or not tag.strip():
+                    errors.append(f"{key}['{trigger}']: tag value must be non-empty string")
+    return errors
+
+
 def save_auto_tags_config(data: dict) -> None:
     """Atomically write the auto-tag block back into defaults.json.
 
@@ -194,6 +254,12 @@ def save_auto_tags_config(data: dict) -> None:
     """
     if not isinstance(data, dict):
         raise ValueError("auto-tag config must be a dict")
+    # H-29 (Sprint 11) — validate before write so a typo in a rule key
+    # (e.g. `by_acccount`) is rejected with a clear error message instead
+    # of silently sitting in defaults.json as a no-op.
+    errors = validate_auto_tag_config(data)
+    if errors:
+        raise ValueError("auto-tag config has " + str(len(errors)) + " error(s): " + "; ".join(errors))
     sanitized = {
         "by_account": dict(data.get("by_account", {}) or {}),
         "by_payee": dict(data.get("by_payee", {}) or {}),

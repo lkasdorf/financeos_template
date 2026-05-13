@@ -1,1 +1,1 @@
-import_id,date,account,type,amount,currency,payee,category,note,raw_note,transfer_to_account,transfer_to_amount,receipt_group,receipt_url,tags,third_party_id
+import_id,date,account,type,amount,currency,payee,category,note,raw_note,transfer_to_account,transfer_to_amount,receipt_group,receipt_url,tags,third_party_id,counter_entry_id

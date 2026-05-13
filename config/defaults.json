@@ -13,12 +13,7 @@
     "metals_spot_api_url": "/api/metals/spot",
     "metals_spot_upstream_url": "https://data-asg.goldprice.org/dbXRates/EUR"
   },
-  "auto_tag": {
-    "by_account": {},
-    "by_payee": {},
-    "by_category_prefix": {},
-    "bridge": {}
-  },
+  "auto_tag": {},
   "pass_through": {
     "reimbursement_categories": {}
   },

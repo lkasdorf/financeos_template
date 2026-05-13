@@ -90,7 +90,7 @@ async function renderAddTxPage() {
         qeChipsHtml = `
           <div class="qe-chips-label">${t('atx.qe_chips_label', {}, 'Quick Expenses')}</div>
           <div class="qe-chips">
-            ${activeQe.map(q => `<button class="qe-chip" data-action="applyQuickExpense" data-arg1="${escapeHtml(q.id)}" data-qe='${JSON.stringify(q).replace(/'/g, "&#39;")}'><span class="qe-icon"><svg><use href="#i-zap"/></svg></span>${escapeHtml(q.name)}</button>`).join('')}
+            ${activeQe.map(q => `<button class="qe-chip" data-action="applyQuickExpense" data-arg1="${escapeHtml(q.id)}" data-qe="${escapeHtml(JSON.stringify(q))}"><span class="qe-icon"><svg><use href="#i-zap"/></svg></span>${escapeHtml(q.name)}</button>`).join('')}
           </div>
         `;
       }

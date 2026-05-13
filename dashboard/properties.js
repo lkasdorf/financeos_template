@@ -1576,7 +1576,12 @@ function openWaterModal(existing = null) {
 async function renderPropertiesSettingsTab() {
   const container = document.getElementById('settings-tab-content');
   if (!container) return;
-  container.innerHTML = '<div class="loading">Loading properties…</div>';
+  // M-T1 (Sprint 22) — Properties Settings UI used hardcoded strings.
+  // The i18n keys (config/i18n/{en,de}.json) were already in place;
+  // they just weren't wired up, so a DE-locale user saw the whole
+  // Properties tab in English. Every label, button, badge, modal
+  // title, and tooltip below now goes through t().
+  container.innerHTML = `<div class="loading">${t('settings.properties.loading', {}, 'Loading properties…')}</div>`;
   try {
     await Promise.all([loadPropertiesList(), _loadPropsAccountsCache()]);
   } catch (err) {
@@ -1593,16 +1598,22 @@ async function renderPropertiesSettingsTab() {
 
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-      <h3 style="margin:0;">Properties</h3>
+      <h3 style="margin:0;">${t('settings.properties.heading', {}, 'Properties')}</h3>
       <button type="button" class="btn-secondary" id="btn-property-add">
         <svg width="14" height="14" style="vertical-align:-2px;"><use href="#i-plus"/></svg>
-        Add Property
+        ${t('settings.properties.add', {}, 'Add Property')}
       </button>
     </div>
     <table class="data-table" style="width:100%;">
       <thead><tr>
-        <th>ID</th><th>Name</th><th>Address</th><th>Account</th><th>Currency</th>
-        <th>Logs (LUKU / Water)</th><th>Status</th><th></th>
+        <th>${t('settings.properties.col.id', {}, 'ID')}</th>
+        <th>${t('settings.properties.col.name', {}, 'Name')}</th>
+        <th>${t('settings.properties.col.address', {}, 'Address')}</th>
+        <th>${t('settings.properties.col.account', {}, 'Account')}</th>
+        <th>${t('settings.properties.col.currency', {}, 'Currency')}</th>
+        <th>${t('settings.properties.col.logs', {}, 'Logs (LUKU / Water)')}</th>
+        <th>${t('settings.properties.col.status', {}, 'Status')}</th>
+        <th>${t('settings.properties.col.actions', {}, 'Actions')}</th>
       </tr></thead>
       <tbody>${_renderPropertyRows(propertiesList, lukuCounts, waterCounts)}</tbody>
     </table>`;
@@ -1665,19 +1676,25 @@ async function renderPropertiesSettingsTab() {
 
 function _renderPropertyRows(props, lukuCounts, waterCounts) {
   if (!props.length) {
-    return `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">Keine Properties — klick "Add Property" zum Anlegen.</td></tr>`;
+    return `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">${t('settings.properties.empty', {}, 'No properties — click "Add Property" to create one.')}</td></tr>`;
   }
+  const labelEdit = t('settings.properties.action.edit', {}, 'Edit');
+  const labelDelete = t('settings.properties.action.delete', {}, 'Delete');
+  const labelArchive = t('settings.properties.action.archive', {}, 'Archive');
+  const labelActivate = t('settings.properties.action.activate', {}, 'Activate');
+  const labelActive = t('settings.properties.status.active', {}, 'Active');
+  const labelArchived = t('settings.properties.status.archived', {}, 'Archived');
   return props.map((p) => {
     const isActive = (p.active || 'true') === 'true';
     const lukuN = lukuCounts[p.property_id] || 0;
     const waterN = waterCounts[p.property_id] || 0;
     const blockDelete = lukuN > 0 || waterN > 0;
     const deleteAttrs = blockDelete
-      ? `disabled title="${lukuN} LUKU + ${waterN} water entries reference this property. Archive instead, or delete the entries first." style="opacity:0.4;cursor:not-allowed;"`
-      : '';
+      ? `disabled title="${escapeHtml(t('settings.properties.action.delete_blocked', { l: lukuN, w: waterN }, `${lukuN} LUKU + ${waterN} water entries reference this property. Archive instead, or delete the entries first.`))}" style="opacity:0.4;cursor:not-allowed;"`
+      : `title="${labelDelete}"`;
     const statusBadge = isActive
-      ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--accent-glow,rgba(70,89,155,0.15));color:var(--accent);font-size:11px;font-weight:600;">Active</span>`
-      : `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--border);color:var(--muted);font-size:11px;font-weight:600;">Archived</span>`;
+      ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--accent-glow,rgba(70,89,155,0.15));color:var(--accent);font-size:11px;font-weight:600;">${labelActive}</span>`
+      : `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--border);color:var(--muted);font-size:11px;font-weight:600;">${labelArchived}</span>`;
     return `<tr>
       <td><code style="font-size:11px;">${escapeHtml(p.property_id)}</code></td>
       <td>${escapeHtml(p.name || '')}</td>
@@ -1687,8 +1704,8 @@ function _renderPropertyRows(props, lukuCounts, waterCounts) {
       <td>${lukuN} / ${waterN}</td>
       <td>${statusBadge}</td>
       <td style="white-space:nowrap;">
-        <button type="button" class="btn-icon" data-prop-edit="${escapeHtml(p.property_id)}" title="Edit">✎</button>
-        <button type="button" class="btn-icon" data-prop-toggle="${escapeHtml(p.property_id)}" title="${isActive ? 'Archive' : 'Activate'}">${isActive ? '📦' : '↻'}</button>
+        <button type="button" class="btn-icon" data-prop-edit="${escapeHtml(p.property_id)}" title="${labelEdit}">✎</button>
+        <button type="button" class="btn-icon" data-prop-toggle="${escapeHtml(p.property_id)}" title="${isActive ? labelArchive : labelActivate}">${isActive ? '📦' : '↻'}</button>
         <button type="button" class="btn-icon" data-prop-delete="${escapeHtml(p.property_id)}" ${deleteAttrs}>✕</button>
       </td>
     </tr>`;
@@ -1706,29 +1723,54 @@ function openPropertyModal(existing = null) {
   const currentCurrency = existing?.currency || 'TZS';
   const curOpts = currencies.map((c) => `<option value="${c}"${c === currentCurrency ? ' selected' : ''}>${c}</option>`).join('');
 
+  // M-T1 — modal field labels go through t() with English fallback.
+  // Three new keys (cost_tag, start_date, end_date) were missing from
+  // the original 35 i18n entries and got added in this sprint.
+  const lblPropId = t('settings.properties.field.property_id', {}, 'Property ID');
+  const lblName = t('settings.properties.field.name', {}, 'Name');
+  const lblAddress = t('settings.properties.field.address', {}, 'Address');
+  const lblOwner = t('settings.properties.field.owner', {}, 'Owner');
+  const lblCurrency = t('settings.properties.field.currency', {}, 'Currency');
+  const lblDefAcc = t('settings.properties.field.default_account', {}, 'Default Account');
+  const lblElecPayee = t('settings.properties.field.electricity_payee', {}, 'Electricity Payee');
+  const lblWaterPayee = t('settings.properties.field.water_payee', {}, 'Water Payee');
+  const lblElecMeter = t('settings.properties.field.electricity_meter', {}, 'Electricity Meter');
+  const lblWaterMeter = t('settings.properties.field.water_meter', {}, 'Water Meter');
+  const lblWaterCtrl = t('settings.properties.field.water_control_number', {}, 'Water Control Number');
+  const lblElecCat = t('settings.properties.field.electricity_category', {}, 'Electricity Category');
+  const lblWaterCat = t('settings.properties.field.water_category', {}, 'Water Category');
+  const lblCostTag = t('settings.properties.field.cost_tag', {}, 'Cost Tag');
+  const lblStart = t('settings.properties.field.start_date', {}, 'Start (move-in)');
+  const lblEnd = t('settings.properties.field.end_date', {}, 'End (move-out)');
+  const lblActive = t('settings.properties.field.active', {}, 'Active');
+  const lblNotes = t('settings.properties.field.notes', {}, 'Notes');
+
   const body = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-      ${_propsField('property_id', 'Property ID', `<input type="text" value="${v('property_id')}" ${isEdit ? 'readonly' : 'required pattern="prop-[a-z0-9_-]+"'} placeholder="prop-myhouse" style="${inputCss}${isEdit ? 'background:var(--border);color:var(--muted);' : ''}">`)}
-      ${_propsField('name', 'Name', `<input type="text" value="${v('name')}" required placeholder="My House" style="${inputCss}">`)}
-      ${_propsField('address', 'Address', `<input type="text" value="${v('address')}" placeholder="123 Example Street" style="${inputCss}">`, true)}
-      ${_propsField('owner', 'Owner', `<input type="text" value="${v('owner', 'self')}" placeholder="self" style="${inputCss}">`)}
-      ${_propsField('currency', 'Currency', `<select style="${inputCss}">${curOpts}</select>`)}
-      ${_propsField('default_account', 'Default Account', `<select style="${inputCss}">${accSelect}</select>`, true)}
-      ${_propsField('electricity_payee', 'Electricity Payee', `<input type="text" value="${v('electricity_payee', '')}" style="${inputCss}">`)}
-      ${_propsField('water_payee', 'Water Payee', `<input type="text" value="${v('water_payee', '')}" style="${inputCss}">`)}
-      ${_propsField('electricity_meter', 'Electricity Meter', `<input type="text" value="${v('electricity_meter')}" placeholder="LUKU meter number" style="${inputCss}">`)}
-      ${_propsField('water_meter', 'Water Meter', `<input type="text" value="${v('water_meter')}" placeholder="water meter number" style="${inputCss}">`)}
-      ${_propsField('water_control_number', 'Water Control Number', `<input type="text" value="${v('water_control_number')}" placeholder="water utility control nr" style="${inputCss}">`, true)}
-      ${_propsField('electricity_category', 'Electricity Category', `<input type="text" value="${v('electricity_category', 'Bills:Electricity')}" style="${inputCss}">`)}
-      ${_propsField('water_category', 'Water Category', `<input type="text" value="${v('water_category', 'Bills:Water')}" style="${inputCss}">`)}
-      ${_propsField('cost_tag', 'Cost Tag', `<input type="text" value="${v('cost_tag')}" placeholder="auto: Property_<id> — feeds the Cost-of-Living-per-Property report" style="${inputCss}">`, true)}
-      ${_propsField('start_date', 'Start (move-in)', `<input type="date" value="${v('start_date')}" style="${inputCss}">`)}
-      ${_propsField('end_date', 'End (move-out)', `<input type="date" value="${v('end_date')}" placeholder="leave empty if currently lived in" style="${inputCss}">`)}
-      ${_propsField('active', 'Active', `<select style="${inputCss}"><option value="true"${(existing?.active || 'true') === 'true' ? ' selected' : ''}>true</option><option value="false"${existing?.active === 'false' ? ' selected' : ''}>false</option></select>`)}
-      ${_propsField('notes', 'Notes', `<input type="text" value="${v('notes')}" placeholder="freitext" style="${inputCss}">`, true)}
+      ${_propsField('property_id', lblPropId, `<input type="text" value="${v('property_id')}" ${isEdit ? 'readonly' : 'required pattern="prop-[a-z0-9_-]+"'} placeholder="prop-myhouse" style="${inputCss}${isEdit ? 'background:var(--border);color:var(--muted);' : ''}">`)}
+      ${_propsField('name', lblName, `<input type="text" value="${v('name')}" required placeholder="My House" style="${inputCss}">`)}
+      ${_propsField('address', lblAddress, `<input type="text" value="${v('address')}" placeholder="123 Example Street" style="${inputCss}">`, true)}
+      ${_propsField('owner', lblOwner, `<input type="text" value="${v('owner', 'self')}" placeholder="self" style="${inputCss}">`)}
+      ${_propsField('currency', lblCurrency, `<select style="${inputCss}">${curOpts}</select>`)}
+      ${_propsField('default_account', lblDefAcc, `<select style="${inputCss}">${accSelect}</select>`, true)}
+      ${_propsField('electricity_payee', lblElecPayee, `<input type="text" value="${v('electricity_payee', '')}" style="${inputCss}">`)}
+      ${_propsField('water_payee', lblWaterPayee, `<input type="text" value="${v('water_payee', '')}" style="${inputCss}">`)}
+      ${_propsField('electricity_meter', lblElecMeter, `<input type="text" value="${v('electricity_meter')}" placeholder="LUKU meter number" style="${inputCss}">`)}
+      ${_propsField('water_meter', lblWaterMeter, `<input type="text" value="${v('water_meter')}" placeholder="water meter number" style="${inputCss}">`)}
+      ${_propsField('water_control_number', lblWaterCtrl, `<input type="text" value="${v('water_control_number')}" placeholder="water utility control nr" style="${inputCss}">`, true)}
+      ${_propsField('electricity_category', lblElecCat, `<input type="text" value="${v('electricity_category', 'Bills:Electricity')}" style="${inputCss}">`)}
+      ${_propsField('water_category', lblWaterCat, `<input type="text" value="${v('water_category', 'Bills:Water')}" style="${inputCss}">`)}
+      ${_propsField('cost_tag', lblCostTag, `<input type="text" value="${v('cost_tag')}" placeholder="auto: Property_<id> — feeds the Cost-of-Living-per-Property report" style="${inputCss}">`, true)}
+      ${_propsField('start_date', lblStart, `<input type="date" value="${v('start_date')}" style="${inputCss}">`)}
+      ${_propsField('end_date', lblEnd, `<input type="date" value="${v('end_date')}" placeholder="leave empty if currently lived in" style="${inputCss}">`)}
+      ${_propsField('active', lblActive, `<select style="${inputCss}"><option value="true"${(existing?.active || 'true') === 'true' ? ' selected' : ''}>true</option><option value="false"${existing?.active === 'false' ? ' selected' : ''}>false</option></select>`)}
+      ${_propsField('notes', lblNotes, `<input type="text" value="${v('notes')}" placeholder="freitext" style="${inputCss}">`, true)}
     </div>`;
 
-  _buildPropsModal(isEdit ? `Edit ${existing.name}` : 'Add Property', body, async (form) => {
+  const modalTitle = isEdit
+    ? t('settings.properties.modal.title_edit', { name: existing.name }, `Edit ${existing.name}`)
+    : t('settings.properties.modal.title_add', {}, 'Add Property');
+  _buildPropsModal(modalTitle, body, async (form) => {
     const fd = new FormData(form);
     const payload = {};
     for (const k of [

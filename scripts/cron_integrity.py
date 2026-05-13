@@ -226,6 +226,39 @@ def check_overdue_scheduled() -> list[str]:
     return issues
 
 
+def check_stale_push_heartbeat() -> list[str]:
+    """Flag a stale `data/.last_successful_push` heartbeat (L-PD4, Sprint 23).
+
+    `cron_commit` writes this ISO-timestamp file on every successful push.
+    If the file is missing or older than 24 hours, cron_commit hasn't
+    landed a push in a day — the usual cause is the SSH-passphrase bug
+    or a network outage (see deploy/README-pi-setup.md §2 recovery).
+    Below 24h the silence is normal (no changes to commit, or push ring
+    is doing throttled retries per M-PD2).
+    """
+    from datetime import datetime, timedelta
+    issues: list[str] = []
+    heartbeat = DATA_DIR / ".last_successful_push"
+    if not heartbeat.exists():
+        # First-run state — not an issue. Real outage shows up after
+        # the first push has happened and the file gets stale.
+        return issues
+    try:
+        ts_text = heartbeat.read_text(encoding="utf-8").strip()
+        last_push = datetime.fromisoformat(ts_text)
+    except (OSError, ValueError) as exc:
+        issues.append(f"Push heartbeat unreadable: {exc}")
+        return issues
+    age = datetime.now() - last_push
+    if age > timedelta(hours=24):
+        issues.append(
+            f"Push heartbeat stale: last successful push {last_push.isoformat()}, "
+            f"{age.total_seconds() / 3600:.1f}h ago — check cron_commit "
+            f"(SSH passphrase? network?)."
+        )
+    return issues
+
+
 def main() -> int:
     """Run all integrity checks and produce a report.
 
@@ -252,6 +285,7 @@ def main() -> int:
         ("Unknown accounts", check_unknown_accounts(transactions, accounts)),
         ("Duplicate import_ids", check_duplicate_import_ids(transactions)),
         ("Overdue scheduled entries", check_overdue_scheduled()),
+        ("Stale push heartbeat", check_stale_push_heartbeat()),
     ]
 
     total_issues = 0

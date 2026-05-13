@@ -217,10 +217,10 @@ async function showAccountAddModal() {
       <h3>${escapeHtml(t('settings.accounts.modal.add_title', {}, 'Add new account'))}</h3>
       <div class="atx-row">
         <div class="atx-field fx1"><label>${t('settings.accounts.modal.label_alias', {}, 'Alias')}</label>
-          <input type="text" id="acc-add-alias" placeholder="${escapeHtml(t('settings.accounts.modal.alias_ph', {}, 'short_id'))}" autocomplete="off">
+          <input type="text" id="acc-add-alias" placeholder="${escapeHtml(t('settings.accounts.modal.alias_ph', {}, 'short_id'))}" autocomplete="off" maxlength="32" pattern="[a-z][a-z0-9_]*" title="lowercase letters, digits, underscore; starts with a letter; max 32 chars">
         </div>
         <div class="atx-field fx2"><label>${t('common.col.name', {}, 'Name')}</label>
-          <input type="text" id="acc-add-name" placeholder="${escapeHtml(t('settings.accounts.modal.name_ph', {}, 'My Bank Checking'))}">
+          <input type="text" id="acc-add-name" placeholder="${escapeHtml(t('settings.accounts.modal.name_ph', {}, 'My Bank Checking'))}" maxlength="64">
         </div>
       </div>
       <div class="atx-row">
@@ -302,6 +302,14 @@ async function saveAccountAdd() {
     // without a full boot() (which would jump tabs, see saveAccountEdit).
     if (typeof state !== 'undefined' && state.accounts && data.account) {
       state.accounts.push(data.account);
+      // M-F5 (Sprint 18) — seed state.balances for the new alias so the
+      // Accounts table shows the initial_balance instead of an empty
+      // cell until the next boot() refresh. Cast via Number so the
+      // existing balance-formatter accepts it.
+      if (state.balances && data.account.alias) {
+        const init = Number(data.account.initial_balance) || 0;
+        state.balances[data.account.alias] = init;
+      }
     }
     renderAccountsSettingsTab();
   } catch (e) {
@@ -854,7 +862,7 @@ async function showCategoryModal(editPath) {
       const res = await fetch('/api/categories/list', { method: 'POST' });
       const data = await res.json();
       cat = (data.categories || []).find(c => c.path === editPath);
-    } catch (e) {}
+    } catch (e) { console.warn('[settings:silent-catch]', e); }
   }
   const isEdit = !!cat;
 
@@ -962,21 +970,22 @@ async function renderTagsTab() {
   const labelInactive = t('common.status.inactive', {}, 'Inactive');
   const labelEdit = t('common.actions.edit', {}, 'Edit');
   const labelDelete = t('common.actions.delete', {}, 'Delete');
-  const autoRuleManual = t('settings.tags.auto_rule_manual', {}, '(manual)');
 
+  // H-28 (Sprint 11) — the `auto_rule` column was dropped from tags.csv.
+  // Real auto-tag rules live in Settings → Auto-Tags
+  // (config/defaults.json:auto_tag). This table is now a pure tag catalog.
   let html = `
     <div class="flex-row gap-md mb-20">
       <span class="hint-md">${t('settings.tags.count', { n: tags.length }, `${tags.length} tags`)}</span>
       <button class="btn-save" data-action="showTagModal" style="padding:8px 16px;font-size:11px;">${t('settings.tags.add', {}, '+ Add Tag')}</button>
     </div>
     <div class="section">
-      <table class="tx-table"><thead><tr><th>${t('settings.tags.col_tag', {}, 'Tag')}</th><th>${t('settings.tags.col_description', {}, 'Description')}</th><th>${t('settings.tags.col_auto_rule', {}, 'Auto-Rule')}</th><th>${labelActive}</th><th></th></tr></thead><tbody>
+      <table class="tx-table"><thead><tr><th>${t('settings.tags.col_tag', {}, 'Tag')}</th><th>${t('settings.tags.col_description', {}, 'Description')}</th><th>${labelActive}</th><th></th></tr></thead><tbody>
   `;
   tags.forEach(tag => {
     html += `<tr style="${tag.active === 'false' ? 'opacity:0.5' : ''}">
       <td><strong>${escapeHtml(tag.tag)}</strong></td>
       <td class="fs-11">${escapeHtml(tag.description || '')}</td>
-      <td class="hint-sm">${escapeHtml(tag.auto_rule || autoRuleManual)}</td>
       <td><button style="font-size:10px;padding:3px 8px;" data-action="toggleTag" data-arg1="${escapeHtml(tag.tag)}" data-arg2="${tag.active}">${tag.active === 'true' ? labelActive : labelInactive}</button></td>
       <td>
         <button class="tx-edit-btn" data-action="showTagModal" data-arg1="${escapeHtml(tag.tag)}" title="${labelEdit}">${labelEdit}</button>
@@ -1004,7 +1013,7 @@ async function showTagModal(editTag) {
       const res = await fetch('/api/tags/list', { method: 'POST' });
       const data = await res.json();
       tag = (data.tags || []).find(t => t.tag === editTag);
-    } catch (e) {}
+    } catch (e) { console.warn('[settings:silent-catch]', e); }
   }
   const isEdit = !!tag;
 
@@ -1026,9 +1035,6 @@ async function showTagModal(editTag) {
         </div>
       </div>
       <div class="atx-row">
-        <div class="atx-field"><label>${t('settings.tags.modal.label_auto_rule', {}, 'Auto-Rule (e.g. "account in <account>;<account>")')}</label>
-          <input type="text" id="tm-rule" value="${escapeHtml(tag?.auto_rule || '')}">
-        </div>
         <div class="atx-field"><label>${t('common.status.active', {}, 'Active')}</label>
           <select id="tm-active">
             <option value="true" ${!tag || tag.active === 'true' ? 'selected' : ''}>${t('common.status.active', {}, 'Active')}</option>
@@ -1036,6 +1042,7 @@ async function showTagModal(editTag) {
           </select>
         </div>
       </div>
+      <div class="atx-row"><div class="atx-field"><div class="hint-sm">${t('settings.tags.modal.auto_tag_pointer', {}, 'Auto-tag rules live in Settings → Auto-Tags.')}</div></div></div>
       <div id="tm-status"></div>
       <div class="modal-footer">
         <div class="btn-left"></div>
@@ -1056,7 +1063,6 @@ async function saveTag(editTag) {
   const tagName = editTag || document.getElementById('tm-tag').value.trim();
   const data = {
     description: document.getElementById('tm-desc').value.trim(),
-    auto_rule: document.getElementById('tm-rule').value.trim(),
     active: document.getElementById('tm-active').value,
   };
   if (!tagName) { document.getElementById('tm-status').innerHTML = `<div class="atx-status error">${t('settings.tags.modal.err_tag_required', {}, 'Tag name is required')}</div>`; return; }
@@ -1080,7 +1086,7 @@ async function deleteTag(tag) {
   try {
     await fetch('/api/tags/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag }) });
     renderTagsTab();
-  } catch (e) {}
+  } catch (e) { console.warn('[settings:silent-catch]', e); }
 }
 
 // ─── Scheduled Tab ────────────────────────────────────────────────────────
@@ -1177,12 +1183,12 @@ async function showScheduledModal(editId) {
       const res = await fetch('/api/scheduled/list', { method: 'POST' });
       const data = await res.json();
       item = (data.scheduled || []).find(s => s.sched_id === editId);
-    } catch (e) {}
+    } catch (e) { console.warn('[settings:silent-catch]', e); }
   }
   const isEdit = !!item;
   const activeAccounts = ctx.accounts.filter(a => a.status === 'active');
   const accOptions = activeAccounts.map(a =>
-    `<option value="${a.alias}" data-currency="${a.currency}" ${item && item.account === a.alias ? 'selected' : ''}>${a.alias} — ${a.name} [${a.currency}]</option>`
+    `<option value="${escapeHtml(a.alias)}" data-currency="${escapeHtml(a.currency)}" ${item && item.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
     `<option value="${c.path}" ${item && item.category === c.path ? 'selected' : ''}>${c.path}</option>`
@@ -1335,7 +1341,7 @@ async function deleteScheduled(schedId) {
   try {
     await fetch('/api/scheduled/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sched_id: schedId }) });
     renderScheduledTab();
-  } catch (e) {}
+  } catch (e) { console.warn('[settings:silent-catch]', e); }
 }
 
 // ─── Quick Expenses Settings Tab ─────────────────────────────────────────
@@ -1403,12 +1409,12 @@ async function showQuickExpModal(editId) {
       const res = await fetch('/api/quickexp/list', { method: 'POST' });
       const data = await res.json();
       item = (data.quick_expenses || []).find(q => q.id === editId);
-    } catch (e) {}
+    } catch (e) { console.warn('[settings:silent-catch]', e); }
   }
   const isEdit = !!item;
   const activeAccounts = ctx.accounts.filter(a => a.status === 'active');
   const accOptions = activeAccounts.map(a =>
-    `<option value="${a.alias}" ${item && item.account === a.alias ? 'selected' : ''}>${a.alias} — ${a.name} [${a.currency}]</option>`
+    `<option value="${escapeHtml(a.alias)}" ${item && item.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
     `<option value="${c.path}" ${item && item.category === c.path ? 'selected' : ''}>${c.path}</option>`
@@ -1517,7 +1523,7 @@ async function deleteQuickExp(qeId) {
   try {
     await fetch('/api/quickexp/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: qeId }) });
     renderQuickExpTab();
-  } catch (e) {}
+  } catch (e) { console.warn('[settings:silent-catch]', e); }
 }
 
 // ─── ATM Fees Settings Tab ───────────────────────────────────────────────
@@ -1593,13 +1599,13 @@ async function showAtmFeeModal(editId) {
       const res = await fetch('/api/atm-fees/list', { method: 'POST' });
       const data = await res.json();
       item = (data.atm_fees || []).find(f => f.id === editId);
-    } catch (e) {}
+    } catch (e) { console.warn('[settings:silent-catch]', e); }
   }
   const isEdit = !!item;
   const activeAccounts = ctx.accounts.filter(a => a.status === 'active');
   // Bank selector = account alias — bank is free text but prefilled with common aliases
   const accOptions = activeAccounts.map(a =>
-    `<option value="${a.alias}" ${item && item.bank === a.alias ? 'selected' : ''}>${a.alias} — ${a.name} [${a.currency}]</option>`
+    `<option value="${escapeHtml(a.alias)}" ${item && item.bank === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
 
   const overlay = document.createElement('div');
@@ -1694,7 +1700,7 @@ async function deleteAtmFee(feeId) {
   try {
     await fetch('/api/atm-fees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: feeId }) });
     renderAtmFeesTab();
-  } catch (e) {}
+  } catch (e) { console.warn('[settings:silent-catch]', e); }
 }
 
 // ─── Receipts Settings Tab (v1.6.0-rc.1.1) ───────────────────────────────

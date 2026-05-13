@@ -126,9 +126,16 @@ def prune_old_backups(stem: str) -> None:
     if not BACKUP_DIR.exists():
         return
 
-    # Sort newest-first so slicing beyond the limit gives the oldest files
+    # Sort newest-first so slicing beyond the limit gives the oldest files.
+    # L-PD2 (Sprint 23) — the glob `{stem}_*.csv` overmatches when one
+    # stem is a prefix of another (e.g. `fuel_log_*` swallowed
+    # `fuel_log_recon_dismissed_*`). The timestamp-anchored regex below
+    # accepts only the actual backup suffix shape `YYYYMMDD_HHMMSS.csv`,
+    # so prefix-sharing stems stay isolated.
+    import re as _re_local
+    suffix_re = _re_local.compile(rf"^{_re_local.escape(stem)}_\d{{8}}_\d{{6}}\.csv$")
     backups = sorted(
-        BACKUP_DIR.glob(f"{stem}_*.csv"),
+        (p for p in BACKUP_DIR.glob(f"{stem}_*.csv") if suffix_re.match(p.name)),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -147,8 +154,16 @@ def list_backups() -> None:
         print("Keine Backups vorhanden.")
         return
 
+    # L-PD2 (Sprint 23) — same prefix-collision guard as prune_old_backups
+    # above. Without the timestamp-anchor regex, `fuel_log` would list
+    # the backups of `fuel_log_recon_dismissed` too.
+    import re as _re_local
     for stem in BACKUP_TARGETS:
-        backups = sorted(BACKUP_DIR.glob(f"{stem}_*.csv"), reverse=True)
+        suffix_re = _re_local.compile(rf"^{_re_local.escape(stem)}_\d{{8}}_\d{{6}}\.csv$")
+        backups = sorted(
+            (p for p in BACKUP_DIR.glob(f"{stem}_*.csv") if suffix_re.match(p.name)),
+            reverse=True,
+        )
         print(f"\n{stem} ({len(backups)}):")
         for b in backups[:10]:
             size = human_size(b.stat().st_size)

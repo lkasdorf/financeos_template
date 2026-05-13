@@ -135,7 +135,7 @@ function renderTransactionsPage() {
     const tags = (tx.tags || '').split(';').filter(Boolean).map(x => `<span class="tag-chip">${escapeHtml(x)}</span>`).join('');
     let payeeLabel;
     if (tx.type === 'transfer') {
-      payeeLabel = `${tx.account} → ${tx.transfer_to_account || '?'}`;
+      payeeLabel = `${escapeHtml(tx.account)} → ${escapeHtml(tx.transfer_to_account || '?')}`;
     } else {
       payeeLabel = escapeHtml(tx.payee || '');
     }
@@ -156,7 +156,7 @@ function renderTransactionsPage() {
       <tr class="${isChecked ? 'row-selected' : ''}">
         <td class="td-chk"><input type="checkbox" class="tx-select" data-id="${escapeHtml(tx.import_id)}" ${isChecked ? 'checked' : ''}></td>
         <td>${fmtDate(tx.date)}</td>
-        <td>${tx.account}</td>
+        <td>${escapeHtml(tx.account)}</td>
         <td class="fs-10 c-mut2">${tx.type}</td>
         <td>${payeeLabel}${receiptIcon}${note}</td>
         <td class="cat">${catOrType}</td>

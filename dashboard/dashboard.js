@@ -59,11 +59,16 @@ async function loadMonthForecast() {
     else if (t.type === 'expense') expenseActual += amt;
   }
 
-  // Average daily expense from the month so far
+  // Average daily expense from the month so far. Used as one of two
+  // estimates feeding totalProjExp below (see Math.max() rationale).
   const avgDailyExp = today > 0 ? expenseActual / today : 0;
-  const projectedExp = expenseActual + avgDailyExp * daysLeft;
 
-  // Scheduled TX remaining this month
+  // Scheduled TX remaining this month — classify by category, NOT account.
+  // scheduled.csv has no `type` column; the type is implicit in the
+  // category prefix ('Income:' → income; everything else → expense).
+  // Pass-through accounts additionally generate the auto-counter-entry,
+  // so they contribute to BOTH buckets (the expense fire + the
+  // reimbursement income cron_sched will emit).
   let schedIncome = 0, schedExpense = 0;
   try {
     const res = await fetch('/api/scheduled/list', { method: 'POST' });
@@ -76,13 +81,20 @@ async function loadMonthForecast() {
         if (!s.next_run || !s.next_run.startsWith(ym)) continue;
         if (s.next_run <= now.toISOString().slice(0, 10)) continue; // already due/booked
         const amt = toDisplay(parseFloat(s.amount) || 0, s.currency || 'TZS');
-        // Scheduled TX on pass-through accounts generate expense + income
+        const isIncome = (s.category || '').startsWith('Income:');
         const acc = state.accounts.find(a => a.alias === s.account);
-        if (acc && acc.type === 'pass_through') {
+        const isPassThrough = acc && acc.type === 'pass_through';
+
+        if (isIncome) {
+          // Pure income (Income:Salary, Income:Rent, etc.)
+          schedIncome += amt;
+        } else if (isPassThrough) {
+          // Expense on a pass-through account → expense leg + auto-reimbursement.
           schedExpense += amt;
           schedIncome += amt;
         } else {
-          schedExpense += amt; // assume expense by default
+          // Pure expense (the default).
+          schedExpense += amt;
         }
       }
     }
@@ -106,11 +118,26 @@ async function loadMonthForecast() {
     avgMonthlyIncome = monthlyIncTotals.reduce((s, v) => s + v, 0) / monthlyIncTotals.length;
   }
 
-  // Projected income: use 6-month average as expectation, or actual if already higher
-  const expectedRemaining = Math.max(0, avgMonthlyIncome - incomeActual) + schedIncome;
-  const projectedInc = incomeActual + expectedRemaining;
+  // Projected income: take the BIGGER of two estimates rather than adding
+  // them. Adding them would double-count: a recurring scheduled entry
+  // (e.g. a monthly Salary entry) is ALREADY represented in the 6-month
+  // historical avg, so layering schedIncome on top counts it twice.
+  //   - Estimate A: incomeActual + schedIncome (what we know is coming).
+  //   - Estimate B: avgMonthlyIncome (what history says we'll get).
+  // The max() collapses to A when scheduled income is bigger than the
+  // gap-to-avg (typical mid-month with future salary scheduled) and to
+  // B when actual+scheduled is below the historical baseline (covers
+  // unscheduled but historically-typical bumps).
+  const projectedInc = Math.max(incomeActual + schedIncome, avgMonthlyIncome);
 
-  const totalProjExp = projectedExp + schedExpense;
+  // Same logic for expenses: avoid double-counting recurring rent/utilities
+  // that show up in BOTH the daily-pace projection AND the schedExpense
+  // bucket. The pace already incorporates historical recurring expenses
+  // via the months in expenseActual.
+  //   - Estimate A: expenseActual + schedExpense (known + scheduled).
+  //   - Estimate B: expenseActual + avgDailyExp * daysLeft (pace).
+  const paceProjectedExp = expenseActual + avgDailyExp * daysLeft;
+  const totalProjExp = Math.max(expenseActual + schedExpense, paceProjectedExp);
   const finalNet = projectedInc - totalProjExp;
 
   container.innerHTML = `

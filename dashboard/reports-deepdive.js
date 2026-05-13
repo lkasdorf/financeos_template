@@ -374,7 +374,7 @@ function renderLargestTxReport() {
             ${top.map((tx, i) => `<tr>
               <td>${i + 1}</td>
               <td>${fmtDate(tx.date)}</td>
-              <td>${tx.account}</td>
+              <td>${escapeHtml(tx.account)}</td>
               <td>${escapeHtml(tx.payee || '')}</td>
               <td class="cat">${escapeHtml(tx.category || '')}</td>
               <td>${escapeHtml(tx.note || '')}</td>

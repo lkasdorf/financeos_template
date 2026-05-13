@@ -198,10 +198,11 @@ def write_fx_rates(rates: dict[str, float], today_str: str) -> bool:
             "updated": today_str,
         })
 
-    with open(FX_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["currency", "rate_per_usd", "tzs_per_unit", "updated"])
-        writer.writeheader()
-        writer.writerows(rows)
+    tx_engine._atomic_csv_rewrite(
+        FX_PATH,
+        ["currency", "rate_per_usd", "tzs_per_unit", "updated"],
+        rows,
+    )
 
     new_content = FX_PATH.read_text(encoding="utf-8")
     return new_content != old_content
@@ -248,10 +249,7 @@ def update_history(rates: dict[str, float]) -> bool:
         row.update(new_values)
         rows.append(row)
 
-    with open(FX_HISTORY_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    tx_engine._atomic_csv_rewrite(FX_HISTORY_PATH, list(fieldnames), rows)
 
     action = "updated" if found else "added"
     print(f"  History: {action} {today_key}")

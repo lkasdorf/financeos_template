@@ -194,6 +194,16 @@ function openLightbox(url) {
 // Safari — no PDF.js dependency needed for rc.1. Layout mirrors the lightbox
 // so the UX feels consistent.
 function openPdfEmbed(url) {
+  // L-F2 (Sprint 24) — receipt URLs are produced server-side by the
+  // upload pipeline (always `/data/receipts/.../<hex>.<ext>`), so the
+  // string is normally safe. Add an explicit path-prefix guard so a
+  // future bug that lets non-receipt URLs reach here can't pivot the
+  // lightbox into loading arbitrary `<embed>` content from off-origin.
+  const RECEIPTS_PREFIX = '/data/receipts/';
+  if (typeof url !== 'string' || !url.startsWith(RECEIPTS_PREFIX)) {
+    console.warn('[receipts:lightbox] refusing non-receipt URL', url);
+    return;
+  }
   const ov = document.createElement('div');
   ov.className = 'lightbox-overlay';
   ov.innerHTML = `

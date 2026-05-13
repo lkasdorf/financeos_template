@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
 import sys
 from datetime import datetime
@@ -268,12 +269,13 @@ def next_fuel_id() -> str:
 
 
 def write_fuel_log(rows: list[dict]) -> None:
-    """Rewrite fuel_log.csv from scratch with the given rows."""
-    with open(FUEL_LOG_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FUEL_LOG_COLUMNS)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({c: row.get(c, "") for c in FUEL_LOG_COLUMNS})
+    """Rewrite fuel_log.csv from scratch with the given rows.
+
+    Uses the atomic-rewrite helper so a crash mid-write (delete-fuel-entry
+    triggers a full rewrite — high-frequency vector) cannot truncate the log.
+    """
+    normalised = [{c: row.get(c, "") for c in FUEL_LOG_COLUMNS} for row in rows]
+    tx_engine._atomic_csv_rewrite(FUEL_LOG_CSV, FUEL_LOG_COLUMNS, normalised)
 
 
 def _next_vehicle_id(existing: dict[str, dict]) -> str:
@@ -368,13 +370,20 @@ def delete_vehicle(vehicle_id: str) -> bool:
 
 
 def append_fuel_log(row: dict) -> None:
-    """Append a single fuel entry to fuel_log.csv (creates header if missing)."""
+    """Append a single fuel entry to fuel_log.csv (creates header if missing).
+
+    Durability: flush + fsync force the buffered append to disk before the
+    handle closes, so a power loss between append_fuel_log() and the next
+    sync cannot leave a half-written final row in fuel_log.csv.
+    """
     new_file = not FUEL_LOG_CSV.exists() or FUEL_LOG_CSV.stat().st_size == 0
     with open(FUEL_LOG_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FUEL_LOG_COLUMNS)
         if new_file:
             writer.writeheader()
         writer.writerow({c: row.get(c, "") for c in FUEL_LOG_COLUMNS})
+        f.flush()
+        os.fsync(f.fileno())
 
 
 # ── Computed Metrics ────────────────────────────────────────────────────────
@@ -527,6 +536,8 @@ def add_dismissed_recon(import_id: str, reason: str = "") -> None:
             "dismissed_at": datetime.now().date().isoformat(),
             "reason": reason or "",
         })
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def remove_dismissed_recon(import_id: str) -> bool:
@@ -543,11 +554,8 @@ def remove_dismissed_recon(import_id: str) -> bool:
             rows.append(row)
     if not found:
         return False
-    with open(FUEL_RECON_DISMISSED_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=RECON_DISMISSED_COLUMNS)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({c: row.get(c, "") for c in RECON_DISMISSED_COLUMNS})
+    normalised = [{c: row.get(c, "") for c in RECON_DISMISSED_COLUMNS} for row in rows]
+    tx_engine._atomic_csv_rewrite(FUEL_RECON_DISMISSED_CSV, RECON_DISMISSED_COLUMNS, normalised)
     return True
 
 
@@ -794,38 +802,45 @@ def add_fuel_entry(
         "tx_import_id": "",
     }
 
-    # Backups before any write — FinanceOS hard rule
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    if FUEL_LOG_CSV.exists():
-        backup_file("fuel_log", FUEL_LOG_CSV)
+    # Backup + build + append + log persist all share the same lock so
+    # the existing_ids snapshot can't be invalidated by a concurrent
+    # writer between read and append (H-01), and the TX+fuel-log pair
+    # is observable to other writers as either both present or neither
+    # (C-03). Reentrant lock (C-02) means inner @with_tx_lock callees
+    # don't deadlock.
+    with tx_engine.tx_write_lock():
+        # Backups before any write — FinanceOS hard rule
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        if FUEL_LOG_CSV.exists():
+            backup_file("fuel_log", FUEL_LOG_CSV)
 
-    # Build expense + (optional) reimbursement TXs
-    existing_ids = tx_engine.load_existing_import_ids()
-    expense_line = build_expense_tx(fuel_row, vehicle)
-    expense_line["import_id"] = tx_engine.generate_import_id(
-        expense_line["date"], expense_line["account"],
-        float(expense_line["amount"]), expense_line["payee"],
-        expense_line["category"], expense_line["note"], existing_ids,
-    )
-    existing_ids.add(expense_line["import_id"])
-
-    lines_to_write = [expense_line]
-    reimb_id = None
-    if acc.get("type") == "pass_through":
-        reimb_line = tx_engine.generate_pass_through_line(
-            expense_line, acc, existing_ids,
+        # Build expense + (optional) reimbursement TXs
+        existing_ids = tx_engine.load_existing_import_ids()
+        expense_line = build_expense_tx(fuel_row, vehicle)
+        expense_line["import_id"] = tx_engine.generate_import_id(
+            expense_line["date"], expense_line["account"],
+            float(expense_line["amount"]), expense_line["payee"],
+            expense_line["category"], expense_line["note"], existing_ids,
         )
-        if reimb_line is not None:
-            existing_ids.add(reimb_line["import_id"])
-            reimb_id = reimb_line["import_id"]
-            lines_to_write.append(reimb_line)
+        existing_ids.add(expense_line["import_id"])
 
-    # Persist TX(s) first; if this fails, no fuel row is written.
-    tx_engine.append_transactions(lines_to_write)
+        lines_to_write = [expense_line]
+        reimb_id = None
+        if acc.get("type") == "pass_through":
+            reimb_line = tx_engine.generate_pass_through_line(
+                expense_line, acc, existing_ids,
+            )
+            if reimb_line is not None:
+                existing_ids.add(reimb_line["import_id"])
+                reimb_id = reimb_line["import_id"]
+                lines_to_write.append(reimb_line)
 
-    # Link expense TX back into fuel row, then persist
-    fuel_row["tx_import_id"] = expense_line["import_id"]
-    append_fuel_log(fuel_row)
+        # Persist TX(s) first; if this fails, no fuel row is written.
+        tx_engine.append_transactions(lines_to_write)
+
+        # Link expense TX back into fuel row, then persist
+        fuel_row["tx_import_id"] = expense_line["import_id"]
+        append_fuel_log(fuel_row)
 
     return {
         "fuel_id": fuel_id,
@@ -871,72 +886,84 @@ def update_fuel_entry(fuel_id: str, **new_fields) -> dict:
         raise ValueError(f"Unknown account: '{merged.get('account')}'")
     acc = accounts[merged["account"]]
 
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    backup_file("fuel_log", FUEL_LOG_CSV)
+    # Cascade-delete-and-rewrite must be atomic across concurrent writers
+    # (cron_sched, dashboard tx-edit, another fuel edit). Without the
+    # outer lock, the C-03 race window leaves the books with an orphan
+    # reimbursement (expense deleted, counter-entry still present) or
+    # a torn fuel_log. Reentrant lock from C-02 means the inner
+    # @with_tx_lock decorators on delete_transaction / append_transactions
+    # don't deadlock — they bump the per-thread depth counter and skip
+    # the OS lock re-acquire.
+    with tx_engine.tx_write_lock():
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        backup_file("fuel_log", FUEL_LOG_CSV)
 
-    # Cascade-delete old TX(s) before writing the new ones, otherwise the
-    # new import_id (content-derived) might collide if the user only
-    # changed cosmetic fields (note text).
-    old_tx_id = target.get("tx_import_id", "").strip()
-    old_acc = accounts.get(target.get("account", ""), {})
-    if old_tx_id:
-        old_expense_row = None
-        with open(DATA_DIR / "transactions.csv", newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                if row["import_id"] == old_tx_id:
-                    old_expense_row = row
-                    break
-        if old_expense_row and old_acc.get("type") == "pass_through":
-            old_reimb_id = find_reimbursement_id(old_expense_row, old_acc)
-            if old_reimb_id:
-                tx_engine.delete_transaction(old_reimb_id)
-        tx_engine.delete_transaction(old_tx_id)
+        # Cascade-delete old TX(s) before writing the new ones, otherwise the
+        # new import_id (content-derived) might collide if the user only
+        # changed cosmetic fields (note text).
+        old_tx_id = target.get("tx_import_id", "").strip()
+        old_acc = accounts.get(target.get("account", ""), {})
+        if old_tx_id:
+            old_expense_row = None
+            with open(DATA_DIR / "transactions.csv", newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if row["import_id"] == old_tx_id:
+                        old_expense_row = row
+                        break
+            if old_expense_row and old_acc.get("type") == "pass_through":
+                old_reimb_id = find_reimbursement_id(old_expense_row, old_acc)
+                if old_reimb_id:
+                    tx_engine.delete_transaction(old_reimb_id)
+            tx_engine.delete_transaction(old_tx_id)
 
-    # Normalize merged fuel row to the on-disk schema strings before
-    # rebuilding the TX so the note + amount formatting stays identical
-    # to what a fresh add_fuel_entry would produce.
-    fuel_row_for_tx = {
-        "date": merged["date"],
-        "odometer_km": f"{float(merged['odometer_km']):.0f}",
-        "liters": f"{float(merged['liters']):.2f}",
-        "total_cost": f"{float(merged['total_cost']):.2f}",
-        "currency": merged.get("currency") or acc.get("currency", "TZS"),
-        "station": merged.get("station", "").strip(),
-        "full_tank": str(merged.get("full_tank", "true")).lower(),
-        "remarks": str(merged.get("remarks", "")).strip(),
-        "account": merged["account"],
-    }
+        # Normalize merged fuel row to the on-disk schema strings before
+        # rebuilding the TX so the note + amount formatting stays identical
+        # to what a fresh add_fuel_entry would produce.
+        fuel_row_for_tx = {
+            "date": merged["date"],
+            "odometer_km": f"{float(merged['odometer_km']):.0f}",
+            "liters": f"{float(merged['liters']):.2f}",
+            "total_cost": f"{float(merged['total_cost']):.2f}",
+            "currency": merged.get("currency") or acc.get("currency", "TZS"),
+            "station": merged.get("station", "").strip(),
+            "full_tank": str(merged.get("full_tank", "true")).lower(),
+            "remarks": str(merged.get("remarks", "")).strip(),
+            "account": merged["account"],
+        }
 
-    existing_ids = tx_engine.load_existing_import_ids()
-    expense_line = build_expense_tx(fuel_row_for_tx, vehicle)
-    expense_line["import_id"] = tx_engine.generate_import_id(
-        expense_line["date"], expense_line["account"],
-        float(expense_line["amount"]), expense_line["payee"],
-        expense_line["category"], expense_line["note"], existing_ids,
-    )
-    existing_ids.add(expense_line["import_id"])
-
-    lines_to_write = [expense_line]
-    reimb_id = None
-    if acc.get("type") == "pass_through":
-        reimb_line = tx_engine.generate_pass_through_line(
-            expense_line, acc, existing_ids,
+        # existing_ids read INSIDE the lock — H-01 collision window:
+        # without this, another writer could land a TX with the same
+        # content-derived hash between the read and our append.
+        existing_ids = tx_engine.load_existing_import_ids()
+        expense_line = build_expense_tx(fuel_row_for_tx, vehicle)
+        expense_line["import_id"] = tx_engine.generate_import_id(
+            expense_line["date"], expense_line["account"],
+            float(expense_line["amount"]), expense_line["payee"],
+            expense_line["category"], expense_line["note"], existing_ids,
         )
-        if reimb_line is not None:
-            reimb_id = reimb_line["import_id"]
-            lines_to_write.append(reimb_line)
+        existing_ids.add(expense_line["import_id"])
 
-    tx_engine.append_transactions(lines_to_write)
+        lines_to_write = [expense_line]
+        reimb_id = None
+        if acc.get("type") == "pass_through":
+            reimb_line = tx_engine.generate_pass_through_line(
+                expense_line, acc, existing_ids,
+            )
+            if reimb_line is not None:
+                reimb_id = reimb_line["import_id"]
+                lines_to_write.append(reimb_line)
 
-    # Rewrite fuel_log: keep fuel_id, swap tx_import_id to the fresh ID
-    new_fuel_row = {
-        "fuel_id": fuel_id,
-        "vehicle_id": merged["vehicle_id"],
-        **fuel_row_for_tx,
-        "tx_import_id": expense_line["import_id"],
-    }
-    new_rows = [new_fuel_row if r["fuel_id"] == fuel_id else r for r in rows]
-    write_fuel_log(new_rows)
+        tx_engine.append_transactions(lines_to_write)
+
+        # Rewrite fuel_log: keep fuel_id, swap tx_import_id to the fresh ID
+        new_fuel_row = {
+            "fuel_id": fuel_id,
+            "vehicle_id": merged["vehicle_id"],
+            **fuel_row_for_tx,
+            "tx_import_id": expense_line["import_id"],
+        }
+        new_rows = [new_fuel_row if r["fuel_id"] == fuel_id else r for r in rows]
+        write_fuel_log(new_rows)
 
     return {
         "fuel_id": fuel_id,
@@ -948,35 +975,58 @@ def update_fuel_entry(fuel_id: str, **new_fields) -> dict:
 def find_reimbursement_id(expense_row: dict, account: dict) -> str | None:
     """Locate the auto-generated reimbursement TX paired to an expense.
 
-    Pass-through expenses always have a matching income row on the same
-    account+date+amount. We replicate the lookup used by
-    generate_pass_through_line so the pair stays in sync on delete.
+    Pass-through expenses get a matching income row from
+    :func:`tx_engine.generate_pass_through_line`. Since the H-15 fix
+    (CODE_REVIEW_2026-05-12), the income leg carries an explicit FK
+    ``counter_entry_id`` pointing at the expense's ``import_id``.
+    We prefer that lookup direction over the fragile field-tuple match
+    (which broke whenever the user manually edited the expense's date /
+    amount / payee — the old tuple stopped matching and the
+    counter-entry was silently orphaned).
 
     Returns:
         import_id of the reimbursement TX, or None if not found.
+
+    Lookup order:
+        1. FK match: any income row with
+           ``counter_entry_id == expense.import_id``.
+        2. Legacy fallback: the old (date, account, "income", amount,
+           payee, category) tuple match. Required for transactions
+           predating the migration script that backfills the FK.
     """
     ptp = account.get("pass_through_payee", "").strip()
     if not ptp:
         return None
+
+    expense_id = (expense_row.get("import_id") or "").strip()
     reimb_cat = tx_engine.REIMBURSEMENT_CATEGORIES.get(
         ptp, f"Income:{ptp} Reimbursement"
     )
     target_amount = f"{float(expense_row['amount']):.2f}"
-    target = (
+    target_tuple = (
         expense_row["date"], expense_row["account"], "income",
         target_amount, ptp, reimb_cat,
     )
+
     tx_path = DATA_DIR / "transactions.csv"
+    legacy_match = None
     with open(tx_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            current = (
-                row["date"], row["account"], row["type"],
-                f"{float(row['amount']):.2f}" if row["amount"] else "",
-                row["payee"], row["category"],
-            )
-            if current == target:
+            # Primary: FK direct lookup.
+            if expense_id and (row.get("counter_entry_id") or "").strip() == expense_id:
                 return row["import_id"]
-    return None
+            # Fallback (legacy rows pre-migration): remember the first
+            # tuple match but keep scanning in case a later row has the
+            # FK we actually want.
+            if legacy_match is None:
+                current = (
+                    row["date"], row["account"], row["type"],
+                    f"{float(row['amount']):.2f}" if row["amount"] else "",
+                    row["payee"], row["category"],
+                )
+                if current == target_tuple:
+                    legacy_match = row["import_id"]
+    return legacy_match
 
 
 def delete_fuel_entry(fuel_id: str) -> dict:
@@ -1002,34 +1052,40 @@ def delete_fuel_entry(fuel_id: str) -> dict:
     if target is None:
         raise ValueError(f"Unknown fuel_id: '{fuel_id}'")
 
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    backup_file("fuel_log", FUEL_LOG_CSV)
+    # Cascade-delete must be atomic: another writer landing between
+    # delete_transaction(reimb_id) and delete_transaction(tx_id) would
+    # observe a transient state with the expense gone but the
+    # reimbursement still present — the pass-through balance is
+    # non-zero in that window. Outer lock (C-03) closes the window.
+    with tx_engine.tx_write_lock():
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        backup_file("fuel_log", FUEL_LOG_CSV)
 
-    tx_id = target.get("tx_import_id", "").strip()
-    accounts = tx_engine.load_accounts()
-    acc = accounts.get(target.get("account", ""), {})
+        tx_id = target.get("tx_import_id", "").strip()
+        accounts = tx_engine.load_accounts()
+        acc = accounts.get(target.get("account", ""), {})
 
-    tx_deleted = False
-    reimb_deleted = False
+        tx_deleted = False
+        reimb_deleted = False
 
-    if tx_id:
-        # Look up the expense row before deletion so we can locate its
-        # reimbursement pair (the pair lookup needs the original fields).
-        expense_row = None
-        with open(DATA_DIR / "transactions.csv", newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                if row["import_id"] == tx_id:
-                    expense_row = row
-                    break
+        if tx_id:
+            # Look up the expense row before deletion so we can locate its
+            # reimbursement pair (the pair lookup needs the original fields).
+            expense_row = None
+            with open(DATA_DIR / "transactions.csv", newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if row["import_id"] == tx_id:
+                        expense_row = row
+                        break
 
-        if expense_row and acc.get("type") == "pass_through":
-            reimb_id = find_reimbursement_id(expense_row, acc)
-            if reimb_id:
-                reimb_deleted = tx_engine.delete_transaction(reimb_id)
+            if expense_row and acc.get("type") == "pass_through":
+                reimb_id = find_reimbursement_id(expense_row, acc)
+                if reimb_id:
+                    reimb_deleted = tx_engine.delete_transaction(reimb_id)
 
-        tx_deleted = tx_engine.delete_transaction(tx_id)
+            tx_deleted = tx_engine.delete_transaction(tx_id)
 
-    write_fuel_log([r for r in rows if r["fuel_id"] != fuel_id])
+        write_fuel_log([r for r in rows if r["fuel_id"] != fuel_id])
 
     return {
         "fuel_id": fuel_id,

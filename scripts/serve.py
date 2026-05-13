@@ -103,6 +103,17 @@ _fx_jobs: dict[str, dict] = {}
 _fx_jobs_lock = threading.Lock()
 _FX_JOB_TTL_SECONDS = 24 * 3600  # drop completed jobs after a day
 
+# Sprint 7 — H-02/H-03 single-flight locks + size caps for the two big
+# ZIP-export endpoints. Both are synchronous on the request handler
+# thread, so a single chunky export can already starve the rest of the
+# Pi for ~1 minute per 500 MB. These locks refuse parallel calls with
+# HTTP 429 instead of stacking work and the caps refuse exports that
+# would push the Pi past its memory budget.
+_backup_export_lock = threading.Lock()
+_receipts_export_lock = threading.Lock()
+BACKUP_EXPORT_MAX_BYTES = 200 * 1024 * 1024     # 200 MB — covers data/ minus receipts/
+RECEIPTS_EXPORT_MAX_BYTES = 500 * 1024 * 1024   # 500 MB — receipts archive can legitimately be big
+
 
 def _fx_jobs_gc() -> None:
     """Drop jobs older than the TTL so the dict can't leak memory."""
@@ -245,6 +256,14 @@ DASHBOARD_PATH = get_default("server.dashboard_path", "/dashboard/")
 # requests don't send an Origin header and are unaffected. Override at
 # startup via env FINANCEOS_CORS_HOSTS=host1,host2 if a new device joins
 # the trusted Pi LAN.
+# M-S7 (Sprint 16) — `localhost` + `127.0.0.1` stay in the default allowlist
+# because the dev workflow opens the dashboard at http://localhost:8080.
+# In production / Pi the binding is to LAN/Tailscale interfaces and the
+# operator should drop these two via the env override (which replaces the
+# whole list, doesn't extend it):
+#   FINANCEOS_CORS_HOSTS=192.168.1.10,100.x.x.x,your-host,your-host.local
+# Without that, a malicious page served from any other localhost server
+# could drive cross-origin reads of the dashboard JSON.
 _DEFAULT_CORS_HOSTS = (
     "localhost",
     "127.0.0.1",
@@ -366,15 +385,46 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # the URL to a filesystem path via its standard rules.
         try:
             from urllib.parse import unquote
-            raw = self.path.split("?", 1)[0].split("#", 1)[0]
-            fs_path = self.translate_path(unquote(raw))
+            url_path = self.path.split("?", 1)[0].split("#", 1)[0]
+            fs_path = self.translate_path(unquote(url_path))
         except Exception:
             return False
 
         path_obj = Path(fs_path)
         if path_obj.is_dir():
+            # 2026-05-13 hotfix — directory hits without a trailing slash
+            # (`/dashboard` instead of `/dashboard/`) used to fall through
+            # to serving index.html at the un-slashed URL, which broke
+            # every relative CSS/JS reference (`href="styles.css"` resolves
+            # to `/styles.css` against `/dashboard`). SimpleHTTPRequestHandler
+            # sends a 301 here, but we short-circuit it; replicate the
+            # redirect ourselves so behind-a-proxy clients (Tailscale
+            # Serve, Caddy) land on the canonical URL.
+            if not url_path.endswith("/"):
+                new_path = url_path + "/"
+                try:
+                    self.send_response(301)
+                    self.send_header("Location", new_path)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return True
             path_obj = path_obj / "index.html"
         if not path_obj.is_file() or path_obj.suffix.lower() != ".html":
+            return False
+        # M-S1 (Sprint 16) — defense-in-depth jail-check. translate_path is
+        # already safe against path traversal from URL components, but a
+        # symlink inside REPO_ROOT pointing outside it could let cache-bust
+        # serve arbitrary HTML from disk. Resolve to absolute and require
+        # the result to live under REPO_ROOT.
+        try:
+            resolved = path_obj.resolve()
+        except OSError:
+            return False
+        try:
+            resolved.relative_to(REPO_ROOT)
+        except ValueError:
             return False
 
         try:
@@ -417,6 +467,73 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if host in _cors_allowed_hosts():
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
+
+    def _check_csrf(self) -> bool:
+        """Block cross-origin browser CSRF attacks before any handler runs.
+
+        Browser POSTs always carry an Origin header. A malicious page on
+        evil.com that triggers a same-origin-credentialled POST to e.g.
+        /api/tx/delete (auto-attached Basic auth or sessionless setup
+        wizard) would land here with ``Origin: https://evil.com``. The
+        browser blocks the *response* via CORS but the *side-effect*
+        (delete TX, rename account, finalize wizard) already happened
+        before the response goes out. So the only safe place to refuse
+        is BEFORE dispatch.
+
+        Decision matrix:
+            - Origin missing → allow (CLI tool, curl, Pi cron — these
+              don't share a browser session and aren't CSRF vectors).
+            - Origin host matches :func:`_cors_allowed_hosts` → allow
+              (same-origin browser or explicitly trusted host).
+            - Origin host doesn't match → reject 403.
+
+        Caller is expected to skip the check for /api/health (monitoring
+        ping that must answer cross-origin so external uptime checkers
+        work) — every other POST goes through this gate.
+
+        Returns True if the request can proceed.
+        """
+        origin = self.headers.get("Origin", "")
+        if not origin:
+            return True
+        from urllib.parse import urlparse
+        try:
+            host = (urlparse(origin).hostname or "").lower()
+        except (ValueError, AttributeError):
+            host = ""
+        # Same-origin: the Origin's hostname matches the request's Host
+        # header. Allow regardless of whether the hostname is in the
+        # CORS allowlist — by definition the browser only sent this
+        # request because the page itself is hosted on that origin, so
+        # there's no third-party CSRF risk. Catches deployments via
+        # Tailscale MagicDNS (your-host.tailnet.ts.net), Cloudflare
+        # Tunnel, ngrok, custom domains etc. without forcing the
+        # operator to extend FINANCEOS_CORS_HOSTS for every new
+        # hostname they ever access the dashboard from.
+        request_host = (self.headers.get("Host", "").split(":", 1)[0] or "").lower()
+        if host and request_host and host == request_host:
+            return True
+        if host and host in _cors_allowed_hosts():
+            return True
+        # Log the rejection so operators see attack attempts; don't echo
+        # any request body (could contain attacker-supplied junk).
+        try:
+            print(
+                f"[csrf] reject POST {self.path} from Origin={origin!r}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
+        body = json.dumps({"error": "cross-origin request rejected"}).encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        return False
 
     def do_OPTIONS(self):
         """Handle CORS preflight requests (needed for cross-origin API calls)."""
@@ -482,7 +599,33 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
             content_length = 0
+        # L-S3 (Sprint 23) — a negative or absurdly-large Content-Length
+        # used to be coerced to 0 silently, which on keep-alive
+        # connections could leak the actual body bytes into the next
+        # request's parse. Now we reject explicitly with 400.
+        if content_length < 0:
+            self._respond_json(400, {"error": "Content-Length must be non-negative"})
+            return
+        # L-S2 (Sprint 23) — hard cap on request body so a malicious
+        # `Content-Length: 5000000000` doesn't try to read 5 GB into
+        # RAM. 60 MB covers the receipts-upload path (5 files × 10 MB
+        # cap inside receipts.py, plus multipart overhead). Anything
+        # bigger gets rejected before we touch self.rfile.
+        MAX_BODY_BYTES = 60 * 1024 * 1024
+        if content_length > MAX_BODY_BYTES:
+            self._respond_json(413, {
+                "error": "Request body too large",
+                "limit_bytes": MAX_BODY_BYTES,
+            })
+            return
         self._raw_body = self.rfile.read(content_length) if content_length > 0 else b""
+        # CSRF gate (C-06 from CODE_REVIEW_2026-05-12). All /api/* POSTs
+        # except /api/health (monitoring exempt) must come from a
+        # browser whose Origin is in the CORS allowlist, or from a
+        # non-browser client that doesn't send Origin at all.
+        bare_path = self.path.split("?", 1)[0]
+        if bare_path != "/api/health" and not self._check_csrf():
+            return
         routes = {
             "/api/tx/context": self.handle_tx_context,
             "/api/tx/manual": self.handle_tx_manual,
@@ -1491,11 +1634,18 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         acc_type = _s("type")
         owner = _s("owner")
 
-        if not alias or not _re_local.fullmatch(r"[a-z][a-z0-9_]*", alias):
-            self._respond_json(400, {"error": "alias must be lowercase letters/digits/underscore, starting with a letter"})
+        # H-13 (Sprint 13) — input validation. The lowercase-letters/digits
+        # rule was already enforced; the new constraint is a max length
+        # so a runaway form submission can't drop a 10 KB alias into the
+        # accounts.csv and into every TX render path that escapes it.
+        if not alias or not _re_local.fullmatch(r"[a-z][a-z0-9_]{0,31}", alias):
+            self._respond_json(400, {"error": "alias must be lowercase letters/digits/underscore, starting with a letter, max 32 chars"})
             return
         if not name:
             self._respond_json(400, {"error": "name is required"})
+            return
+        if len(name) > 64:
+            self._respond_json(400, {"error": "name is too long (max 64 chars)"})
             return
         if not _re_local.fullmatch(r"[A-Z]{3}", currency):
             self._respond_json(400, {"error": "currency must be a 3-letter code (e.g. EUR, USD, TZS)"})
@@ -1571,12 +1721,40 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         The alias itself cannot be changed here — use handle_accounts_rename
         for that, as it requires cascading updates across all data files.
+
+        H-13 (Sprint 13): same field-shape validation as handle_accounts_add
+        for every field present in `updated`. handle_accounts_add already
+        enforced these on insert, but edit accepted arbitrary strings until
+        now, so a stored-XSS payload could still land in name/notes via an
+        edit. Errors short-circuit before the lock is taken.
         """
+        import re as _re_local
         body = self._read_json_body()
         alias = body.get("alias", "")
         updated = body.get("updated", {})
         if not alias:
             self._respond_json(400, {"error": "alias is required"})
+            return
+        # Shape-check whichever fields the caller is changing.
+        if "name" in updated:
+            nv = (updated.get("name") or "").strip()
+            if not nv:
+                self._respond_json(400, {"error": "name cannot be empty"})
+                return
+            if len(nv) > 64:
+                self._respond_json(400, {"error": "name is too long (max 64 chars)"})
+                return
+        if "currency" in updated:
+            cv = (updated.get("currency") or "").strip().upper()
+            if not _re_local.fullmatch(r"[A-Z]{3}", cv):
+                self._respond_json(400, {"error": "currency must be a 3-letter code"})
+                return
+            updated["currency"] = cv
+        if "status" in updated and updated["status"] not in ("active", "archived"):
+            self._respond_json(400, {"error": "status must be 'active' or 'archived'"})
+            return
+        if "notes" in updated and len(updated.get("notes") or "") > 500:
+            self._respond_json(400, {"error": "notes is too long (max 500 chars)"})
             return
         import csv
         from pathlib import Path
@@ -1653,30 +1831,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 self._respond_json(404, {"error": f"Account '{old_alias}' not found"})
                 return
 
-            # Backup-Pflicht: rename cascades through accounts.csv,
-            # transactions.csv, scheduled.csv, quick_expenses.csv, payees.json.
-            # Snapshot every file we are about to touch before the first write
-            # so a partial-cascade failure can be reverted.
-            backup.backup_file("accounts", accounts_path)
-            backup.backup_file("transactions", data_dir / "transactions.csv")
+            # M-S4 (Sprint 16) — staged-rewrite pattern. Previously the
+            # cascade interleaved read+write per file, so a malformed
+            # mid-list file (e.g. scheduled.csv) would surface as an
+            # exception AFTER accounts.csv + transactions.csv had already
+            # been rewritten — half-renamed state. Now we do every read
+            # and in-memory transform first, fail loudly on any read
+            # error, then apply all atomic writes in sequence. Write
+            # failures (disk-full, permission-denied) still leave
+            # half-state but every touched file has a fresh backup.
             sched_path = data_dir / "scheduled.csv"
-            if sched_path.exists():
-                backup.backup_file("scheduled", sched_path)
-            qe_path_pre = data_dir / "quick_expenses.csv"
-            if qe_path_pre.exists():
-                # quick_expenses.csv is not in BACKUP_TARGETS by stem; the
-                # raw source path is enough for the snapshot copy.
-                backup.backup_file("quick_expenses", qe_path_pre)
-            payees_path_pre = data_dir / "payees.json"
-            if payees_path_pre.exists():
-                backup.backup_file("payees", payees_path_pre)
+            qe_path = data_dir / "quick_expenses.csv"
+            payees_path = data_dir / "payees.json"
 
-            # Update accounts.csv
-            tx_engine._atomic_csv_rewrite(accounts_path, list(fieldnames or []), rows)
+            # Phase 1 — read + transform every file. Collect pending
+            # rewrites as (kind, path, args...) tuples. Any failure
+            # raises before we have touched disk.
+            pending: list[tuple] = []
 
-            # Update transactions.csv (account + transfer_to_account)
+            # accounts.csv — already read+transformed into `rows` above.
+            pending.append(("csv", accounts_path, list(fieldnames or []), rows))
+
             tx_path = data_dir / "transactions.csv"
             tx_rows = []
+            tx_fields = None
             with open(tx_path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 tx_fields = reader.fieldnames
@@ -1686,9 +1864,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                     if row.get("transfer_to_account") == old_alias:
                         row["transfer_to_account"] = new_alias
                     tx_rows.append(row)
-            tx_engine._atomic_csv_rewrite(tx_path, list(tx_fields or []), tx_rows)
+            pending.append(("csv", tx_path, list(tx_fields or []), tx_rows))
 
-            # Update scheduled.csv
             if sched_path.exists():
                 s_rows = []
                 with open(sched_path, newline="", encoding="utf-8") as f:
@@ -1698,10 +1875,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                         if row.get("account") == old_alias:
                             row["account"] = new_alias
                         s_rows.append(row)
-                tx_engine._atomic_csv_rewrite(sched_path, list(s_fields or []), s_rows)
+                pending.append(("csv", sched_path, list(s_fields or []), s_rows))
 
-            # Update quick_expenses.csv
-            qe_path = data_dir / "quick_expenses.csv"
             if qe_path.exists():
                 q_rows = []
                 with open(qe_path, newline="", encoding="utf-8") as f:
@@ -1711,23 +1886,41 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                         if row.get("account") == old_alias:
                             row["account"] = new_alias
                         q_rows.append(row)
-                tx_engine._atomic_csv_rewrite(qe_path, list(q_fields or []), q_rows)
+                pending.append(("csv", qe_path, list(q_fields or []), q_rows))
 
-            # Update payees.json
-            payees_path = data_dir / "payees.json"
+            payees_changed = False
+            payees_text = None
             if payees_path.exists():
                 with open(payees_path, "r", encoding="utf-8") as f:
                     payees = json.load(f)
-                changed = False
                 for p in payees:
                     if p.get("default_account") == old_alias:
                         p["default_account"] = new_alias
-                        changed = True
-                if changed:
-                    tx_engine._atomic_write_text(
-                        payees_path,
-                        json.dumps(payees, ensure_ascii=False, indent=2),
-                    )
+                        payees_changed = True
+                if payees_changed:
+                    payees_text = json.dumps(payees, ensure_ascii=False, indent=2)
+                    pending.append(("json", payees_path, payees_text))
+
+            # Phase 2 — backups, then atomic writes. Every read has
+            # already succeeded, so anything failing from here on is
+            # a disk-level problem the backups already cover.
+            backup.backup_file("accounts", accounts_path)
+            backup.backup_file("transactions", tx_path)
+            if sched_path.exists():
+                backup.backup_file("scheduled", sched_path)
+            if qe_path.exists():
+                backup.backup_file("quick_expenses", qe_path)
+            if payees_path.exists():
+                backup.backup_file("payees", payees_path)
+
+            for entry in pending:
+                kind = entry[0]
+                if kind == "csv":
+                    _, target, fields, payload = entry
+                    tx_engine._atomic_csv_rewrite(target, fields, payload)
+                elif kind == "json":
+                    _, target, text = entry
+                    tx_engine._atomic_write_text(target, text)
 
             git_files = ["data/accounts.csv", "data/transactions.csv", "data/scheduled.csv",
                           "data/quick_expenses.csv", "data/payees.json"]
@@ -1741,6 +1934,17 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         import subprocess
         body = self._read_json_body()
         target = body.get("target", "transactions")
+        # H-04 (Sprint 7) — restrict to known backup stems before
+        # handing the value to subprocess argv. Without this gate a
+        # caller (post-auth) could pass arbitrary strings to backup.py
+        # and turn the endpoint into a generic "run an arg through
+        # python" surface.
+        if target not in backup.BACKUP_TARGETS:
+            self._respond_json(400, {
+                "error": "Unknown backup target",
+                "allowed": sorted(backup.BACKUP_TARGETS),
+            })
+            return
         script = str(Path(__file__).parent / "backup.py")
         # Suppress Windows console flash for child python (no-op on POSIX).
         # Use pythonw.exe on Windows so the child has no console at all
@@ -1786,8 +1990,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         """Stream a ZIP archive of the entire data/ directory.
 
         Excludes data/backups/ (already point-in-time snapshots, would inflate the
-        archive without adding restore value) and any __pycache__ directories.
-        Filename embeds a UTC timestamp so multiple downloads do not collide.
+        archive without adding restore value), data/receipts/ (binary blobs that
+        belong in the dedicated /api/receipts/export endpoint), and any
+        __pycache__ directories. Filename embeds a UTC timestamp so multiple
+        downloads do not collide.
+
+        Hardening (Sprint 7, H-02):
+          - Single-flight lock: a second call while one export is in flight
+            gets HTTP 429 instead of stacking ZIP builds on the handler pool.
+          - Pre-scan size cap: refuse upfront if the included files would
+            exceed BACKUP_EXPORT_MAX_BYTES, so we never start a ZIP we know
+            would OOM the Pi.
+          - Receipts excluded by default: keeps this endpoint's worst case
+            at the size of all CSV/JSON state, not the receipts library.
 
         Memory profile: ZIP is built into a SpooledTemporaryFile capped at
         16 MB — anything bigger spills to disk on the Pi instead of pinning
@@ -1803,44 +2018,86 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(404, {"error": "data directory not found"})
             return
 
-        spool = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
-        try:
-            with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for path in data_dir.rglob("*"):
-                    if not path.is_file():
-                        continue
-                    rel = path.relative_to(data_dir)
-                    parts = rel.parts
-                    # Skip the rolling backup snapshots and Python cache dirs.
-                    if parts and parts[0] == "backups":
-                        continue
-                    if "__pycache__" in parts:
-                        continue
-                    zf.write(path, arcname=str(rel))
-            spool.seek(0, 2)
-            size = spool.tell()
-            spool.seek(0)
-        except Exception as e:
-            spool.close()
-            self._respond_json(500, {"error": f"ZIP build failed: {e}"})
+        # ── H-02 (Sprint 7) — single-flight gate ────────────────────────
+        # The handler thread is held for the entire ZIP build + stream,
+        # so a parallel call would just queue behind us anyway. Refusing
+        # explicitly gives the client a clean 429 instead of an opaque
+        # multi-minute wait.
+        if not _backup_export_lock.acquire(blocking=False):
+            self._respond_json(429, {
+                "error": "Another backup export is already running. Try again in a moment.",
+            })
             return
 
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
-        filename = f"financeos-backup-{stamp}.zip"
-        self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self._send_cors_origin()
-        self.send_header("Content-Length", str(size))
-        self.end_headers()
         try:
-            while True:
-                chunk = spool.read(65536)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+            def is_excluded(rel: Path) -> bool:
+                parts = rel.parts
+                if not parts:
+                    return False
+                # Rolling local snapshots (would inflate without restore value)
+                # and the dedicated receipts library (separate endpoint).
+                if parts[0] in ("backups", "receipts"):
+                    return True
+                if "__pycache__" in parts:
+                    return True
+                return False
+
+            # ── H-02 — pre-scan size cap ────────────────────────────────
+            # Sum included file sizes before opening the ZIP so we can
+            # bail out cheaply if the export would breach the cap.
+            included: list[Path] = []
+            total_bytes = 0
+            for path in data_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(data_dir)
+                if is_excluded(rel):
+                    continue
+                included.append(path)
+                try:
+                    total_bytes += path.stat().st_size
+                except OSError:
+                    pass
+                if total_bytes > BACKUP_EXPORT_MAX_BYTES:
+                    self._respond_json(413, {
+                        "error": "Backup export would exceed the size cap",
+                        "limit_bytes": BACKUP_EXPORT_MAX_BYTES,
+                        "observed_bytes_at_refusal": total_bytes,
+                    })
+                    return
+
+            spool = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024)
+            try:
+                with zipfile.ZipFile(spool, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for path in included:
+                        rel = path.relative_to(data_dir)
+                        zf.write(path, arcname=str(rel))
+                spool.seek(0, 2)
+                size = spool.tell()
+                spool.seek(0)
+            except Exception as e:
+                spool.close()
+                self._respond_json(500, {"error": f"ZIP build failed: {e}"})
+                return
+
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+            filename = f"financeos-backup-{stamp}.zip"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self._send_cors_origin()
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            try:
+                while True:
+                    chunk = spool.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            finally:
+                spool.close()
         finally:
-            spool.close()
+            _backup_export_lock.release()
 
     # ── API: /api/recon/* ────────────────────────────────────────────
     # Bank-statement reconciliation. Adapters live in
@@ -1874,6 +2131,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         qs = parse_qs(urlparse(self.path).query)
         account = (qs.get("account", ["crdb"]) or ["crdb"])[0]
+        # M-S3 (Sprint 16) — validate the alias against the live accounts
+        # set before resolving an adapter. The adapter factory has its
+        # own fallback path that would happily list files for an alias
+        # nobody had heard of; refusing here keeps the surface tight.
+        try:
+            accounts_known = set(tx_engine.load_accounts().keys())
+        except Exception:
+            accounts_known = set()
+        if accounts_known and account not in accounts_known:
+            self._respond_json(400, {
+                "error": f"unknown account alias: {account}",
+            })
+            return
         adapter = get_adapter_for_account(account)
         files = adapter.list_files(tx_engine.DATA_DIR)
         self._respond_json(200, {
@@ -2109,7 +2379,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         """Stream a per-vehicle fuel-log workbook as .xlsx.
 
         Body: {vehicle_id}. Returns an Excel binary that mirrors the
-        original Vehicle_Fuel.xlsx layout (Cost sheet, Table1, formulas,
+        typical fuel-spreadsheet layout (Cost sheet, Table1, formulas,
         SUBTOTAL totals row) so users can drop the download into the
         spreadsheet workflow they already had before FinanceOS owned the
         fuel data.
@@ -2854,6 +3124,18 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(413, {"error": "file too large (20 MB max)"})
             return
 
+        # M-S2 (Sprint 16) — magic-byte check before handing the blob to
+        # SQLite. Refuses obvious junk (HTML, zip, random text) up front,
+        # avoids the cost of writing → opening → catching an obscure
+        # sqlite3 error. The SQLite file format starts with the literal
+        # bytes "SQLite format 3\x00" per https://sqlite.org/fileformat.html
+        SQLITE_MAGIC = b"SQLite format 3\x00"
+        if not blob.startswith(SQLITE_MAGIC):
+            self._respond_json(400, {
+                "error": "file does not look like a SQLite database (.mmb expected)",
+            })
+            return
+
         tmp_dir = Path(tempfile.gettempdir())
         mmb_path = tmp_dir / f"financeos-setup-{uuid.uuid4().hex}.mmb"
         try:
@@ -3275,9 +3557,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
             self._respond_json(400, {"error": "accent_color must be #rrggbb"})
             return
-        if fx_url and not re.match(r"^https?://", fx_url, re.IGNORECASE):
-            self._respond_json(400, {"error": "fx_dashboard_url must start with http:// or https://"})
-            return
+        if fx_url:
+            if not re.match(r"^https?://", fx_url, re.IGNORECASE):
+                self._respond_json(400, {"error": "fx_dashboard_url must start with http:// or https://"})
+                return
+            # L-S1 (Sprint 23) — refuse URL characters that would break
+            # out of the sidebar link's href attribute or open a
+            # protocol-confusion vector even after the scheme check.
+            # The frontend renders this via escapeHtml so an XSS leak
+            # is already blocked, but defense-in-depth catches obvious
+            # tampering at the API boundary.
+            if any(c in fx_url for c in ('"', "'", "<", ">", "\n", "\r", " ")):
+                self._respond_json(400, {"error": "fx_dashboard_url contains disallowed characters"})
+                return
         target = REPO_ROOT / "config" / "branding.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         # Mirror display_name into display_name_html so the sidebar logo
@@ -3427,10 +3719,16 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                  "only_with_receipts": true}``
 
         Synchronous (single-user app, tempfile-backed so memory stays
-        bounded). For very large exports the request will tie up the
-        handler for ~1 minute per 500 MB — acceptable for now. If that
-        ever becomes painful we can switch to the daemon-thread + job_id
-        pattern used by /api/fx/backfill.
+        bounded).
+
+        Hardening (Sprint 7, H-03):
+          - Single-flight lock: a second call while one export is in flight
+            gets HTTP 429 instead of two ZIPs racing on tempdir + disk.
+          - Pre-scan size cap: walk the matching receipt files first and
+            sum their sizes; refuse upfront if they would exceed
+            RECEIPTS_EXPORT_MAX_BYTES. Without this a date-range that
+            happens to cover years of attached photos would silently
+            balloon the tempfile.
         """
         body = self._read_json_body() or {}
         df = (body.get("date_from") or "").strip()
@@ -3445,63 +3743,129 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         tag = (body.get("tag") or "").strip()
         only_with = bool(body.get("only_with_receipts", True))
 
-        import csv as _csv
-        tx_path = tx_engine.DATA_DIR / "transactions.csv"
-        try:
-            with tx_path.open("r", newline="", encoding="utf-8") as f:
-                tx_rows = list(_csv.DictReader(f))
-        except Exception as exc:
-            req_id = secrets.token_hex(4)
-            print(f"[serve] receipts_export load req={req_id}: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
-            self._respond_json(500, {"error": "load transactions failed", "request_id": req_id})
+        # ── H-03 (Sprint 7) — single-flight gate ────────────────────────
+        if not _receipts_export_lock.acquire(blocking=False):
+            self._respond_json(429, {
+                "error": "Another receipts export is already running. Try again in a moment.",
+            })
             return
 
         try:
-            zip_path, stats = receipts.build_export_zip(
-                tx_rows,
-                date_from=df,
-                date_to=dt,
-                account=account,
-                tag=tag,
-                only_with_receipts=only_with,
-            )
-        except Exception as exc:
-            req_id = secrets.token_hex(4)
-            print(f"[serve] receipts_export build req={req_id}: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
-            self._respond_json(500, {"error": "build_export_zip failed", "request_id": req_id})
-            return
-
-        # Stream the ZIP back chunked so a 500 MB year-export doesn't
-        # have to live in memory twice (once for the ZIP, once for the
-        # response buffer). Always unlink the tempfile in finally so
-        # interrupted downloads don't leak.
-        try:
-            size = zip_path.stat().st_size
-            filename = f"receipts_{df}_{dt}.zip"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Length", str(size))
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            # Surface the counts in headers so the frontend can show a
-            # "Exported 23 TXs, 47 files (5.2 MB)" toast without parsing
-            # the ZIP itself.
-            self.send_header("X-Tx-Count", str(stats["tx_count"]))
-            self.send_header("X-File-Count", str(stats["file_count"]))
-            self._send_cors_origin()
-            self.end_headers()
-            with zip_path.open("rb") as zf:
-                while True:
-                    chunk = zf.read(64 * 1024)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-        finally:
+            import csv as _csv
+            tx_path = tx_engine.DATA_DIR / "transactions.csv"
             try:
-                zip_path.unlink()
-            except OSError:
-                pass
+                with tx_path.open("r", newline="", encoding="utf-8") as f:
+                    tx_rows = list(_csv.DictReader(f))
+            except Exception as exc:
+                req_id = secrets.token_hex(4)
+                print(f"[serve] receipts_export load req={req_id}: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                self._respond_json(500, {"error": "load transactions failed", "request_id": req_id})
+                return
+
+            # ── H-03 — pre-scan source-file bytes ──────────────────────
+            # Walks the same selection logic build_export_zip uses, but
+            # only sums on-disk file sizes. ZIP compression makes the
+            # final archive smaller, so a cap on raw bytes is a strict
+            # upper bound — if we pass this gate the produced ZIP is
+            # always <= cap.
+            try:
+                src_total = self._estimate_receipts_export_bytes(
+                    tx_rows, df, dt, account, tag, only_with,
+                )
+            except Exception as exc:
+                req_id = secrets.token_hex(4)
+                print(f"[serve] receipts_export scan req={req_id}: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                self._respond_json(500, {"error": "pre-scan failed", "request_id": req_id})
+                return
+            if src_total > RECEIPTS_EXPORT_MAX_BYTES:
+                self._respond_json(413, {
+                    "error": "Receipts export would exceed the size cap",
+                    "limit_bytes": RECEIPTS_EXPORT_MAX_BYTES,
+                    "observed_source_bytes": src_total,
+                })
+                return
+
+            try:
+                zip_path, stats = receipts.build_export_zip(
+                    tx_rows,
+                    date_from=df,
+                    date_to=dt,
+                    account=account,
+                    tag=tag,
+                    only_with_receipts=only_with,
+                )
+            except Exception as exc:
+                req_id = secrets.token_hex(4)
+                print(f"[serve] receipts_export build req={req_id}: {type(exc).__name__}: {exc}",
+                      file=sys.stderr)
+                self._respond_json(500, {"error": "build_export_zip failed", "request_id": req_id})
+                return
+
+            # Stream the ZIP back chunked so a 500 MB year-export doesn't
+            # have to live in memory twice (once for the ZIP, once for the
+            # response buffer). Always unlink the tempfile in finally so
+            # interrupted downloads don't leak.
+            try:
+                size = zip_path.stat().st_size
+                filename = f"receipts_{df}_{dt}.zip"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                # Surface the counts in headers so the frontend can show a
+                # "Exported 23 TXs, 47 files (5.2 MB)" toast without parsing
+                # the ZIP itself.
+                self.send_header("X-Tx-Count", str(stats["tx_count"]))
+                self.send_header("X-File-Count", str(stats["file_count"]))
+                self._send_cors_origin()
+                self.end_headers()
+                with zip_path.open("rb") as zf:
+                    while True:
+                        chunk = zf.read(64 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            finally:
+                try:
+                    zip_path.unlink()
+                except OSError:
+                    pass
+        finally:
+            _receipts_export_lock.release()
+
+    def _estimate_receipts_export_bytes(
+        self, tx_rows: list, date_from: str, date_to: str,
+        account: str, tag: str, only_with_receipts: bool,
+    ) -> int:
+        """Sum the on-disk size of receipt files a build_export_zip() call
+        would include, without building anything. Mirrors the filter logic
+        in receipts.build_export_zip — used by handle_receipts_export to
+        enforce RECEIPTS_EXPORT_MAX_BYTES upfront.
+        """
+        total = 0
+        for tx in tx_rows or []:
+            d = (tx.get("date") or "").strip()
+            if not d or d < date_from or d > date_to:
+                continue
+            if account and tx.get("account") != account:
+                continue
+            if tag:
+                tags = [t.strip() for t in (tx.get("tags") or "").split(";") if t.strip()]
+                if tag not in tags:
+                    continue
+            urls = [u.strip() for u in (tx.get("receipt_url") or "").split(";") if u.strip()]
+            if only_with_receipts and not urls:
+                continue
+            for url in urls:
+                src = receipts._safe_url_to_path(url)
+                if src and src.exists():
+                    try:
+                        total += src.stat().st_size
+                    except OSError:
+                        pass
+        return total
 
     def handle_receipts_stats(self):
         """Coverage + storage KPIs for the Settings → Receipts tab.
@@ -3541,10 +3905,27 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
     # ── API: /api/health ──────────────────────────────────────────────
 
     def handle_health(self):
-        """Return server health status: hostname, git info, uptime, Pi check."""
+        """Return server health status: hostname, git info, uptime, Pi check.
+
+        L-P5 (Sprint 24) — endpoint is auth-exempt (PWA findPi() probe
+        + Tailscale monitoring both need it unauthenticated). When the
+        server runs in `auth.mode=basic` AND the caller did not send
+        valid credentials, return a minimal `{"ok": true}` instead of
+        the full info dict. Authenticated callers (dashboard footer,
+        PWA after login) still get app_version, git status, data size,
+        etc. so the existing UI keeps working.
+        """
         import platform
         import subprocess
         from datetime import datetime
+
+        # Minimal payload for unauth callers when auth is required.
+        if auth.is_auth_required():
+            hdr = self.headers.get("Authorization", "")
+            creds = auth._decode_basic(hdr)
+            if not (creds is not None and auth.verify_credentials(*creds)):
+                self._respond_json(200, {"ok": True})
+                return
 
         info = {
             "hostname": platform.node(),
@@ -3970,6 +4351,111 @@ def _run_with_reload(child_argv: list[str]) -> int:
     return 0
 
 
+# H-31 (Sprint 15) — Pi-venv-sync hazard. Parses requirements.txt at
+# boot, walks each non-commented entry, asks importlib.metadata what is
+# actually installed, and prints a [warn] block whenever an installed
+# version doesn't satisfy the requirement (or is missing entirely).
+# Tolerates: blank lines, inline comments (`pkg ... # note`), and the
+# commented-out optional dev deps (watchdog / apscheduler / pytest)
+# which are intentionally absent on production Pi.
+
+_PEP440_SPLIT = _re.compile(r"\s*(>=|<=|==|!=|~=|>|<)\s*")
+
+
+def _parse_requirement_spec(line: str) -> tuple[str, list[tuple[str, str]]] | None:
+    """Return (dist_name, [(op, version), ...]) or None for skip-this-line."""
+    stripped = line.split("#", 1)[0].strip()
+    if not stripped:
+        return None
+    # Crude PEP-508 split: name is everything up to the first comparator.
+    m = _re.match(r"^([A-Za-z0-9_.\-]+)", stripped)
+    if not m:
+        return None
+    name = m.group(1).lower().replace("_", "-")
+    rest = stripped[len(name):].strip()
+    if not rest:
+        return name, []
+    specs: list[tuple[str, str]] = []
+    for part in rest.split(","):
+        sm = _re.match(r"\s*(>=|<=|==|!=|~=|>|<)\s*([0-9A-Za-z.\-+]+)\s*$", part)
+        if not sm:
+            continue
+        specs.append((sm.group(1), sm.group(2)))
+    return name, specs
+
+
+def _version_tuple(v: str) -> tuple:
+    """Loose-but-stable version compare. Handles `12.1.1`, `4.0`, etc."""
+    parts = []
+    for chunk in _re.split(r"[.\-+]", v):
+        try:
+            parts.append((0, int(chunk)))
+        except ValueError:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+def _satisfies(installed: str, specs: list[tuple[str, str]]) -> bool:
+    if not specs:
+        return True
+    iv = _version_tuple(installed)
+    for op, ver in specs:
+        rv = _version_tuple(ver)
+        ok = {
+            ">=": iv >= rv,
+            "<=": iv <= rv,
+            "==": iv == rv,
+            "!=": iv != rv,
+            ">": iv > rv,
+            "<": iv < rv,
+            "~=": iv >= rv and iv[:1] == rv[:1],
+        }.get(op, True)
+        if not ok:
+            return False
+    return True
+
+
+def _check_requirements_drift() -> None:
+    """Compare requirements.txt entries against importlib.metadata. Prints
+    a stderr [warn] block on drift; returns silently when everything is
+    in sync."""
+    from importlib import metadata as _md
+
+    req_path = Path(__file__).parent.parent / "requirements.txt"
+    if not req_path.exists():
+        return
+
+    drift: list[str] = []
+    missing: list[str] = []
+
+    for raw in req_path.read_text(encoding="utf-8").splitlines():
+        parsed = _parse_requirement_spec(raw)
+        if not parsed:
+            continue
+        name, specs = parsed
+        try:
+            installed = _md.version(name)
+        except _md.PackageNotFoundError:
+            missing.append(f"{name} (spec: {raw.strip()})")
+            continue
+        if not _satisfies(installed, specs):
+            spec_str = ",".join(f"{op}{v}" for op, v in specs)
+            drift.append(f"{name}: installed {installed} does not satisfy {spec_str}")
+
+    if not drift and not missing:
+        return
+    print(
+        "[warn] requirements.txt drift detected — likely a deploy that "
+        "bumped the file without re-running `pip install -r requirements.txt` "
+        "in the active venv:",
+        file=sys.stderr,
+    )
+    for line in drift:
+        print(f"  - {line}", file=sys.stderr)
+    for line in missing:
+        print(f"  - MISSING: {line}", file=sys.stderr)
+
+
 def main() -> int:
     """Parse CLI args and start the HTTP server.
 
@@ -4014,6 +4500,62 @@ def main() -> int:
 
     if not args.no_open:
         open_browser(url)
+
+    # M-B6 (Sprint 17) — invariant check: every type=pass_through account
+    # must declare a non-empty pass_through_payee. Without it,
+    # generate_pass_through_line silently returns None for expenses on
+    # the account and the auto-reimbursement disappears. Warn-only at
+    # boot so the operator can fix in Settings → Accounts; never fail
+    # boot here either.
+    try:
+        for _alias, _acc in tx_engine.load_accounts().items():
+            if (_acc.get("type") or "").strip() == "pass_through":
+                if not (_acc.get("pass_through_payee") or "").strip():
+                    print(
+                        f"[warn] account '{_alias}' is type=pass_through but has empty "
+                        f"pass_through_payee — its auto-reimbursement counter-entries "
+                        f"will be skipped silently. Set the field in Settings → Accounts.",
+                        file=sys.stderr,
+                    )
+    except Exception as exc:  # noqa: BLE001 — never break boot
+        print(f"[warn] pass_through_payee invariant check failed: {exc}", file=sys.stderr)
+
+    # H-31 (Sprint 15) — venv drift check. The Pi has burned once on a
+    # silent ImportError (bcrypt) after a deploy that bumped
+    # requirements.txt but didn't `pip install -r` in the active venv.
+    # We don't fail boot here (broken deps still let the user reach a
+    # Settings UI to fix the venv); we just print a stderr [warn] block
+    # listing every requirement whose installed version doesn't satisfy
+    # the spec, and every required dist that isn't installed at all.
+    try:
+        _check_requirements_drift()
+    except Exception as exc:  # noqa: BLE001 — never break boot
+        print(f"[warn] requirements drift check failed: {exc}", file=sys.stderr)
+
+    # H-29 (Sprint 11) — validate the on-disk auto_tag config at boot so
+    # a typo from a hand-edit of defaults.json surfaces in the server
+    # log instead of silently turning into a no-op auto-tag rule. We
+    # only warn (never fail boot) because a broken auto_tag block must
+    # not prevent the user from reaching the Settings UI to fix it.
+    try:
+        import config_loader as _cfg_loader_mod
+        _at_errors = _cfg_loader_mod.validate_auto_tag_config(
+            _cfg_loader_mod.get_default("auto_tag", {}) or {}
+        )
+        if _at_errors:
+            print(
+                f"[warn] config/defaults.json:auto_tag has {len(_at_errors)} validation issue(s):",
+                file=sys.stderr,
+            )
+            for err in _at_errors:
+                print(f"  - {err}", file=sys.stderr)
+            print(
+                "[warn] Auto-tag rules with invalid keys/shape will be skipped at runtime. "
+                "Fix in Settings → Auto-Tags or edit config/defaults.json directly.",
+                file=sys.stderr,
+            )
+    except Exception as exc:  # noqa: BLE001 — must never break boot
+        print(f"[warn] auto-tag validation failed: {exc}", file=sys.stderr)
 
     # Built-in scheduler — replaces host-cron wiring on Docker / Synology /
     # Unraid setups. Bare-metal Pi falls back to host crontab unless the
