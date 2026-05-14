@@ -71,19 +71,34 @@ def check_orphaned_pass_through(transactions: list[dict], accounts: dict) -> lis
     one expense (the actual spend) and one income (the reimbursement).
     An orphaned expense means the counter-entry was somehow missed.
 
-    Matching is done by (date, account, normalized_amount) — the same
-    criteria used when generating counter-entries in tx_engine.
+    Matching rules:
+      * Expenses sharing the same (date, account, receipt_group) are aggregated
+        into one group before matching — split receipts get a single
+        reimbursement booking for the total, not one per split line.
+      * Same-day transfer-outs from the pass-through account are folded into
+        the group for that date too. A salary booking plus a same-day savings
+        transfer is reimbursed as one combined amount, not two.
+      * The match is found if an income row on the same pass-through account
+        exists with the aggregated amount and a date within ±14 days of the
+        expense date. The wider tolerance covers sammelausgleich-style
+        reimbursements that are booked a few days after the actual spend.
     """
+    from datetime import date as _dt_date
+
     issues = []
 
-    # Identify which accounts are pass-through type
     pt_accounts = {alias for alias, info in accounts.items() if info.get("pass_through_payee")}
     if not pt_accounts:
         return issues
 
-    # Build lookup sets: expenses to verify, incomes as proof of counter-entry
-    expenses = []
-    incomes = set()
+    TOLERANCE_DAYS = 14
+
+    # Collect pass-through rows. Expenses are bucketed by receipt_group (or
+    # one bucket per row if no split); transfer-outs are tracked per day so
+    # they can be folded into the matching as a fallback.
+    expense_buckets: dict[tuple[str, str, str], dict] = {}
+    transfers_by_day: dict[tuple[str, str], list[tuple[float, str]]] = {}
+    incomes_by_key: dict[tuple[str, str], set[str]] = {}
 
     for tx in transactions:
         account = tx.get("account", "")
@@ -91,42 +106,73 @@ def check_orphaned_pass_through(transactions: list[dict], accounts: dict) -> lis
             continue
         tx_type = tx.get("type", "")
         try:
-            # Normalize amount to 2 decimals for reliable matching
-            amount = f"{float(tx.get('amount', 0)):.2f}"
+            amount = float(tx.get("amount", 0))
         except (ValueError, TypeError):
             continue
-        key = (tx.get("date", ""), account, amount)
+        dt = tx.get("date", "")
+        import_id = tx.get("import_id", "")
 
         if tx_type == "expense":
-            expenses.append((key, tx.get("import_id", "")))
-        elif tx_type == "income":
-            incomes.add(key)
-
-    # Flag expenses that have no matching income counter-entry. Allow a
-    # ±1 day tolerance on the date so a manual edit that shifts the
-    # expense or its auto-generated counter-entry by one day (common
-    # when the user back-dates a posting) doesn't show up as orphaned.
-    from datetime import date as _dt_date, timedelta as _dt_td
-
-    def _shift_iso(iso_date: str, delta_days: int) -> str:
-        try:
-            d = _dt_date.fromisoformat(iso_date)
-        except (TypeError, ValueError):
-            return iso_date
-        return (d + _dt_td(days=delta_days)).isoformat()
-
-    for key, import_id in expenses:
-        dt, acct, amt = key
-        candidates = (
-            (dt, acct, amt),
-            (_shift_iso(dt, -1), acct, amt),
-            (_shift_iso(dt, 1), acct, amt),
-        )
-        if any(c in incomes for c in candidates):
-            continue
-        issues.append(
-            f"Orphaned pass-through expense: {dt} | {acct} | {amt} | import_id={import_id}"
+            receipt_group = (tx.get("receipt_group") or "").strip()
+            bucket_key = (
+                dt,
+                account,
+                receipt_group if receipt_group else f"__solo__{import_id}",
             )
+            bucket = expense_buckets.setdefault(bucket_key, {"amount": 0.0, "import_ids": []})
+            bucket["amount"] += amount
+            bucket["import_ids"].append(import_id)
+        elif tx_type == "transfer":
+            transfers_by_day.setdefault((dt, account), []).append((amount, import_id))
+        elif tx_type == "income":
+            incomes_by_key.setdefault((account, f"{amount:.2f}"), set()).add(dt)
+
+    def _within_tolerance(target_iso: str, candidate_dates: set[str]) -> bool:
+        try:
+            target = _dt_date.fromisoformat(target_iso)
+        except (TypeError, ValueError):
+            return False
+        for candidate in candidate_dates:
+            try:
+                c = _dt_date.fromisoformat(candidate)
+            except (TypeError, ValueError):
+                continue
+            if abs((c - target).days) <= TOLERANCE_DAYS:
+                return True
+        return False
+
+    # Stage 1 — direct match: expense (or split-aggregated bucket) amount
+    # equals an income on the same account within ±TOLERANCE_DAYS.
+    # Stage 2 — same-day bundle: if a bucket is unmatched and there are
+    # transfer-outs on the same account on the same date, try bundling
+    # bucket-amount + any combination of those transfer-outs against an
+    # income amount. Salary + same-day savings transfer pattern.
+    for (dt, account, _gid), info in expense_buckets.items():
+        income_dates = incomes_by_key.get((account, f"{info['amount']:.2f}"), set())
+        if _within_tolerance(dt, income_dates):
+            continue
+
+        bundled = False
+        same_day_transfers = transfers_by_day.get((dt, account), [])
+        if same_day_transfers:
+            # Brute-force subset sum over same-day transfer-outs (typically 1–2).
+            n = len(same_day_transfers)
+            for mask in range(1, 1 << n):
+                extra = 0.0
+                for i in range(n):
+                    if mask & (1 << i):
+                        extra += same_day_transfers[i][0]
+                combined = f"{info['amount'] + extra:.2f}"
+                if _within_tolerance(dt, incomes_by_key.get((account, combined), set())):
+                    bundled = True
+                    break
+        if bundled:
+            continue
+
+        ids = ", ".join(info["import_ids"])
+        issues.append(
+            f"Orphaned pass-through expense: {dt} | {account} | {info['amount']:.2f} | import_id={ids}"
+        )
 
     return issues
 

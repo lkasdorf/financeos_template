@@ -432,7 +432,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         except OSError:
             return False
 
-        rewritten = _inject_cache_bust(html, setup_core.WIZARD_VERSION).encode("utf-8")
+        # Cache-bust marker — use the footer app_version so every footer
+        # bump invalidates the browser's 1h static-asset cache. The
+        # previous marker (setup_core.WIZARD_VERSION) only changed on
+        # major releases, which left PWA app.js stuck in browsers'
+        # caches across our normal vYYYY-MM-DD.N footer ticks. Falls
+        # back to WIZARD_VERSION when the footer can't be parsed.
+        app_ver = _read_app_version()
+        bust_marker = setup_core.WIZARD_VERSION if app_ver == "unknown" else app_ver
+        rewritten = _inject_cache_bust(html, bust_marker).encode("utf-8")
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -2891,10 +2899,16 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         """Create a LUKU log entry + linked expense (+ reimburse) TX.
 
         Body: {date, property_id, units_kwh, total_price, account?,
-        meter?, note?}. Mirrors the TX-luku free-text flow but with a
-        structured form payload from the Add-LUKU modal.
+        meter?, meter_reading_kwh?, note?}. Mirrors the TX-luku free-text
+        flow but with a structured form payload from the Add-LUKU modal.
         """
         body = self._read_json_body()
+        # meter_reading_kwh may arrive as a JSON number or a stringified
+        # input value depending on the client (Dashboard uses FormData,
+        # PWA uses JSON). utilities.add_luku_entry normalises both.
+        reading_raw = body.get("meter_reading_kwh", "")
+        if isinstance(reading_raw, str):
+            reading_raw = reading_raw.strip()
         try:
             result = utilities.add_luku_entry(
                 date=body["date"],
@@ -2903,6 +2917,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 total_price=float(body["total_price"]),
                 account=(body.get("account") or "").strip() or None,
                 meter=body.get("meter", "").strip(),
+                meter_reading_kwh=reading_raw,
                 note=body.get("note", "").strip(),
             )
         except (KeyError, ValueError) as exc:

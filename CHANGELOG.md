@@ -18,6 +18,42 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.7.1-rc.1] - 2026-05-14
+
+Patch release on top of `v1.7.0`. Three backend fixes — no schema or
+config changes, drop-in for existing installations.
+
+### Fixed
+
+- **Integrity check (`scripts/cron_integrity.py`) reported false-positive
+  orphans on pass-through accounts.** The reimbursement matcher
+  compared each expense line individually against income lines with a
+  ±1-day tolerance, which broke for three legitimate booking patterns:
+  receipt splits that share a single aggregated reimbursement,
+  reimbursements booked several days after the spend, and same-day
+  salary + savings transfer pairs that are reimbursed together. The
+  matcher now runs in two stages: (1) aggregate expenses per
+  `(date, account, receipt_group_or_solo)` and match against income
+  amounts on the same account within ±14 days; (2) for any remaining
+  unmatched bucket, run a subset-sum over same-day transfer-outs as a
+  fallback. Closes the bulk of stale orphan warnings without weakening
+  the check — genuine orphans still surface.
+- **HTML cache-bust marker stayed stale across normal version bumps.**
+  `_serve_html_with_cache_bust()` appended `?v=<WIZARD_VERSION>` to
+  every JS/CSS reference, but `WIZARD_VERSION` only moves on major
+  releases. Between point releases the marker stayed identical, which
+  meant the browser's 1-hour static-asset cache never invalidated and
+  users saw stale `app.js` / dashboard bundles long after a deploy.
+  The marker now uses the footer's `app_version` (parsed from
+  `dashboard/index.html` via `_read_app_version()`) and falls back to
+  `WIZARD_VERSION` only when the footer can't be parsed.
+- **`meter_reading_kwh` was silently dropped from new LUKU entries.**
+  `serve.py:handle_luku_add` accepted the field in the request body
+  but never passed it through to `utilities.add_luku_entry`, so the
+  column stayed empty in `data/luku_log.csv` regardless of what the
+  user typed. The endpoint now forwards the value with string/number
+  normalisation so both form-encoded and JSON callers behave the same.
+
 ## [1.7.0] - 2026-05-13
 
 Promoted from `v1.7.0-rc.1` after end-of-day verification on the
