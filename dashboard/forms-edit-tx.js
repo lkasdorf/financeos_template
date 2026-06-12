@@ -60,10 +60,11 @@ function renderEditModal(tx, ctx, currentSubId = '') {
     const matching = ctx.categories.filter(c => c.active && (!wanted || c.type === wanted));
     const matchingPaths = new Set(matching.map(c => c.path));
     let html = matching.map(c =>
-      `<option value="${c.path}" ${savedPath === c.path ? 'selected' : ''}>${c.path}</option>`
+      `<option value="${escapeHtml(c.path)}" ${savedPath === c.path ? 'selected' : ''}>${escapeHtml(c.path)}</option>`
     ).join('');
     if (savedPath && !matchingPaths.has(savedPath)) {
-      html = `<option value="${savedPath}" selected>${t('editx.type_mismatch', { path: savedPath }, `&#9888; ${savedPath} (type mismatch)`)}</option>` + html;
+      const safePath = escapeHtml(savedPath);
+      html = `<option value="${safePath}" selected>${t('editx.type_mismatch', { path: safePath }, `&#9888; ${safePath} (type mismatch)`)}</option>` + html;
     }
     return html;
   }
@@ -136,7 +137,7 @@ function renderEditModal(tx, ctx, currentSubId = '') {
           <label>${t('common.col.tags', {}, 'Tags')}</label>
           <div id="edit-tags" class="tag-picker">
             ${(ctx.tags || []).filter(tag => tag.active).map(tag =>
-              `<label><input type="checkbox" value="${tag.tag}" ${(tx.tags || '').split(';').includes(tag.tag) ? 'checked' : ''}><span>${tag.tag}</span></label>`
+              `<label><input type="checkbox" value="${escapeHtml(tag.tag)}" ${(tx.tags || '').split(';').includes(tag.tag) ? 'checked' : ''}><span>${escapeHtml(tag.tag)}</span></label>`
             ).join('')}
           </div>
         </div>
@@ -472,7 +473,7 @@ async function saveTxEdit(importId) {
     }
     closeModal();
     // Reload data
-    boot();
+    refreshData();
   } catch (e) {
     statusEl.innerHTML = `<div class="atx-status error">${t('common.save_failed', { msg: escapeHtml(e.message) }, `Save failed: ${escapeHtml(e.message)}`)}</div>`;
   }
@@ -527,7 +528,7 @@ async function deleteTx(importId) {
       return;
     }
     closeModal();
-    await boot();
+    await refreshData();
     hideBusyOverlay();
   } catch (e) {
     hideBusyOverlay();

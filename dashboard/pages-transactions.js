@@ -152,19 +152,22 @@ function renderTransactionsPage() {
       ? `<button type="button" class="tx-receipt-icon" data-action="showTxReceipts" data-arg1="${escapeHtml(tx.import_id)}" title="${escapeHtml(t('receipts.tx_list.icon_alt', { n: receiptUrls.length }, `${receiptUrls.length} attachment${receiptUrls.length === 1 ? '' : 's'}`))}">📎</button>`
       : '';
     const fxTitle = t('tx.fx_converted_title', { date: tx.date }, `Converted using FX rate on ${tx.date} (fallback: month rate)`);
+    // td-* classes drive the mobile card-layout rules in styles.css —
+    // the same <tr> reshuffles into a grid on phones via `display: grid`
+    // + `grid-template-areas`. Don't rename without updating the CSS.
     return `
       <tr class="${isChecked ? 'row-selected' : ''}">
         <td class="td-chk"><input type="checkbox" class="tx-select" data-id="${escapeHtml(tx.import_id)}" ${isChecked ? 'checked' : ''}></td>
-        <td>${fmtDate(tx.date)}</td>
-        <td>${escapeHtml(tx.account)}</td>
-        <td class="fs-10 c-mut2">${tx.type}</td>
-        <td>${payeeLabel}${receiptIcon}${note}</td>
-        <td class="cat">${catOrType}</td>
-        <td>${tags}</td>
-        <td class="amt ${typeClass}">${formatCurrency(tx.amount, tx.currency)}</td>
-        <td class="hint-sm">${tx.currency}</td>
-        <td class="amt c-mut2" title="${escapeHtml(fxTitle)}">${tx.currency === 'EUR' ? '' : formatCurrency(convertToEur(tx.amount, tx.currency, tx.date), 'EUR') + ' €'}</td>
-        <td class="tx-actions">${receiptUrls.length ? `<button class="tx-edit-btn icon-btn" data-action="showTxReceipts" data-arg1="${escapeHtml(tx.import_id)}" title="${escapeHtml(t('receipts.tx_list.btn_title', {}, 'Show attachments'))}" aria-label="${escapeHtml(t('receipts.tx_list.btn_title', {}, 'Show attachments'))}">📎</button>` : ''}<button class="tx-edit-btn icon-btn" data-import-id="${escapeHtml(tx.import_id)}" title="${editLabel}" aria-label="${editLabel}">✎</button><button class="tx-edit-btn icon-btn" data-duplicate-id="${escapeHtml(tx.import_id)}" title="${duplicateLabel}" aria-label="${duplicateLabel}">⧉</button><button class="tx-edit-btn icon-btn btn-delete-sm" data-delete-id="${escapeHtml(tx.import_id)}" title="${deleteLabel}" aria-label="${deleteLabel}">✕</button></td>
+        <td class="td-date">${fmtDate(tx.date)}</td>
+        <td class="td-account">${escapeHtml(tx.account)}</td>
+        <td class="td-type fs-10 c-mut2">${tx.type}</td>
+        <td class="td-payee">${payeeLabel}${receiptIcon}${note}</td>
+        <td class="td-cat cat">${catOrType}</td>
+        <td class="td-tags">${tags}</td>
+        <td class="td-amount amt ${typeClass}">${formatCurrency(tx.amount, tx.currency)}</td>
+        <td class="td-ccy hint-sm">${tx.currency}</td>
+        <td class="td-eur amt c-mut2" title="${escapeHtml(fxTitle)}">${tx.currency === 'EUR' ? '' : formatCurrency(convertToEur(tx.amount, tx.currency, tx.date), 'EUR') + ' €'}</td>
+        <td class="td-actions tx-actions">${receiptUrls.length ? `<button class="tx-edit-btn icon-btn" data-action="showTxReceipts" data-arg1="${escapeHtml(tx.import_id)}" title="${escapeHtml(t('receipts.tx_list.btn_title', {}, 'Show attachments'))}" aria-label="${escapeHtml(t('receipts.tx_list.btn_title', {}, 'Show attachments'))}">📎</button>` : ''}<button class="tx-edit-btn icon-btn" data-import-id="${escapeHtml(tx.import_id)}" title="${editLabel}" aria-label="${editLabel}">✎</button><button class="tx-edit-btn icon-btn" data-duplicate-id="${escapeHtml(tx.import_id)}" title="${duplicateLabel}" aria-label="${duplicateLabel}">⧉</button><button class="tx-edit-btn icon-btn btn-delete-sm" data-delete-id="${escapeHtml(tx.import_id)}" title="${deleteLabel}" aria-label="${deleteLabel}">✕</button></td>
       </tr>
     `;
   }).join('');
@@ -185,15 +188,15 @@ function renderTransactionsPage() {
       <label>${t('tx.filter.account', {}, 'Account')}</label>
       <select id="txp-account">
         <option value="">${t('tx.filter.all', {}, 'All')}</option>
-        ${accounts.map(a => `<option value="${a}" ${txPage.filterAccount === a ? 'selected' : ''}>${a}</option>`).join('')}
+        ${accounts.map(a => `<option value="${escapeHtml(a)}" ${txPage.filterAccount === a ? 'selected' : ''}>${escapeHtml(a)}</option>`).join('')}
       </select>
       <label>${t('tx.filter.category', {}, 'Category')}</label>
       <select id="txp-category">
         <option value="">${t('tx.filter.all', {}, 'All')}</option>
         ${topCats.map(top => {
           const subs = allCats.filter(c => c === top || c.startsWith(top + ':'));
-          const topOpt = `<option value="${top}" ${txPage.filterCategory === top ? 'selected' : ''}>${t('tx.filter.category_all_suffix', { name: top }, `${top} (all)`)}</option>`;
-          const subOpts = subs.filter(c => c !== top).map(c => `<option value="${c}" ${txPage.filterCategory === c ? 'selected' : ''}>&nbsp;&nbsp;— ${c}</option>`).join('');
+          const topOpt = `<option value="${escapeHtml(top)}" ${txPage.filterCategory === top ? 'selected' : ''}>${t('tx.filter.category_all_suffix', { name: escapeHtml(top) }, `${escapeHtml(top)} (all)`)}</option>`;
+          const subOpts = subs.filter(c => c !== top).map(c => `<option value="${escapeHtml(c)}" ${txPage.filterCategory === c ? 'selected' : ''}>&nbsp;&nbsp;— ${escapeHtml(c)}</option>`).join('');
           return topOpt + subOpts;
         }).join('')}
       </select>
@@ -240,6 +243,17 @@ function renderTransactionsPage() {
     <div class="bulk-bar">
       <span class="bulk-count">${t('txp.bulk_count', { n: txPage.selected.size }, `${txPage.selected.size} selected`)}</span>
       <button id="bulk-tag" class="bulk-btn">${t('txp.bulk_tag', {}, 'Tag')}</button>
+      <div class="bulk-edit-wrap" style="position:relative;display:inline-block;">
+        <button id="bulk-edit" class="bulk-btn">${t('txp.bulk_edit', {}, 'Edit')} <span style="font-size:9px;">▾</span></button>
+        <div id="bulk-edit-menu" class="bulk-edit-menu" hidden>
+          <button data-bulk-op="property" class="bulk-edit-item">${t('txp.bulk_op.property', {}, 'Set Property…')}</button>
+          <button data-bulk-op="property-remove" class="bulk-edit-item">${t('txp.bulk_op.property_remove', {}, 'Remove Property…')}</button>
+          <button data-bulk-op="subscription" class="bulk-edit-item">${t('txp.bulk_op.subscription', {}, 'Link Subscription…')}</button>
+          <button data-bulk-op="subscription-unlink" class="bulk-edit-item">${t('txp.bulk_op.subscription_unlink', {}, 'Unlink Subscription')}</button>
+          <button data-bulk-op="payee" class="bulk-edit-item">${t('txp.bulk_op.payee', {}, 'Change Payee…')}</button>
+          <button data-bulk-op="account" class="bulk-edit-item">${t('txp.bulk_op.account', {}, 'Move to Account…')}</button>
+        </div>
+      </div>
       <button id="bulk-delete" class="bulk-btn bulk-btn-danger">${t('txp.bulk_delete', {}, 'Delete')}</button>
       <button id="bulk-clear" class="bulk-btn">${t('txp.bulk_clear', {}, 'Deselect All')}</button>
     </div>` : ''}
@@ -384,6 +398,41 @@ function renderTransactionsPage() {
         openBulkTagModal();
         return;
       }
+      // Bulk edit dropdown — toggles a small menu under the button.
+      // The menu is dismissed on outside-click via a one-shot listener
+      // installed when the menu opens, so we don't leak handlers.
+      if (e.target.closest('#bulk-edit')) {
+        const menu = contentEl.querySelector('#bulk-edit-menu');
+        if (menu) {
+          const wasHidden = menu.hidden;
+          menu.hidden = !wasHidden;
+          if (wasHidden) {
+            const dismiss = (ev) => {
+              if (!ev.target.closest('.bulk-edit-wrap')) {
+                menu.hidden = true;
+                document.removeEventListener('click', dismiss, true);
+              }
+            };
+            // Defer so this same click doesn't immediately dismiss us.
+            setTimeout(() => document.addEventListener('click', dismiss, true), 0);
+          }
+        }
+        return;
+      }
+      // Bulk edit menu items
+      const opBtn = e.target.closest('[data-bulk-op]');
+      if (opBtn) {
+        const menu = contentEl.querySelector('#bulk-edit-menu');
+        if (menu) menu.hidden = true;
+        const op = opBtn.dataset.bulkOp;
+        if (op === 'property') openBulkPropertyModal();
+        else if (op === 'property-remove') openBulkPropertyRemoveModal();
+        else if (op === 'subscription') openBulkSubscriptionModal();
+        else if (op === 'subscription-unlink') openBulkSubscriptionUnlinkModal();
+        else if (op === 'payee') openBulkPayeeModal();
+        else if (op === 'account') openBulkAccountModal();
+        return;
+      }
       // Bulk clear selection
       if (e.target.id === 'bulk-clear') {
         txPage.selected.clear();
@@ -486,9 +535,20 @@ function updateSelectionUI(contentEl) {
     }
     bar.innerHTML = `
       <span class="bulk-count">${count} selected</span>
-      <button id="bulk-tag" class="bulk-btn">Tag</button>
-      <button id="bulk-delete" class="bulk-btn bulk-btn-danger">Delete</button>
-      <button id="bulk-clear" class="bulk-btn">Deselect All</button>
+      <button id="bulk-tag" class="bulk-btn">${t('txp.bulk_tag', {}, 'Tag')}</button>
+      <div class="bulk-edit-wrap" style="position:relative;display:inline-block;">
+        <button id="bulk-edit" class="bulk-btn">${t('txp.bulk_edit', {}, 'Edit')} <span style="font-size:9px;">▾</span></button>
+        <div id="bulk-edit-menu" class="bulk-edit-menu" hidden>
+          <button data-bulk-op="property" class="bulk-edit-item">${t('txp.bulk_op.property', {}, 'Set Property…')}</button>
+          <button data-bulk-op="property-remove" class="bulk-edit-item">${t('txp.bulk_op.property_remove', {}, 'Remove Property…')}</button>
+          <button data-bulk-op="subscription" class="bulk-edit-item">${t('txp.bulk_op.subscription', {}, 'Link Subscription…')}</button>
+          <button data-bulk-op="subscription-unlink" class="bulk-edit-item">${t('txp.bulk_op.subscription_unlink', {}, 'Unlink Subscription')}</button>
+          <button data-bulk-op="payee" class="bulk-edit-item">${t('txp.bulk_op.payee', {}, 'Change Payee…')}</button>
+          <button data-bulk-op="account" class="bulk-edit-item">${t('txp.bulk_op.account', {}, 'Move to Account…')}</button>
+        </div>
+      </div>
+      <button id="bulk-delete" class="bulk-btn bulk-btn-danger">${t('txp.bulk_delete', {}, 'Delete')}</button>
+      <button id="bulk-clear" class="bulk-btn">${t('txp.bulk_clear', {}, 'Deselect All')}</button>
     `;
   } else if (bar) {
     bar.remove();
@@ -508,7 +568,7 @@ async function bulkDeleteSelected() {
     const data = await res.json();
     if (data.error) { uiAlert(t('pages.txbulk.err.delete_failed', { err: data.error }, `Bulk delete failed: ${data.error}`)); return; }
     txPage.selected.clear();
-    boot();
+    refreshData();
   } catch (e) {
     uiAlert(t('pages.txbulk.err.delete_failed', { err: e.message }, `Bulk delete failed: ${e.message}`));
   }
@@ -560,7 +620,7 @@ function openBulkTagModal() {
       if (data.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`; return; }
       overlay.remove();
       txPage.selected.clear();
-      boot();
+      refreshData();
     } catch (e) {
       statusEl.innerHTML = `<div class="atx-status error">${t('pages.txbulk.err.apply_failed', { err: escapeHtml(e.message) }, `Failed: ${escapeHtml(e.message)}`)}</div>`;
     }
@@ -568,6 +628,297 @@ function openBulkTagModal() {
 
   const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
   document.addEventListener('keydown', handler);
+}
+
+// ── Bulk Edit modals (v2026-05-15.5) ────────────────────────────────────
+// Shared helper: build a centered modal shell. Returns the overlay + the
+// inner .modal element so each modal can drop its own body into it without
+// recopying the open/escape/click-out plumbing.
+function _bulkModalShell({ title, bodyHtml, applyLabel }) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px;">
+      <h3>${title}</h3>
+      <p class="fs-12 c-mut" style="margin:8px 0 16px;">${txPage.selected.size} transactions selected</p>
+      ${bodyHtml}
+      <div id="bulk-modal-status"></div>
+      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
+        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
+        <button class="bulk-modal-apply" style="background:var(--accent);color:var(--bg);">${applyLabel}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const esc = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', esc); } };
+  document.addEventListener('keydown', esc);
+  return overlay;
+}
+
+function _setBulkStatus(overlay, kind, msg) {
+  const el = overlay.querySelector('#bulk-modal-status');
+  if (!el) return;
+  if (!kind) { el.innerHTML = ''; return; }
+  const html = kind === 'busy'
+    ? `<div class="atx-status warning"><span class="atx-spinner"></span>${msg}</div>`
+    : `<div class="atx-status ${kind === 'success' ? 'success' : 'error'}">${msg}</div>`;
+  el.innerHTML = html;
+}
+
+function openBulkPropertyModal() {
+  // Property assignment = adding the property's cost_tag
+  // via the existing /api/tx/batch-tag endpoint. Same convention as the
+  // Add-TX Property-Picker — property_id stays out of transactions.csv;
+  // only the resolved tag lands on the row, so the cost-of-living report
+  // picks it up via the standard tag filter.
+  fetch('/api/properties/list', { method: 'POST' })
+    .then(r => r.ok ? r.json() : { properties: [] })
+    .then(data => {
+      const rows = (data.properties || []).filter(p => p.active !== false);
+      const opts = rows.length
+        ? rows.map(p => `<option value="${escapeHtml(p.cost_tag || '')}" data-name="${escapeHtml(p.name || p.property_id)}">${escapeHtml(p.name || p.property_id)}${p.cost_tag ? ` (${escapeHtml(p.cost_tag)})` : ''}</option>`).join('')
+        : `<option value="">${escapeHtml(t('txp.bulk_op.property_empty', {}, 'No active properties'))}</option>`;
+      const overlay = _bulkModalShell({
+        title: `${t('txp.bulk_op.property_title', {}, 'Set Property')}`,
+        bodyHtml: `
+          <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.property_label', {}, 'Property')}</label>
+          <select id="bulk-prop-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+          <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.property_hint', {}, "Adds the property's cost_tag to every selected transaction.")}</p>`,
+        applyLabel: t('common.actions.apply', {}, 'Apply'),
+      });
+      overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
+        const tag = overlay.querySelector('#bulk-prop-select').value;
+        if (!tag) { _setBulkStatus(overlay, 'error', t('txp.bulk_op.property_empty', {}, 'No active properties')); return; }
+        _setBulkStatus(overlay, 'busy', t('pages.txbulk.spinner.applying', {}, 'Applying...'));
+        try {
+          const res = await fetch('/api/tx/batch-tag', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ import_ids: [...txPage.selected], add_tags: [tag], remove_tags: [] }),
+          });
+          const out = await res.json();
+          if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
+          overlay.remove();
+          txPage.selected.clear();
+          refreshData();
+        } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
+      });
+    })
+    .catch(e => uiAlert(t('txp.bulk_op.property_load_failed', { err: e.message }, `Could not load properties: ${e.message}`)));
+}
+
+function openBulkPropertyRemoveModal() {
+  // Reverse of openBulkPropertyModal. Lets the user pick a property and
+  // strips that property's cost_tag from every selected TX via the same
+  // /api/tx/batch-tag endpoint (remove_tags). "All properties" sends
+  // every active cost_tag at once so a single click clears any property
+  // assignment regardless of which one was set.
+  fetch('/api/properties/list', { method: 'POST' })
+    .then(r => r.ok ? r.json() : { properties: [] })
+    .then(data => {
+      const rows = (data.properties || []).filter(p => p.active !== false && p.cost_tag);
+      const allTags = rows.map(p => p.cost_tag).join(',');
+      const allLabel = t('txp.bulk_op.property_remove_all', {}, 'All properties');
+      const opts = rows.length
+        ? `<option value="${escapeHtml(allTags)}">${escapeHtml(allLabel)}</option>`
+          + rows.map(p => `<option value="${escapeHtml(p.cost_tag)}">${escapeHtml(p.name || p.property_id)} (${escapeHtml(p.cost_tag)})</option>`).join('')
+        : `<option value="">${escapeHtml(t('txp.bulk_op.property_empty', {}, 'No active properties'))}</option>`;
+      const overlay = _bulkModalShell({
+        title: `${t('txp.bulk_op.property_remove_title', {}, 'Remove Property')}`,
+        bodyHtml: `
+          <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.property_remove_label', {}, 'Property to remove')}</label>
+          <select id="bulk-prop-remove-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+          <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.property_remove_hint', {}, "Strips the property's cost_tag from every selected transaction. Other tags are untouched.")}</p>`,
+        applyLabel: t('common.actions.apply', {}, 'Apply'),
+      });
+      overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
+        const raw = overlay.querySelector('#bulk-prop-remove-select').value;
+        if (!raw) { _setBulkStatus(overlay, 'error', t('txp.bulk_op.property_empty', {}, 'No active properties')); return; }
+        const tags = raw.split(',').map(s => s.trim()).filter(Boolean);
+        _setBulkStatus(overlay, 'busy', t('pages.txbulk.spinner.applying', {}, 'Applying...'));
+        try {
+          const res = await fetch('/api/tx/batch-tag', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ import_ids: [...txPage.selected], add_tags: [], remove_tags: tags }),
+          });
+          const out = await res.json();
+          if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
+          overlay.remove();
+          txPage.selected.clear();
+          refreshData();
+        } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
+      });
+    })
+    .catch(e => uiAlert(t('txp.bulk_op.property_load_failed', { err: e.message }, `Could not load properties: ${e.message}`)));
+}
+
+function openBulkSubscriptionModal() {
+  fetch('/api/subscriptions/active_for_picker', { method: 'POST' })
+    .then(r => r.ok ? r.json() : { subscriptions: [] })
+    .then(data => {
+      const subs = data.subscriptions || [];
+      const opts = subs.length
+        ? subs.map(s => {
+            const label = s.group ? `${s.group} · ${s.name}` : s.name;
+            return `<option value="${escapeHtml(s.subscription_id)}">${escapeHtml(label)}</option>`;
+          }).join('')
+        : `<option value="">${escapeHtml(t('txp.bulk_op.subscription_empty', {}, 'No active subscriptions'))}</option>`;
+      const overlay = _bulkModalShell({
+        title: `${t('txp.bulk_op.subscription_title', {}, 'Link Subscription')}`,
+        bodyHtml: `
+          <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.subscription_label', {}, 'Subscription')}</label>
+          <select id="bulk-sub-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+          <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.subscription_hint', {}, 'Transactions already linked to a different subscription are skipped.')}</p>`,
+        applyLabel: t('common.actions.apply', {}, 'Apply'),
+      });
+      overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
+        const subId = overlay.querySelector('#bulk-sub-select').value;
+        if (!subId) { _setBulkStatus(overlay, 'error', t('txp.bulk_op.subscription_empty', {}, 'No active subscriptions')); return; }
+        _setBulkStatus(overlay, 'busy', t('pages.txbulk.spinner.applying', {}, 'Applying...'));
+        try {
+          const res = await fetch('/api/tx/batch-link-subscription', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ import_ids: [...txPage.selected], subscription_id: subId }),
+          });
+          const out = await res.json();
+          if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
+          const linked = out.linked || 0;
+          const skipped = (out.skipped || []).length;
+          const missing = (out.missing || []).length;
+          const summary = t('txp.bulk_op.subscription_summary',
+            { linked, skipped, missing },
+            `${linked} linked, ${skipped} already linked, ${missing} missing.`);
+          _setBulkStatus(overlay, linked > 0 ? 'success' : 'error', escapeHtml(summary));
+          if (linked > 0) {
+            setTimeout(() => { overlay.remove(); txPage.selected.clear(); refreshData(); }, 900);
+          }
+        } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
+      });
+    })
+    .catch(e => uiAlert(t('txp.bulk_op.subscription_load_failed', { err: e.message }, `Could not load subscriptions: ${e.message}`)));
+}
+
+function openBulkSubscriptionUnlinkModal() {
+  // Reverse of openBulkSubscriptionModal. No picker — every TX is
+  // linked to at most one subscription, so the action is unambiguous:
+  // strip whatever link exists on the selected rows. TXs without a
+  // link are reported under ``already_unlinked`` for transparency.
+  const overlay = _bulkModalShell({
+    title: `${t('txp.bulk_op.subscription_unlink_title', {}, 'Unlink Subscription')}`,
+    bodyHtml: `
+      <p class="fs-12 c-mut" style="margin:0;">${t('txp.bulk_op.subscription_unlink_hint', {}, 'Removes the subscription link from every selected transaction. The transactions themselves stay untouched.')}</p>`,
+    applyLabel: t('txp.bulk_op.subscription_unlink_apply', {}, 'Unlink'),
+  });
+  overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
+    _setBulkStatus(overlay, 'busy', t('pages.txbulk.spinner.applying', {}, 'Applying...'));
+    try {
+      const res = await fetch('/api/tx/batch-unlink-subscription', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ import_ids: [...txPage.selected] }),
+      });
+      const out = await res.json();
+      if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
+      const unlinked = out.unlinked || 0;
+      const already = (out.already_unlinked || []).length;
+      const summary = t('txp.bulk_op.subscription_unlink_summary',
+        { unlinked, already },
+        `${unlinked} unlinked, ${already} had no link.`);
+      _setBulkStatus(overlay, unlinked > 0 ? 'success' : 'error', escapeHtml(summary));
+      if (unlinked > 0) {
+        setTimeout(() => { overlay.remove(); txPage.selected.clear(); refreshData(); }, 900);
+      }
+    } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
+  });
+}
+
+function openBulkPayeeModal() {
+  // Pull payees off state.tx for the autocomplete datalist — same source
+  // as the Add-TX form. Avoids a round-trip and keeps suggestions in
+  // sync with what's actually in use.
+  const knownPayees = [...new Set(state.tx.map(t => t.payee || '').filter(Boolean))].sort();
+  const overlay = _bulkModalShell({
+    title: `${t('txp.bulk_op.payee_title', {}, 'Change Payee')}`,
+    bodyHtml: `
+      <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.payee_label', {}, 'New payee')}</label>
+      <input type="text" id="bulk-payee-input" list="bulk-payee-list" autocomplete="off" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">
+      <datalist id="bulk-payee-list">${knownPayees.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
+      <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.payee_hint', {}, 'Overwrites the payee on every selected transaction. import_id stays the same so linked rows (subscriptions, fuel, utilities) remain intact.')}</p>`,
+    applyLabel: t('common.actions.apply', {}, 'Apply'),
+  });
+  setTimeout(() => overlay.querySelector('#bulk-payee-input')?.focus(), 0);
+  overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
+    const payee = overlay.querySelector('#bulk-payee-input').value.trim();
+    if (!payee) { _setBulkStatus(overlay, 'error', t('txp.bulk_op.payee_required', {}, 'Enter a payee.')); return; }
+    _setBulkStatus(overlay, 'busy', t('pages.txbulk.spinner.applying', {}, 'Applying...'));
+    try {
+      const res = await fetch('/api/tx/batch-update', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ import_ids: [...txPage.selected], payee }),
+      });
+      const out = await res.json();
+      if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
+      overlay.remove();
+      txPage.selected.clear();
+      refreshData();
+    } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
+  });
+}
+
+function openBulkAccountModal() {
+  // Use the already-loaded state.accounts — refreshData() refreshes it after
+  // every mutation, so it's always live. Filter to active accounts so
+  // the user can't accidentally move TXs to an archived one.
+  const accounts = (state.accounts || []).filter(a => (a.status || 'active') === 'active');
+  const selectedIds = [...txPage.selected];
+  // Pre-flight: tally currencies in the selection so we can warn the
+  // user before they pick a mismatching target. Cheaper than waiting
+  // for the server 409.
+  const currencies = new Set();
+  for (const tx of state.tx) {
+    if (selectedIds.includes(tx.import_id)) {
+      const c = (tx.currency || '').trim();
+      if (c) currencies.add(c);
+    }
+  }
+  const opts = accounts.map(a => {
+    const ccy = (a.currency || '').trim();
+    const blocked = currencies.size === 1 && ccy && !currencies.has(ccy);
+    return `<option value="${escapeHtml(a.alias)}" data-ccy="${escapeHtml(ccy)}"${blocked ? ' disabled' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} (${escapeHtml(ccy)})${blocked ? ' ✕' : ''}</option>`;
+  }).join('');
+  const ccyHint = currencies.size === 1
+    ? t('txp.bulk_op.account_currency_hint', { ccy: [...currencies][0] }, `Selected TXs are all in ${[...currencies][0]} — non-matching accounts are disabled.`)
+    : t('txp.bulk_op.account_mixed_hint', { ccys: [...currencies].join(', ') }, `Selection mixes currencies (${[...currencies].join(', ')}). The server will refuse unless all TXs match the target's currency.`);
+  const overlay = _bulkModalShell({
+    title: `${t('txp.bulk_op.account_title', {}, 'Move to Account')}`,
+    bodyHtml: `
+      <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.account_label', {}, 'Target account')}</label>
+      <select id="bulk-acc-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+      <p class="fs-11 c-mut" style="margin:10px 0 0;">${escapeHtml(ccyHint)}</p>`,
+    applyLabel: t('common.actions.apply', {}, 'Apply'),
+  });
+  overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
+    const account = overlay.querySelector('#bulk-acc-select').value;
+    if (!account) { _setBulkStatus(overlay, 'error', t('txp.bulk_op.account_required', {}, 'Pick an account.')); return; }
+    _setBulkStatus(overlay, 'busy', t('pages.txbulk.spinner.applying', {}, 'Applying...'));
+    try {
+      const res = await fetch('/api/tx/batch-update', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ import_ids: [...txPage.selected], account }),
+      });
+      const out = await res.json();
+      if (res.status === 409 && out.currency_conflicts) {
+        const n = out.currency_conflicts.length;
+        _setBulkStatus(overlay, 'error', escapeHtml(
+          t('txp.bulk_op.account_conflict', { n },
+            `${n} TX(s) don't match the target currency — no rows moved.`)
+        ));
+        return;
+      }
+      if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
+      overlay.remove();
+      txPage.selected.clear();
+      refreshData();
+    } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
+  });
 }
 
 function exportTransactions() {

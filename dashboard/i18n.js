@@ -7,7 +7,7 @@
 // English string baked into the markup. Zero dependencies, zero build step.
 
 window.LOCALE = 'en';                 // Current active locale code (overwritten by loadLocale)
-window.AVAILABLE_LOCALES = ['en', 'de']; // Codes the dashboard knows about; extended as forks ship more files
+window.AVAILABLE_LOCALES = ['en', 'de', 'es', 'fr']; // Codes the dashboard knows about; extended as forks ship more files
 window.STRINGS = {};                  // Flat key -> translated string map (loaded asynchronously)
 
 const I18N_STORAGE_KEY = 'lp-locale';
@@ -27,7 +27,7 @@ function resolveInitialLocale() {
 async function loadLocale(locale) {
   const target = locale || resolveInitialLocale();
   try {
-    const res = await fetch(`../config/i18n/${target}.json`, { cache: 'no-store' });
+    const res = await fetch(`../config/i18n/${target}.json`, { cache: 'no-cache' });
     if (res.ok) {
       window.STRINGS = await res.json();
       window.LOCALE = target;
@@ -37,7 +37,7 @@ async function loadLocale(locale) {
   // If the requested locale failed and it wasn't already English, try English.
   if (target !== 'en') {
     try {
-      const res = await fetch('../config/i18n/en.json', { cache: 'no-store' });
+      const res = await fetch('../config/i18n/en.json', { cache: 'no-cache' });
       if (res.ok) {
         window.STRINGS = await res.json();
         window.LOCALE = 'en';
@@ -64,12 +64,20 @@ function t(key, params = {}, fallback = null) {
 }
 
 // Map the two-letter locale code to an IETF BCP-47 tag for Intl APIs.
-// "en" → "en-US" (matches the legacy en-US formatting, 1,234.56),
-// "de" → "de-DE" (1.234,56 and DD.MM.YYYY).
+// "en" → "en-US" (legacy en-US formatting, 1,234.56),
+// "de" → "de-DE" (1.234,56 and DD.MM.YYYY),
+// "es" → "es-ES" (1.234,56 and DD/MM/YYYY — same separators as DE,
+//                 standard for Spain; LatAm locales would differ but
+//                 we pick one canonical tag and use it everywhere),
+// "fr" → "fr-FR" (1 234,56 with non-breaking-space thousands and DD/MM/YYYY).
 // Unknown locales fall through to en-US so toLocaleString never throws.
 function getLocaleTag() {
-  if (window.LOCALE === 'de') return 'de-DE';
-  return 'en-US';
+  switch (window.LOCALE) {
+    case 'de': return 'de-DE';
+    case 'es': return 'es-ES';
+    case 'fr': return 'fr-FR';
+    default:   return 'en-US';
+  }
 }
 
 // Number formatter honoring the current locale. Thin wrapper around

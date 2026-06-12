@@ -250,7 +250,7 @@ async function applyFxOverrides() {
     // off the FX Rates sub-tab they just acted on. Save → boot → restore
     // → re-render, same pattern the accounts-edit save uses.
     const wasTab = (typeof settingsTab !== 'undefined') ? settingsTab : 'currency';
-    await boot();
+    await refreshData();
     settingsTab = wasTab;
     renderSettingsPage();
   } else {
@@ -265,7 +265,7 @@ async function resetFxRates() {
   renderFxRatesTab();
   // H-14 — same boot+restore pattern as applyFxOverrides above.
   const wasTab = (typeof settingsTab !== 'undefined') ? settingsTab : 'currency';
-  await boot();
+  await refreshData();
   settingsTab = wasTab;
   renderSettingsPage();
 }

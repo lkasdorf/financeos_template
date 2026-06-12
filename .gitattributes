@@ -8,6 +8,12 @@
 *.html text eol=lf
 *.js text eol=lf
 *.json text eol=lf
+# Shell scripts + crontab templates + systemd units run on Linux hosts —
+# a CRLF here breaks bash ("$'do\r'") and cron lines outright. Editing on
+# the Windows dev box must never leak \r into them (bitten 2026-06-12).
+*.sh text eol=lf
+*.crontab text eol=lf
+*.service text eol=lf
 *.bat text eol=crlf
 
 # Binary files

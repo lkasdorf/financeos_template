@@ -225,9 +225,17 @@ function renderAccountPage() {
   `;
 
   // All TX for this account (source or transfer target), unfiltered — needed
-  // for the running-balance calculation.
-  const allAccountTx = state.tx.filter(t =>
-    t.account === alias || (t.type === 'transfer' && t.transfer_to_account === alias)
+  // for the running-balance calculation. buildTxIndexes already de-duplicates
+  // transfer-rows under both endpoints (see core.js), so a single Map lookup
+  // here is equivalent to the previous linear filter over state.tx.
+  // Fallback to the linear scan if the index is empty for any reason
+  // (defensive — buildTxIndexes runs on every data reload).
+  const indexed = state.txIndex?.byAccount?.get(alias);
+  const allAccountTx = (indexed && indexed.length
+    ? indexed.slice()
+    : state.tx.filter(t =>
+        t.account === alias || (t.type === 'transfer' && t.transfer_to_account === alias)
+      )
   ).sort((a, b) => {
     const c = (b.date || '').localeCompare(a.date || '');
     if (c !== 0) return c;
@@ -327,8 +335,8 @@ function renderAccountPage() {
         <option value="">${t('tx.filter.all', {}, 'All')}</option>
         ${topCats.map(top => {
           const subs = allCats.filter(c => c === top || c.startsWith(top + ':'));
-          const topOpt = `<option value="${top}" ${accountPage.filterCategory === top ? 'selected' : ''}>${t('tx.filter.category_all_suffix', { name: top }, `${top} (all)`)}</option>`;
-          const subOpts = subs.filter(c => c !== top).map(c => `<option value="${c}" ${accountPage.filterCategory === c ? 'selected' : ''}>&nbsp;&nbsp;— ${c}</option>`).join('');
+          const topOpt = `<option value="${escapeHtml(top)}" ${accountPage.filterCategory === top ? 'selected' : ''}>${t('tx.filter.category_all_suffix', { name: escapeHtml(top) }, `${escapeHtml(top)} (all)`)}</option>`;
+          const subOpts = subs.filter(c => c !== top).map(c => `<option value="${escapeHtml(c)}" ${accountPage.filterCategory === c ? 'selected' : ''}>&nbsp;&nbsp;— ${escapeHtml(c)}</option>`).join('');
           return topOpt + subOpts;
         }).join('')}
       </select>

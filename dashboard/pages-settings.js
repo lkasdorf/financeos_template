@@ -433,7 +433,7 @@ async function saveAccountEdit(alias) {
       // so the in-memory tx cache is now stale — best to do a full
       // reload, but we must restore the accounts tab afterwards.
       const wasTab = (typeof settingsTab !== 'undefined') ? settingsTab : 'accounts';
-      await boot();
+      await refreshData();
       settingsTab = wasTab;
       renderSettingsPage();
     } else {
@@ -461,37 +461,74 @@ function presetSettingsTab(tabId) {
 
 async function renderSettingsPage() {
   const content = document.getElementById('settings-content');
-  // Tab labels go through t() so translated strings show up after locale switch.
-  // English fallback (third arg) keeps the label readable if the i18n key is missing.
-  // Each tab can declare a feature flag; if disabled in config/features.json,
-  // the tab is filtered out before render.
+  // Sub-tabs are grouped into sections so the Settings sidebar stays
+  // scannable as the surface area grows. Each tab declares its group;
+  // unknown groups fall back to "Other" so a future tab without a
+  // group entry still shows up. Feature-flag filtering happens after
+  // grouping so a fully-disabled group simply collapses out.
+  const sections = [
+    { id: 'data', label: t('settings.group.data', {}, 'Data') },
+    { id: 'assets', label: t('settings.group.assets', {}, 'Accounts & Assets') },
+    { id: 'workflows', label: t('settings.group.workflows', {}, 'Workflows') },
+    { id: 'planning', label: t('settings.group.planning', {}, 'Planning') },
+    { id: 'system', label: t('settings.group.system', {}, 'System') },
+  ];
   const tabs = [
-    { id: 'categories', label: t('settings.tab.categories', {}, 'Categories') },
-    { id: 'tags', label: t('settings.tab.tags', {}, 'Tags') },
-    { id: 'scheduled', label: t('settings.tab.scheduled', {}, 'Scheduled'), feature: 'scheduled_tx' },
-    { id: 'quickexp', label: t('settings.tab.quickexp', {}, 'Quick Expenses'), feature: 'quick_expenses' },
-    { id: 'atmfees', label: t('settings.tab.atmfees', {}, 'ATM Fees') },
-    { id: 'receipts', label: t('settings.tab.receipts', {}, 'Receipts') },
-    { id: 'payees', label: t('settings.tab.payees', {}, 'Payees') },
-    { id: 'accounts', label: t('settings.tab.accounts', {}, 'Accounts') },
-    { id: 'vehicles', label: t('settings.tab.vehicles', {}, 'Vehicles'), feature: 'vehicles' },
-    { id: 'properties', label: t('settings.tab.properties', {}, 'Properties') },
-    { id: 'currency', label: t('settings.tab.currency', {}, 'Currency') },
-    { id: 'fxrates', label: t('settings.tab.fxrates', {}, 'FX Rates') },
-    { id: 'goals', label: t('settings.tab.goals', {}, 'Goals') },
-    { id: 'budgets', label: t('settings.tab.budgets', {}, 'Budgets') },
-    { id: 'reports', label: t('settings.tab.reports', {}, 'Reports') },
-    { id: 'autotags', label: t('settings.tab.autotags', {}, 'Auto-Tags') },
-    { id: 'branding', label: t('settings.tab.branding', {}, 'Branding') },
-    { id: 'backup', label: t('settings.tab.backup', {}, 'Backup') },
-    { id: 'language', label: t('settings.tab.language', {}, 'Language') },
+    { id: 'categories', group: 'data', label: t('settings.tab.categories', {}, 'Categories') },
+    { id: 'tags', group: 'data', label: t('settings.tab.tags', {}, 'Tags') },
+    { id: 'autotags', group: 'data', label: t('settings.tab.autotags', {}, 'Auto-Tags') },
+    { id: 'payees', group: 'data', label: t('settings.tab.payees', {}, 'Payees') },
+    { id: 'accounts', group: 'assets', label: t('settings.tab.accounts', {}, 'Accounts') },
+    { id: 'vehicles', group: 'assets', label: t('settings.tab.vehicles', {}, 'Vehicles'), feature: 'vehicles' },
+    { id: 'properties', group: 'assets', label: t('settings.tab.properties', {}, 'Properties') },
+    { id: 'quickexp', group: 'workflows', label: t('settings.tab.quickexp', {}, 'Quick Expenses'), feature: 'quick_expenses' },
+    { id: 'scheduled', group: 'workflows', label: t('settings.tab.scheduled', {}, 'Scheduled'), feature: 'scheduled_tx' },
+    { id: 'atmfees', group: 'workflows', label: t('settings.tab.atmfees', {}, 'ATM Fees') },
+    { id: 'receipts', group: 'workflows', label: t('settings.tab.receipts', {}, 'Receipts') },
+    { id: 'goals', group: 'planning', label: t('settings.tab.goals', {}, 'Goals') },
+    { id: 'budgets', group: 'planning', label: t('settings.tab.budgets', {}, 'Budgets') },
+    { id: 'reports', group: 'planning', label: t('settings.tab.reports', {}, 'Reports') },
+    { id: 'currency', group: 'system', label: t('settings.tab.currency', {}, 'Currency') },
+    { id: 'fxrates', group: 'system', label: t('settings.tab.fxrates', {}, 'FX Rates') },
+    { id: 'branding', group: 'system', label: t('settings.tab.branding', {}, 'Branding') },
+    { id: 'backup', group: 'system', label: t('settings.tab.backup', {}, 'Backup') },
+    { id: 'language', group: 'system', label: t('settings.tab.language', {}, 'Language') },
   ].filter(tab => !tab.feature || isFeatureEnabled(tab.feature));
+  // Build sidebar by group. Groups with zero visible tabs are skipped so
+  // disabling all workflow features (for a stripped-down install) doesn't
+  // leave an empty heading.
+  const groupedHtml = sections.map(s => {
+    const items = tabs.filter(tab => tab.group === s.id);
+    if (!items.length) return '';
+    return `
+      <div class="settings-nav-group">
+        <div class="settings-nav-label">${escapeHtml(s.label)}</div>
+        ${items.map(tab => `<button type="button" class="settings-nav-item ${settingsTab === tab.id ? 'active' : ''}" data-action="setSettingsTab" data-arg1="${escapeHtml(tab.id)}">${tab.label}</button>`).join('')}
+      </div>`;
+  }).join('');
+  // Mobile alternative: native <select> with <optgroup>. No JS, no extra
+  // CSS — falls into the OS picker on phones, which beats a bespoke
+  // accordion both in muscle memory and accessibility.
+  const mobileOptionsHtml = sections.map(s => {
+    const items = tabs.filter(tab => tab.group === s.id);
+    if (!items.length) return '';
+    return `<optgroup label="${escapeHtml(s.label)}">${items.map(tab =>
+      `<option value="${escapeHtml(tab.id)}" ${settingsTab === tab.id ? 'selected' : ''}>${escapeHtml(tab.label)}</option>`
+    ).join('')}</optgroup>`;
+  }).join('');
   content.innerHTML = `
-    <div class="atx-tabs" style="margin-bottom:24px;flex-wrap:wrap;">
-      ${tabs.map(t => `<button class="${settingsTab === t.id ? 'active' : ''}" data-action="setSettingsTab" data-arg1="${escapeHtml(t.id)}">${t.label}</button>`).join('')}
+    <select class="settings-mobile-nav" id="settings-mobile-nav" aria-label="${escapeHtml(t('settings.mobile_nav_aria', {}, 'Settings section'))}">
+      ${mobileOptionsHtml}
+    </select>
+    <div class="settings-shell">
+      <aside class="settings-sidebar">${groupedHtml}</aside>
+      <div id="settings-tab-content"></div>
     </div>
-    <div id="settings-tab-content"></div>
   `;
+  // Mobile <select> uses change events; the global data-action dispatcher
+  // only listens for clicks, so wire this one directly after each render.
+  const mobileNav = document.getElementById('settings-mobile-nav');
+  if (mobileNav) mobileNav.addEventListener('change', (ev) => setSettingsTab(ev.target.value));
   if (settingsTab === 'categories') renderCategoriesTab();
   else if (settingsTab === 'tags') renderTagsTab();
   else if (settingsTab === 'scheduled') renderScheduledTab();
@@ -1170,11 +1207,17 @@ async function showScheduledModal(editId) {
   // v1.5.1 — fetch active subscriptions in parallel with TX context for the
   // optional subscription_id picker. Failure is tolerated: the dropdown
   // just won't show any options beyond "— No subscription —".
-  const [ctx, subs] = await Promise.all([
+  // Properties ride along on the same Promise.all so the modal renders
+  // both pickers in one round-trip; same fall-through behavior on error.
+  const [ctx, subs, props] = await Promise.all([
     loadTxContext(),
     fetch('/api/subscriptions/active_for_picker', { method: 'POST' })
       .then(r => r.ok ? r.json() : { subscriptions: [] })
       .then(d => d.subscriptions || [])
+      .catch(() => []),
+    fetch('/api/properties/list', { method: 'POST' })
+      .then(r => r.ok ? r.json() : { properties: [] })
+      .then(d => (d.properties || []).filter(p => p.active !== false))
       .catch(() => []),
   ]);
   let item = null;
@@ -1191,14 +1234,14 @@ async function showScheduledModal(editId) {
     `<option value="${escapeHtml(a.alias)}" data-currency="${escapeHtml(a.currency)}" ${item && item.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
-    `<option value="${c.path}" ${item && item.category === c.path ? 'selected' : ''}>${c.path}</option>`
+    `<option value="${escapeHtml(c.path)}" ${item && item.category === c.path ? 'selected' : ''}>${escapeHtml(c.path)}</option>`
   ).join('');
   const currencies = ['TZS', 'EUR', 'USD', 'PLN'];
   const selectedCur = item?.currency || 'TZS';
   const curOptions = currencies.map(c => `<option value="${c}" ${selectedCur === c ? 'selected' : ''}>${c}</option>`).join('');
   const existingTags = new Set((item?.manual_tags || '').split(';').map(t => t.trim()).filter(Boolean));
   const tagCheckboxes = (ctx.tags || []).filter(t => t.active).map(t =>
-    `<label><input type="checkbox" value="${t.tag}" ${existingTags.has(t.tag) ? 'checked' : ''}><span>${escapeHtml(t.tag)}</span></label>`
+    `<label><input type="checkbox" value="${escapeHtml(t.tag)}" ${existingTags.has(t.tag) ? 'checked' : ''}><span>${escapeHtml(t.tag)}</span></label>`
   ).join('');
   // v1.5.1 — subscription_id picker, mirrors Add-TX form's "group · name" layout.
   // Selected value falls back to '' when no link is set.
@@ -1207,6 +1250,20 @@ async function showScheduledModal(editId) {
     .concat((subs || []).map(s => {
       const label = s.group ? `${s.group} · ${s.name}` : s.name;
       return `<option value="${escapeHtml(s.subscription_id)}" ${s.subscription_id === currentSubId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    }))
+    .join('');
+
+  // v2026-05-15.3 — property_id picker, mirrors the subscription picker.
+  // When the SCHED fires, cron_sched._build_primary_line resolves
+  // property_id → properties.csv.cost_tag and prepends it to manual_tags
+  // before apply_auto_tags runs; the booked TX therefore carries the
+  // property's cost-of-living tag without storing
+  // property_id on the transactions.csv row.
+  const currentPropId = item?.property_id || '';
+  const propOptions = [`<option value="">${escapeHtml(t('settings.scheduled.modal.property_none', {}, '— No property —'))}</option>`]
+    .concat((props || []).map(p => {
+      const label = p.name || p.property_id;
+      return `<option value="${escapeHtml(p.property_id)}" ${p.property_id === currentPropId ? 'selected' : ''}>${escapeHtml(label)}</option>`;
     }))
     .join('');
 
@@ -1269,6 +1326,12 @@ async function showScheduledModal(editId) {
           <span class="hint-sm">${escapeHtml(t('settings.scheduled.modal.subscription_link_help', {}, 'When this template fires, the booked TX is auto-linked to the selected subscription.'))}</span>
         </div>
       </div>
+      <div class="atx-row">
+        <div class="atx-field fx1"><label>${t('settings.scheduled.modal.label_property', {}, 'Linked Property (optional)')}</label>
+          <select id="sm-property">${propOptions}</select>
+          <span class="hint-sm">${escapeHtml(t('settings.scheduled.modal.property_link_help', {}, "When this template fires, the property's cost_tag is added to the booked TX so it shows up in the per-property cost-of-living report."))}</span>
+        </div>
+      </div>
       <div id="sm-status"></div>
       <div class="modal-footer">
         <div class="btn-left"></div>
@@ -1316,6 +1379,8 @@ async function saveScheduled(editId) {
     active: document.getElementById('sm-active').value,
     // v1.5.1 — optional subscription_id link. Empty string when no link is set.
     subscription_id: document.getElementById('sm-subscription').value,
+    // v2026-05-15.3 — optional property_id link; resolved to cost_tag at fire time.
+    property_id: document.getElementById('sm-property').value,
   };
   if (!data.name || !data.account || !data.amount) {
     document.getElementById('sm-status').innerHTML = `<div class="atx-status error">${t('settings.scheduled.modal.err_required', {}, 'Name, account, and amount are required')}</div>`;
@@ -1417,7 +1482,7 @@ async function showQuickExpModal(editId) {
     `<option value="${escapeHtml(a.alias)}" ${item && item.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
-    `<option value="${c.path}" ${item && item.category === c.path ? 'selected' : ''}>${c.path}</option>`
+    `<option value="${escapeHtml(c.path)}" ${item && item.category === c.path ? 'selected' : ''}>${escapeHtml(c.path)}</option>`
   ).join('');
 
   const overlay = document.createElement('div');

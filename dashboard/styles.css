@@ -639,6 +639,23 @@
   .bulk-btn:hover { border-color: var(--accent); color: var(--accent); }
   .bulk-btn-danger { color: var(--negative); border-color: var(--negative); }
   .bulk-btn-danger:hover { background: var(--negative); color: #fff; }
+  /* Bulk-Edit dropdown (v2026-05-15.5) — anchored under the Edit pill.
+     `display: flex` overrides the browser default for [hidden], so we
+     gate the visible styles behind :not([hidden]) to keep the attribute
+     working as the toggle. */
+  .bulk-edit-menu[hidden] { display: none; }
+  .bulk-edit-menu:not([hidden]) {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 50;
+    min-width: 180px; padding: 4px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-xs); box-shadow: 0 6px 16px rgba(0,0,0,0.18);
+    display: flex; flex-direction: column;
+  }
+  .bulk-edit-item {
+    background: transparent; border: 0; padding: 6px 10px; text-align: left;
+    font-size: 12px; color: var(--text); cursor: pointer; border-radius: 4px;
+  }
+  .bulk-edit-item:hover { background: var(--accent); color: var(--bg); }
 
   .tx-table .cat-link {
     cursor: pointer;
@@ -1223,6 +1240,60 @@
   }
 
   .atx-section { max-width: 720px; }
+
+  /* ── Settings Sidebar Layout ────────────────────────────────── */
+  /* Two-column shell: vertical sidebar (left) + content (right).
+     Replaces the wrapped 19-tab strip. Mobile uses a native <select>
+     instead — see .settings-mobile-nav below. */
+  .settings-shell {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 28px;
+    align-items: start;
+  }
+  .settings-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    position: sticky;
+    top: 16px;
+  }
+  .settings-nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .settings-nav-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 4px 10px 6px;
+  }
+  .settings-nav-item {
+    text-align: left;
+    padding: 7px 10px;
+    background: transparent;
+    border: none;
+    border-left: 2px solid transparent;
+    border-radius: 0 6px 6px 0;
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background-color 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .settings-nav-item:hover {
+    background: var(--surface);
+    color: var(--accent);
+  }
+  .settings-nav-item.active {
+    background: var(--accent-subtle, var(--surface));
+    color: var(--accent);
+    border-left-color: var(--accent);
+    font-weight: 600;
+  }
+  .settings-mobile-nav { display: none; }
 
   .atx-row {
     display: flex;
@@ -1895,6 +1966,31 @@
   .drawer-backdrop { display: none; }
 
   @media (max-width: 768px) {
+    /* Settings sidebar collapses to a native <select> on phones — no
+       bespoke accordion, falls into the OS picker, accessible by default. */
+    .settings-shell {
+      display: block;
+    }
+    .settings-sidebar { display: none; }
+    .settings-mobile-nav {
+      display: block;
+      width: 100%;
+      padding: 10px 12px;
+      margin-bottom: 18px;
+      font-size: 14px;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position: calc(100% - 18px) center, calc(100% - 13px) center;
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+    }
+
     /* Topbar — thin fixed header with hamburger + brand */
     .mobile-topbar {
       display: flex;
@@ -2114,6 +2210,200 @@
     .income-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
     .chart-row { grid-template-columns: 1fr; }
 
+    /* Stufe-2: KPI-Dichte. Hero-Card auf Mobile prominenter — Net Worth
+       ist die wichtigste Zahl auf dem Phone-Screen, soll als Erstes ins
+       Auge fallen. Andere Networth-Cards bleiben kompakt. */
+    .networth-card { padding: 16px 18px; }
+    .networth-card.hero {
+      padding: 22px 22px 18px;
+      background: linear-gradient(160deg, var(--surface) 0%, var(--accent-subtle) 100%);
+    }
+    .networth-card.hero .nw-value { font-size: 36px; line-height: 1.1; }
+    .networth-card.hero .nw-label {
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .networth-card .nw-value { font-size: 22px; }
+    .nw-trend-strip { font-size: 11px; gap: 8px; }
+
+    /* Month-Summary 2×2: kompakter, mehr Hierarchie. Label klein
+       und uppercase, Value gross und prominent. Gleiche Logik wie
+       Hero — Phone-Display priorisiert die Zahl, nicht die Chrome. */
+    .summary-card { padding: 14px 14px; }
+    .summary-card .label {
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .summary-card .value { font-size: 18px; }
+    .summary-card .cur { font-size: 10px; margin-left: 3px; }
+    .summary-card .meta { font-size: 10px; margin-top: 2px; }
+
+    /* ─── Properties-Page Polish ─────────────────────────────────────
+     * 14 KPI-Cards + 11 Charts auf einem Phone ist Endless-Scroll. Wir
+     * halbieren die KPI-Reihen (2 Spalten statt 1) und schrumpfen die
+     * Charts auf 180px Höhe + dünneres Chrome — alles bleibt lesbar,
+     * der Scroll wird halbiert.
+     */
+    .kpi-grid-properties {
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+    .kpi-grid-properties .kpi-card { padding: 10px 12px; }
+    .kpi-grid-properties .kpi-card .label {
+      font-size: 9px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .kpi-grid-properties .kpi-card .value { font-size: 14px; }
+    .kpi-grid-properties .kpi-card .cur { font-size: 9px; margin-left: 2px; }
+    .kpi-grid-properties .kpi-card .delta { font-size: 9px; }
+
+    /* Charts: kompakter — Höhe 180px statt 240px, Titel kleiner,
+       weniger Padding. Span-2-Charts (Monthly-Breakdown, Heatmap)
+       behalten ihre volle Breite. */
+    .charts-grid-properties { gap: 10px; }
+    .charts-grid-properties .chart-card {
+      padding: 10px 12px 12px;
+    }
+    .charts-grid-properties .chart-card h4 {
+      font-size: 10px;
+      margin-bottom: 6px;
+      letter-spacing: 0.04em;
+    }
+    .charts-grid-properties .chart-card canvas {
+      height: 180px !important;
+    }
+
+    /* Property-Header: drei Action-Buttons werden full-width gestapelt,
+       Header-Padding kompakter, Meta-Text bleibt lesbar. */
+    .property-header {
+      flex-direction: column;
+      align-items: stretch;
+      padding: 12px 14px;
+      gap: 10px;
+    }
+    .property-meta h3 { font-size: 16px; }
+    .property-meta .muted { font-size: 11px; line-height: 1.45; }
+    .property-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .property-actions button {
+      padding: 10px 12px !important;
+      font-size: 13px !important;
+      min-height: 40px;
+    }
+    /* Excel-Export geht auf eigene Zeile, ist weniger relevant auf Mobile */
+    #btn-property-excel {
+      grid-column: 1 / -1;
+      font-size: 11px !important;
+    }
+
+    /* Logs-Tabellen-Block: kompaktere Header */
+    .log-block { padding: 10px 12px; }
+    .log-block h4 { font-size: 11px; margin-bottom: 6px; }
+    /* Cap log-table height on mobile so the page stays scannable — desktop
+       lets the table flow to its natural height (see base rule). */
+    .table-scroll { max-height: 560px; overflow: auto; }
+
+    /* ─── Reports-Page Polish ────────────────────────────────────────
+     * Selbe Logik wie Properties — viele Cards, viele Charts auf einer
+     * Seite. Auf Mobile: kompakte Toolbar, Section-Titel kleiner,
+     * Summary-Card-Reihen werden eng gepackt.
+     */
+    .report-toolbar {
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 10px;
+    }
+    .report-toolbar label {
+      font-size: 10px;
+      letter-spacing: 0.05em;
+    }
+    .report-toolbar select,
+    .report-toolbar input {
+      font-size: 13px;
+      padding: 6px 8px;
+      min-height: 34px;
+    }
+    .report-section { padding: 12px 14px; }
+    .report-section-title {
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    /* Inline-styled summary-card rows on the report pages (flex with
+       min-width:140px) wrap nicely below 768px but their flex:1 keeps
+       them shrinking. Override to a fixed 2-column grid for predictable
+       results. */
+    .report-section > div[style*="display:flex"]:has(> .summary-card) {
+      display: grid !important;
+      grid-template-columns: 1fr 1fr !important;
+      gap: 8px !important;
+    }
+    .report-section .summary-card { min-width: 0 !important; padding: 10px 12px !important; }
+    .report-section .summary-card .label { font-size: 10px; margin-bottom: 4px; }
+    .report-section .summary-card .value { font-size: 16px; }
+
+    /* Back button + export buttons on report pages — drop into a row */
+    .report-back { font-size: 12px; padding: 6px 10px; min-height: 34px; }
+
+    /* ─── Modals on Phone ────────────────────────────────────────────
+     * Foundation (96vw / 80vh) ist schon da. Hier: dichtere Form-Reihen,
+     * Footer-Buttons als Full-Width-Stack damit der Daumen sie trifft.
+     */
+    .modal {
+      padding: 16px;
+      max-height: 88vh;
+      overflow-y: auto;
+    }
+    .modal h3 {
+      font-size: 16px;
+      margin-bottom: 10px;
+      padding-right: 32px;  /* leave room for ✕ */
+    }
+    /* Form rows inside modals already stack via .atx-row rules above,
+       this just tightens their gap further. */
+    .modal .atx-row { margin-bottom: 8px; gap: 8px; }
+
+    /* Modal footer button row — full-width stacked primary/secondary so
+       the apply button is the obvious tap target. ui-dialog-actions is
+       the uiConfirm/uiPrompt variant. */
+    .modal-footer,
+    .modal > div[style*="justify-content:flex-end"],
+    .modal > div[style*="justify-content: flex-end"],
+    .modal.ui-dialog .ui-dialog-actions {
+      flex-direction: column-reverse !important;
+      gap: 8px !important;
+      align-items: stretch !important;
+    }
+    .modal-footer > button,
+    .modal > div[style*="justify-content:flex-end"] > button,
+    .modal > div[style*="justify-content: flex-end"] > button,
+    .modal.ui-dialog .ui-dialog-actions > button {
+      width: 100%;
+      min-height: 44px;
+      font-size: 14px;
+    }
+    /* Footer .btn-left + .btn-right groups become rows of stacked buttons */
+    .modal-footer .btn-left,
+    .modal-footer .btn-right {
+      width: 100%;
+      flex-direction: column-reverse;
+      gap: 8px;
+    }
+
     /* Tables horizontal scroll with fade edge */
     .section { position: relative; }
     .section::after {
@@ -2307,6 +2597,126 @@
 
     /* Pagination */
     .pagination { flex-wrap: wrap; }
+  }
+
+  /* ─── TX-Table → Card-List on phones ─────────────────────────────
+   *
+   * Below 600px the transactions table reshuffles into a stacked card
+   * per row. Implemented via CSS Grid + `grid-template-areas` so the
+   * existing <tr><td>… markup keeps working — JS render path doesn't
+   * change. Each <td> gets a `td-*` class (see pages-transactions.js)
+   * that maps to a named grid area.
+   *
+   * Columns we drop on mobile to avoid noise:
+   *   td-chk, td-type, td-ccy, td-eur — info is implicit in the amount
+   *   or duplicates what's on the card. Bulk-select stays on desktop;
+   *   the typical phone use is reading not bulk-editing.
+   */
+  @media (max-width: 600px) {
+    /* Strip table chrome — the rows become standalone cards */
+    .tx-table {
+      display: block;
+      background: transparent;
+      box-shadow: none;
+      border-radius: 0;
+      overflow: visible;
+    }
+    .tx-table thead { display: none; }
+    .tx-table tbody { display: block; }
+
+    .tx-table tr {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "date     account"
+        "payee    amount"
+        "category amount"
+        "tags     actions";
+      gap: 4px 10px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .tx-table tr:hover td { background: transparent; }
+
+    .tx-table td {
+      display: block;
+      padding: 0;
+      border: none;
+      white-space: normal;
+      font-size: 13px;
+    }
+    .tx-table td.td-date {
+      grid-area: date;
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .tx-table td.td-account {
+      grid-area: account;
+      font-size: 11px;
+      color: var(--muted-soft);
+      text-align: right;
+      font-weight: 500;
+      text-transform: lowercase;
+      letter-spacing: 0.01em;
+    }
+    .tx-table td.td-payee {
+      grid-area: payee;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      align-self: end;
+    }
+    .tx-table td.td-cat {
+      grid-area: category;
+      font-size: 12px;
+      color: var(--muted-soft);
+    }
+    .tx-table td.td-amount {
+      grid-area: amount;
+      font-size: 15px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      align-self: center;
+      text-align: right;
+    }
+    .tx-table td.td-tags {
+      grid-area: tags;
+      padding-top: 2px;
+    }
+    .tx-table td.td-tags:empty { display: none; }
+    .tx-table .tag-chip { font-size: 9px; padding: 1px 6px; }
+
+    .tx-table td.td-actions {
+      grid-area: actions;
+      display: flex;
+      gap: 4px;
+      justify-content: flex-end;
+      align-items: center;
+      padding-top: 4px;
+    }
+    .tx-table .tx-edit-btn {
+      width: 30px; height: 30px;
+      padding: 0;
+      font-size: 13px;
+      min-height: 30px;
+    }
+
+    /* Columns we drop on mobile to keep the card compact */
+    .tx-table td.td-chk,
+    .tx-table td.td-type,
+    .tx-table td.td-ccy,
+    .tx-table td.td-eur { display: none; }
+
+    /* Row-selected halo on mobile becomes a left accent border */
+    .tx-table tr.row-selected {
+      background: var(--accent-glow);
+      border-left: 3px solid var(--accent);
+    }
   }
 
   /* ─── Extra small phones ────────────────────────────── */
@@ -3529,9 +3939,12 @@
   }
 
   .property-logs { display: flex; flex-direction: column; gap: 10px; }
+  /* Logs stack vertically on desktop so each table gets the full row width —
+     8-column LUKU + 5-column Water both fit without horizontal scroll, and
+     no max-height means all rows render in natural flow (no nested scroll). */
   .logs-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    grid-template-columns: 1fr;
     gap: 14px;
   }
   .log-block {
@@ -3548,7 +3961,10 @@
     letter-spacing: 0.02em;
   }
   .log-block .muted { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
-  .table-scroll { max-height: 720px; overflow: auto; }
+  /* Desktop: no clamp — tables expand to fit all rows.
+     Mobile override in the @media block below caps height so the page
+     stays scannable on phones (where 60+ LUKU rows would be unwieldy). */
+  .table-scroll { }
   .data-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
   .data-table thead th {
     position: sticky;

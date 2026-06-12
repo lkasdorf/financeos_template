@@ -1,1 +1,1 @@
-sched_id,name,account,amount,currency,payee,category,note,manual_tags,frequency,next_run,last_run,active,subscription_id
+sched_id,name,account,amount,currency,payee,category,note,manual_tags,frequency,next_run,last_run,active,subscription_id,property_id

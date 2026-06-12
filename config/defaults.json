@@ -18,7 +18,8 @@
     "reimbursement_categories": {}
   },
   "host": {
-    "pi_hostnames": []
+    "pi_hostnames": [],
+    "vps_hostnames": []
   },
   "dev": {
     "peer_health_url": ""

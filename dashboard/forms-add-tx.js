@@ -549,8 +549,10 @@ function populateTxDropdowns(ctx) {
   // Tags
   const tagPicker = document.getElementById('atx-m-tags');
   if (tagPicker && ctx.tags) {
+    // F-H2: tag names are user-defined — escape both the value attribute
+    // and the visible text (a `"` in a tag broke out of the attribute).
     tagPicker.innerHTML = ctx.tags.filter(t => t.active).map(t =>
-      `<label><input type="checkbox" value="${t.tag}"><span>${t.tag}</span></label>`
+      `<label><input type="checkbox" value="${escapeHtml(t.tag)}"><span>${escapeHtml(t.tag)}</span></label>`
     ).join('');
   }
 
@@ -568,10 +570,13 @@ function populateTxDropdowns(ctx) {
     const p = addTxState.prefillTx;
     addTxState.prefillTx = null;
     const setVal = (id, v) => { const el = document.getElementById(id); if (el != null && v != null) el.value = v; };
-    // Switch type pill/select first so the right field rows are visible
-    setVal('atx-m-type', p.type);
-    const typeSel = document.getElementById('atx-m-type');
-    if (typeSel) typeSel.dispatchEvent(new Event('change'));
+    // Switch the type FIRST so the right field rows are visible.
+    // F-H6 (CODE_REVIEW_2026-06-12): this used to poke a non-existent
+    // #atx-m-type select (the type control is the #atx-type-btns button
+    // group), so duplicating an income/transfer silently booked as
+    // expense. setTxType() toggles the buttons, row visibility and the
+    // category filter.
+    setTxType(p.type || 'expense');
     setVal('atx-m-date', p.date);
     setVal('atx-m-account', p.account);
     setVal('atx-m-amount', p.amount);
@@ -861,6 +866,12 @@ async function submitManual() {
       return;
     }
 
+    // P-H1 (CODE_REVIEW_2026-06-12) — one idempotency key per preview.
+    // A Save retried after a lost/failed response reuses the key, so the
+    // server replays the stored import_ids instead of double-booking.
+    // No crypto.randomUUID here: the dashboard often runs on plain HTTP
+    // (Tailscale IP), which is not a secure context.
+    data.client_id = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
     addTxState.preview = data;
     renderTxPreview(data);
     document.getElementById('atx-status-area').innerHTML = '';
@@ -981,6 +992,7 @@ async function confirmTx() {
       body: JSON.stringify({
         lines: addTxState.preview.lines,
         raw_input: addTxState.preview.raw_input || '(manual)',
+        client_id: addTxState.preview.client_id || undefined,
       }),
     });
     const data = await res.json();
@@ -1023,10 +1035,12 @@ async function confirmTx() {
     updateSplitInfo();
 
     // Reload data so dashboard is fresh; if we have a return route (user
-    // came from an Account detail page), navigate back there after boot()
-    // has refreshed state so the destination renders with the new TX.
+    // came from an Account detail page), navigate back there after the
+    // refresh so the destination renders with the new TX. Uses refreshData()
+    // instead of boot() to skip re-loading static config (features /
+    // branding / locale) — those don't change between TX writes.
     setTimeout(async () => {
-      await boot();
+      await refreshData();
       if (addTxState.returnRoute) {
         const route = addTxState.returnRoute;
         addTxState.returnRoute = null;

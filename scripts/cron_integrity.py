@@ -311,6 +311,13 @@ def main() -> int:
     Returns:
         0 if all checks pass, 1 if any issues found, 2 on unhandled error.
     """
+    # O-H3 (CODE_REVIEW_2026-06-12): the integrity report is a tracked
+    # file — fenced standby hosts skip the run to keep the tree clean.
+    import host_role
+    if host_role.is_standby():
+        print("[cron_integrity] host role is standby — fenced, skipping (O-H3)")
+        return 0
+
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
 

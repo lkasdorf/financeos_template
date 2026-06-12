@@ -22,6 +22,26 @@ let propertyPeriod = 'all';
 // per-modal round-trip. Refreshed each time the page is rendered.
 let _propsAccountsCache = [];
 
+// Tags cache mirrors the same lazy-load pattern as accounts so the
+// LUKU/Water modal tag-pickers don't trigger a round-trip on open.
+let _propsTagsCache = [];
+
+// Mirrors config/defaults.json `auto_tag.by_account`. Used purely for UX
+// hinting in the LUKU/Water modal — server-side `apply_auto_tags` stays
+// authoritative; the server still appends/dedupes regardless of what the
+// client renders. If config/defaults.json drifts, the worst case is the
+// modal hint is stale, never that data is wrong.
+// X-M2 (CODE_REVIEW_2026-06-12): derived from config/defaults.json:
+// auto_tag.by_account (already in window.DEFAULTS after loadDefaults())
+// instead of hardcoding the upstream account → business-tag pairs into
+// shipped code. Template forks with an empty auto_tag config simply get
+// no hint — same graceful degradation as before.
+function _propsAccountAutotag(alias) {
+  const byAccount =
+    (window.DEFAULTS && window.DEFAULTS.auto_tag && window.DEFAULTS.auto_tag.by_account) || {};
+  return byAccount[(alias || '').toLowerCase()] || '';
+}
+
 // Read the user's preferred display currency / format from core.js shared
 // state when available. Properties data is always TZS in source, but the
 // global currency switcher should still affect headline KPI rendering.
@@ -50,6 +70,101 @@ function _propsFmt(value, opts = {}) {
 
 // ── Data loaders ────────────────────────────────────────────────────────────
 
+// SWR (stale-while-revalidate) cache for the Properties page payload.
+// Tanzania-Frankfurt RTT is ~800ms even after the combined endpoint —
+// caching the last successful response keeps the page interactive on
+// cold open while a fresh fetch reconciles in the background.
+const _PROPS_CACHE_KEY_PREFIX = 'financeos.propsPageCache.';
+const _PROPS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24h — purely a stale ceiling
+
+function _propsCacheKey(propertyId) {
+  // Empty string is a legitimate cache key — server picks the first
+  // active property when none is hinted, and the cached pick is still
+  // a useful render hint for the next cold open.
+  return `${_PROPS_CACHE_KEY_PREFIX}${propertyId || ''}`;
+}
+
+function _readPropsCache(propertyId) {
+  try {
+    const raw = localStorage.getItem(_propsCacheKey(propertyId));
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (!entry || typeof entry !== 'object') return null;
+    if (Date.now() - (entry.ts || 0) > _PROPS_CACHE_TTL_MS) return null;
+    return entry.data || null;
+  } catch (err) {
+    // Quota-exceeded / parse errors are non-fatal — just skip the cache.
+    return null;
+  }
+}
+
+function _writePropsCache(propertyId, data) {
+  try {
+    localStorage.setItem(_propsCacheKey(propertyId), JSON.stringify({
+      ts: Date.now(), data,
+    }));
+  } catch (err) {
+    // Storage quota hit — silently drop. The page still renders fresh
+    // from the network; we just lose the next cold-open speedup.
+  }
+}
+
+function _invalidatePropsCache(propertyId = null) {
+  // Property-targeted edits clear just their key; structural changes
+  // (CRUD on properties.csv) sweep every key under the prefix.
+  try {
+    if (propertyId !== null) {
+      localStorage.removeItem(_propsCacheKey(propertyId));
+      localStorage.removeItem(_propsCacheKey(''));  // server-picked alias
+      return;
+    }
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(_PROPS_CACHE_KEY_PREFIX)) toRemove.push(k);
+    }
+    for (const k of toRemove) localStorage.removeItem(k);
+  } catch (err) {
+    // No-op — cache stays, will get superseded on next write.
+  }
+}
+
+// Combined loader — fetches properties list + active-property details +
+// account/tag cache in one round-trip. Used by renderPropertiesPage()
+// to collapse cold opens from 2 sequential RTTs to 1. Granular endpoints
+// (loadPropertiesList / loadPropertyDetails / _loadPropsAccountsCache)
+// stay live for partial refreshes after edits.
+async function loadPropertiesPage(propertyId = '') {
+  const resp = await fetch('/api/properties/page', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(propertyId ? { property_id: propertyId } : {}),
+  });
+  if (!resp.ok) throw new Error(`properties/page ${resp.status}`);
+  const data = await resp.json();
+  _writePropsCache(propertyId, data);
+  // Server may have resolved to a different active property than we hinted
+  // (e.g. empty hint → server picks first active). Cache that key too so a
+  // direct request for the resolved id is also a cache hit next time.
+  const resolved = data.active_property_id || '';
+  if (resolved && resolved !== propertyId) {
+    _writePropsCache(resolved, data);
+  }
+  propertiesList = data.properties || [];
+  _propsAccountsCache = Array.isArray(data.accounts) ? data.accounts : [];
+  _propsTagsCache = Array.isArray(data.tags) ? data.tags.filter(t => t.active) : [];
+  return { details: data.details || null, activeId: resolved };
+}
+
+// Apply a /api/properties/page payload to module state without going to
+// the network. Used by the SWR path so the cached payload renders
+// instantly, then the live fetch reconciles via the same code path.
+function _applyPropertiesPagePayload(data) {
+  propertiesList = data.properties || [];
+  _propsAccountsCache = Array.isArray(data.accounts) ? data.accounts : [];
+  _propsTagsCache = Array.isArray(data.tags) ? data.tags.filter(t => t.active) : [];
+  return { details: data.details || null, activeId: data.active_property_id || '' };
+}
+
 async function loadPropertiesList() {
   const resp = await fetch('/api/properties/list', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -65,15 +180,18 @@ async function _loadPropsAccountsCache() {
   // Pulled from /api/tx/context which is the canonical source for the
   // account list across the dashboard. Quietly fall back to an empty
   // array on failure so the modal still opens with the property's
-  // default_account preselected.
+  // default_account preselected. Tags ride along on the same response
+  // since /api/tx/context already returns them — avoids a second probe.
   try {
     const resp = await fetch('/api/tx/context', { method: 'POST' });
     if (!resp.ok) throw new Error(`tx/context ${resp.status}`);
     const data = await resp.json();
     _propsAccountsCache = Array.isArray(data.accounts) ? data.accounts : [];
+    _propsTagsCache = Array.isArray(data.tags) ? data.tags.filter(t => t.active) : [];
   } catch (err) {
     console.warn('[properties] account cache load failed:', err);
     _propsAccountsCache = [];
+    _propsTagsCache = [];
   }
 }
 
@@ -383,19 +501,10 @@ function renderPeriodPills() {
 
 // ── Page entry ──────────────────────────────────────────────────────────────
 
-async function renderPropertiesPage() {
-  const root = document.getElementById('properties-content');
-  if (!root) return;
-  root.innerHTML = `<div class="page-loading">${escapeHtml(t('page.properties.loading', {}, 'Loading properties…'))}</div>`;
-
-  try {
-    await Promise.all([loadPropertiesList(), _loadPropsAccountsCache()]);
-  } catch (err) {
-    console.error('[properties] list failed:', err);
-    root.innerHTML = `<div class="error-banner">${escapeHtml(t('page.properties.err_list', { msg: err.message }, `Could not load properties: ${err.message}`))}</div>`;
-    return;
-  }
-
+// Apply the resolved page state to the DOM. Pure render — never fetches.
+// Called by both the SWR cache fast-path and the network slow-path so a
+// background refresh's swap-in goes through the exact same code.
+function _paintPropertiesPage(root) {
   if (!propertiesList.length) {
     root.innerHTML = `
       <div class="empty-state">
@@ -404,22 +513,10 @@ async function renderPropertiesPage() {
       </div>`;
     return;
   }
-
-  // Pick the first active property by default; persist last selection.
-  const remembered = localStorage.getItem('financeos.activePropertyId');
-  const exists = (id) => propertiesList.some((p) => p.property_id === id);
-  if (!activePropertyId || !exists(activePropertyId)) {
-    activePropertyId = exists(remembered) ? remembered : propertiesList[0].property_id;
+  if (!propertyDetails) {
+    return;  // bail — caller will surface an error banner
   }
-
-  try {
-    propertyDetails = await loadPropertyDetails(activePropertyId);
-    localStorage.setItem('financeos.activePropertyId', activePropertyId);
-  } catch (err) {
-    console.error('[properties] details failed:', err);
-    root.innerHTML = `<div class="error-banner">${escapeHtml(t('page.properties.err_details', { msg: err.message }, `Could not load property details: ${err.message}`))}</div>`;
-    return;
-  }
+  localStorage.setItem('financeos.activePropertyId', activePropertyId);
 
   // If the active year-pill points at a year the freshly loaded property
   // has no data for, fall back to 'all' so the selector doesn't render
@@ -438,8 +535,94 @@ async function renderPropertiesPage() {
   const filtered = _applyPeriodToDetails(propertyDetails, propertyPeriod);
   root.appendChild(renderDrilldown(filtered));
   bindPropertyControls();
-  // Charts must be drawn AFTER canvases are in the DOM.
-  drawPropertyCharts(filtered);
+  // Charts must be drawn AFTER canvases are in the DOM. Deferring to the
+  // next animation frame lets the browser paint once before Chart.js
+  // reads canvas/parent dimensions — without this, the constructor's
+  // size measurement forces a synchronous layout recompute across all
+  // 10 charts on the Properties page (visible as "Forced reflow took
+  // ~45ms" in DevTools). The user-perceived order is unchanged: the
+  // page is still interactive within the same frame.
+  requestAnimationFrame(() => drawPropertyCharts(filtered));
+}
+
+// Resolve the active property id from the freshly loaded list. Falls
+// back to first-active when the hinted id is no longer valid.
+function _resolveActivePropertyId(hintedId, serverPick) {
+  const exists = (id) => propertiesList.some((p) => p.property_id === id);
+  if (serverPick && exists(serverPick)) return serverPick;
+  if (exists(hintedId)) return hintedId;
+  return propertiesList.length ? propertiesList[0].property_id : '';
+}
+
+async function renderPropertiesPage() {
+  const root = document.getElementById('properties-content');
+  if (!root) return;
+
+  // Hint the server about which property to populate so the combined
+  // endpoint can pre-build the details payload without us needing a
+  // second round-trip. Falls back to "" (server picks first active).
+  const remembered = localStorage.getItem('financeos.activePropertyId');
+  const hintedId = activePropertyId || remembered || '';
+
+  // SWR fast-path — paint cached state immediately so the page is
+  // interactive within milliseconds, then revalidate in the background.
+  // The cached payload was the full server response from last visit, so
+  // we can hydrate every module-level cache (propertiesList, accounts,
+  // tags) without doing any partial-rehydration gymnastics.
+  const cached = _readPropsCache(hintedId);
+  let renderedFromCache = false;
+  if (cached) {
+    const applied = _applyPropertiesPagePayload(cached);
+    if (propertiesList.length) {
+      const resolvedId = _resolveActivePropertyId(hintedId, applied.activeId);
+      activePropertyId = resolvedId;
+      if (applied.details && applied.details.property?.property_id === resolvedId) {
+        propertyDetails = applied.details;
+        _paintPropertiesPage(root);
+        renderedFromCache = true;
+      }
+    }
+  }
+
+  if (!renderedFromCache) {
+    root.innerHTML = `<div class="page-loading">${escapeHtml(t('page.properties.loading', {}, 'Loading properties…'))}</div>`;
+  }
+
+  let pageData;
+  try {
+    pageData = await loadPropertiesPage(hintedId);
+  } catch (err) {
+    console.error('[properties] page load failed:', err);
+    // Only surface the error banner when there was no cached render to
+    // fall back to. With a cache hit, the user already sees a working
+    // (possibly slightly stale) page; logging the error is enough.
+    if (!renderedFromCache) {
+      root.innerHTML = `<div class="error-banner">${escapeHtml(t('page.properties.err_list', { msg: err.message }, `Could not load properties: ${err.message}`))}</div>`;
+    }
+    return;
+  }
+
+  const resolvedId = _resolveActivePropertyId(hintedId, pageData.activeId);
+  activePropertyId = resolvedId;
+
+  // Use the bundled details when they match the resolved property;
+  // otherwise the user must have switched mid-flight — fall back to a
+  // targeted details fetch so the page still renders correctly.
+  if (pageData.details && pageData.details.property?.property_id === activePropertyId) {
+    propertyDetails = pageData.details;
+  } else {
+    try {
+      propertyDetails = await loadPropertyDetails(activePropertyId);
+    } catch (err) {
+      console.error('[properties] details fallback failed:', err);
+      if (!renderedFromCache) {
+        root.innerHTML = `<div class="error-banner">${escapeHtml(t('page.properties.err_details', { msg: err.message }, `Could not load property details: ${err.message}`))}</div>`;
+      }
+      return;
+    }
+  }
+
+  _paintPropertiesPage(root);
 }
 
 // ── Selector strip (one pill per property) ──────────────────────────────────
@@ -772,7 +955,18 @@ function renderWaterRows(rows) {
 
 // ── Charts ──────────────────────────────────────────────────────────────────
 
+// Tracks the pending rAF id for the staged chart-init schedule. A second
+// _paintPropertiesPage (e.g. SWR background revalidate) calls
+// _destroyPropertyCharts and we want to cancel any not-yet-run batches
+// from the previous render before they draw onto canvases that just got
+// replaced.
+let _propertyChartsRafId = null;
+
 function _destroyPropertyCharts() {
+  if (_propertyChartsRafId !== null) {
+    cancelAnimationFrame(_propertyChartsRafId);
+    _propertyChartsRafId = null;
+  }
   for (const c of propertyCharts) { try { c.destroy(); } catch (_) {} }
   propertyCharts = [];
 }
@@ -796,17 +990,49 @@ function drawPropertyCharts(details) {
     console.warn('Chart.js not loaded — skipping property charts');
     return;
   }
-  drawMonthlyBreakdownChart(details.cost_overview || { by_month: [] });
-  drawOtherCategoryChart(details.cost_overview || { by_category: [] });
-  drawLukuCostChart(details.monthly_luku);
-  drawLukuKwhChart(details.monthly_luku);
-  drawWaterCostChart(details.monthly_water);
-  drawYearlyChart(details.yearly);
-  drawPriceTrendChart(details.price_trend || []);
-  drawYtdElectricityChart(details.ytd_cumulative || {});
-  drawYtdWaterChart(details.ytd_cumulative || {});
-  drawPurchaseFreqChart(details.purchase_freq || []);
-  renderSeasonalityHeatmap(details.seasonality || { years: [], strom: {}, water: {} });
+
+  // Initialising 10 Chart.js instances + 1 seasonality heatmap in one
+  // go cost ~70ms of rAF-handler time (Chrome flags >50ms). Splitting
+  // across 3 animation frames keeps each batch under the threshold and
+  // lets the browser paint the above-the-fold charts immediately while
+  // the long-tail ones come up over the next two frames (16-32ms later,
+  // not user-perceivable).
+  const batches = [
+    () => {
+      // Above-the-fold: the headline stacked-cost view + first donut.
+      drawMonthlyBreakdownChart(details.cost_overview || { by_month: [] });
+      drawOtherCategoryChart(details.cost_overview || { by_category: [] });
+      drawLukuCostChart(details.monthly_luku);
+    },
+    () => {
+      // Mid-page time-series.
+      drawLukuKwhChart(details.monthly_luku);
+      drawWaterCostChart(details.monthly_water);
+      drawYearlyChart(details.yearly);
+      drawPriceTrendChart(details.price_trend || []);
+    },
+    () => {
+      // Long-tail comparison + seasonality.
+      drawYtdElectricityChart(details.ytd_cumulative || {});
+      drawYtdWaterChart(details.ytd_cumulative || {});
+      drawPurchaseFreqChart(details.purchase_freq || []);
+      renderSeasonalityHeatmap(details.seasonality || { years: [], strom: {}, water: {} });
+    },
+  ];
+
+  let idx = 0;
+  function runBatch() {
+    _propertyChartsRafId = null;
+    if (idx >= batches.length) return;
+    batches[idx++]();
+    if (idx < batches.length) {
+      _propertyChartsRafId = requestAnimationFrame(runBatch);
+    }
+  }
+  // First batch runs synchronously — we're already inside an rAF from
+  // _paintPropertiesPage, so the above-the-fold charts hit the same
+  // frame and appear instantly. Subsequent batches chain via rAF.
+  runBatch();
 }
 
 function drawMonthlyBreakdownChart(co) {
@@ -1264,8 +1490,17 @@ function bindPropertyControls() {
   const waterBtn = document.getElementById('btn-add-water');
   if (waterBtn) waterBtn.addEventListener('click', () => openWaterModal());
 
-  // Edit + Delete buttons (delegated through the page root)
-  root.addEventListener('click', async (ev) => {
+  // Edit + Delete buttons (delegated through the page root).
+  // F-H7 (CODE_REVIEW_2026-06-12): #properties-content persists across
+  // re-renders, but bindPropertyControls() runs on every paint (twice per
+  // visit via the SWR cache+network pattern) AND on every period-pill
+  // click — the stacked listeners made one delete click open N confirm
+  // dialogs and fire N destructive POSTs. Replace the handler instead of
+  // stacking it.
+  if (root._fosClickHandler) {
+    root.removeEventListener('click', root._fosClickHandler);
+  }
+  root._fosClickHandler = async (ev) => {
     // ── Edit ──
     const lukuEdit = ev.target.closest('.btn-luku-edit');
     if (lukuEdit) {
@@ -1301,6 +1536,13 @@ function bindPropertyControls() {
           body: JSON.stringify({ luku_id: id }),
         });
         if (!resp.ok) throw new Error(await resp.text());
+        // Global state.tx is loaded once at boot from data/transactions.csv;
+        // utility deletes cascade the linked expense (+ reimburse) TX on disk
+        // but in-memory state stays stale until we explicitly refresh it.
+        // Without this, the Transactions page / Dashboard Recent TX / account
+        // balances keep showing the deleted TX until a full page reload.
+        _invalidatePropsCache(activePropertyId);
+        await refreshData();
         await renderPropertiesPage();
       } catch (err) {
         const alertFn = typeof window.uiAlert === 'function' ? window.uiAlert : (m) => Promise.resolve(window.alert(m));
@@ -1325,6 +1567,8 @@ function bindPropertyControls() {
           body: JSON.stringify({ water_id: id }),
         });
         if (!resp.ok) throw new Error(await resp.text());
+        _invalidatePropsCache(activePropertyId);
+        await refreshData();
         await renderPropertiesPage();
       } catch (err) {
         const alertFn = typeof window.uiAlert === 'function' ? window.uiAlert : (m) => Promise.resolve(window.alert(m));
@@ -1332,7 +1576,8 @@ function bindPropertyControls() {
       }
       return;
     }
-  });
+  };
+  root.addEventListener('click', root._fosClickHandler);
 }
 
 async function downloadPropertyExcel(propertyId) {
@@ -1468,6 +1713,48 @@ const _propsField = (name, labelText, inputHtml, full = false) => {
   </label>`;
 };
 
+// Build the tag-picker block for LUKU/Water modals. Auto-tags (property
+// cost_tag + account-by-tag) render as a muted hint above the picker so
+// the user sees them but can't toggle them off — server applies them
+// regardless. The picker exposes only "extras" the user can add on top
+// (e.g. a landlord-relevant cost tag for repairs the landlord should see).
+function _propsTagPickerBlock({ prop, existingTagsCsv = '', accountAlias = '' }) {
+  const propAuto = (prop?.cost_tag || '').trim();
+  const acctAuto = _propsAccountAutotag(accountAlias);
+  const autoSet = new Set([propAuto, acctAuto].filter(Boolean));
+  const existing = new Set(
+    (existingTagsCsv || '').split(';').map(s => s.trim()).filter(Boolean)
+  );
+  // Pre-check anything already set on the row (edit case) that isn't an
+  // auto-tag — auto-tags re-apply server-side, no need to round-trip them.
+  const checkboxes = _propsTagsCache.length
+    ? _propsTagsCache.map(tg => {
+        if (autoSet.has(tg.tag)) return '';
+        const checked = existing.has(tg.tag) ? 'checked' : '';
+        return `<label><input type="checkbox" value="${escapeHtml(tg.tag)}" ${checked}><span>${escapeHtml(tg.tag)}</span></label>`;
+      }).filter(Boolean).join('')
+    : '';
+  const autoLabel = t('page.properties.modal.tags_auto', {}, 'Auto');
+  const autoHtml = autoSet.size
+    ? `<div style="font-size:11px;color:var(--muted);margin-bottom:6px;"><strong>${escapeHtml(autoLabel)}:</strong> ${[...autoSet].map(escapeHtml).join(', ')}</div>`
+    : '';
+  const tagsLabel = t('common.col.tags', {}, 'Tags');
+  return `
+    <div class="atx-row" style="margin-top:4px;">
+      <div class="atx-field fx1">
+        <label>${escapeHtml(tagsLabel)}</label>
+        ${autoHtml}
+        <div class="tag-picker" id="props-tag-picker">${checkboxes || `<span style="font-size:12px;color:var(--muted);">${escapeHtml(t('page.properties.modal.tags_none', {}, 'No additional tags defined.'))}</span>`}</div>
+      </div>
+    </div>`;
+}
+
+function _propsCollectPickerTags(formEl) {
+  const picker = formEl.querySelector('#props-tag-picker');
+  if (!picker) return [];
+  return Array.from(picker.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+}
+
 function openLukuModal(existing = null) {
   if (!propertyDetails) return;
   const prop = propertyDetails.property;
@@ -1490,6 +1777,7 @@ function openLukuModal(existing = null) {
       ${_propsField('meter', t('page.properties.meter', {}, 'Meter Nr.'), `<input type="text" value="${escapeHtml(meter)}" placeholder="Electricity meter number" style="${inputCss}">`)}
       ${_propsField('note', t('page.properties.note', {}, 'Note (optional)'), `<input type="text" value="${escapeHtml(note)}" placeholder="free text" style="${inputCss}">`)}
     </div>
+    ${_propsTagPickerBlock({ prop, existingTagsCsv: existing?.tags || '', accountAlias: existing?.account || prop.default_account })}
     <p style="margin:14px 0 0;font-size:12px;color:var(--muted);line-height:1.45;">${escapeHtml(t('page.properties.luku_hint', {}, 'Creates LUKU log + expense TX (Bills:Electricity, configured payee). Pass-through accounts automatically generate a reimbursement counter-entry.'))}</p>`;
   const title = isEdit
     ? t('page.properties.modal.edit_luku', {}, 'Edit Electricity Entry')
@@ -1505,6 +1793,7 @@ function openLukuModal(existing = null) {
       meter: fd.get('meter') || '',
       meter_reading_kwh: fd.get('meter_reading_kwh') || '',
       note: fd.get('note') || '',
+      tags: _propsCollectPickerTags(form),
     };
     let url = '/api/properties/luku/add';
     if (isEdit) {
@@ -1517,6 +1806,8 @@ function openLukuModal(existing = null) {
     });
     if (!resp.ok) throw new Error(await resp.text());
     _closePropsModal();
+    _invalidatePropsCache(activePropertyId);
+    await refreshData();
     await renderPropertiesPage();
   });
 }
@@ -1541,6 +1832,7 @@ function openWaterModal(existing = null) {
       ${_propsField('meter', t('page.properties.meter', {}, 'Meter'), `<input type="text" value="${escapeHtml(meter)}" placeholder="Water meter" style="${inputCss}">`)}
       ${_propsField('note', t('page.properties.note', {}, 'Note (optional)'), `<input type="text" value="${escapeHtml(note)}" placeholder="free text" style="${inputCss}">`, true)}
     </div>
+    ${_propsTagPickerBlock({ prop, existingTagsCsv: existing?.tags || '', accountAlias: existing?.account || prop.default_account })}
     <p style="margin:14px 0 0;font-size:12px;color:var(--muted);line-height:1.45;">${escapeHtml(t('page.properties.water_hint', {}, 'Creates Water log + expense TX (Bills:Water, configured payee). Pass-through accounts automatically generate a reimbursement counter-entry.'))}</p>`;
   const title = isEdit
     ? t('page.properties.modal.edit_water', {}, 'Edit Water Entry')
@@ -1555,6 +1847,7 @@ function openWaterModal(existing = null) {
       control_number: fd.get('control_number') || '',
       meter: fd.get('meter') || '',
       note: fd.get('note') || '',
+      tags: _propsCollectPickerTags(form),
     };
     let url = '/api/properties/water/add';
     if (isEdit) {
@@ -1567,6 +1860,8 @@ function openWaterModal(existing = null) {
     });
     if (!resp.ok) throw new Error(await resp.text());
     _closePropsModal();
+    _invalidatePropsCache(activePropertyId);
+    await refreshData();
     await renderPropertiesPage();
   });
 }
@@ -1639,6 +1934,7 @@ async function renderPropertiesSettingsTab() {
           body: JSON.stringify({ property_id: pid, active: newActive }),
         });
         if (!resp.ok) throw new Error(await resp.text());
+        _invalidatePropsCache();
         await renderPropertiesSettingsTab();
       } catch (err) {
         const alertFn = typeof window.uiAlert === 'function' ? window.uiAlert : (m) => Promise.resolve(window.alert(m));
@@ -1665,6 +1961,7 @@ async function renderPropertiesSettingsTab() {
           const errData = await resp.json().catch(() => ({}));
           throw new Error(errData.error || `HTTP ${resp.status}`);
         }
+        _invalidatePropsCache();
         await renderPropertiesSettingsTab();
       } catch (err) {
         const alertFn = typeof window.uiAlert === 'function' ? window.uiAlert : (m) => Promise.resolve(window.alert(m));
@@ -1791,6 +2088,7 @@ function openPropertyModal(existing = null) {
       throw new Error(errData.error || `HTTP ${resp.status}`);
     }
     _closePropsModal();
+    _invalidatePropsCache();
     await renderPropertiesSettingsTab();
   });
 }

@@ -1187,6 +1187,11 @@ async function saveFuelEntry(overlay, vehicle, existing = null) {
       if (reloaded) {
         state.tx = reloaded.tx;
         state.balances = computeBalances(state.tx, state.accounts);
+        // F-H4 (CODE_REVIEW_2026-06-12): the O(1) lookup indexes kept
+        // pointing at the PRE-mutation tx array — the account page then
+        // showed the old TX list with a fresh balance. Rebuild alongside
+        // every state.tx replacement (mirrors refreshData()).
+        state.txIndex = buildTxIndexes(state.tx);
       }
     }
     renderVehiclesPage();
@@ -1231,6 +1236,11 @@ async function deleteFuelEntry(fuelId) {
       if (reloaded) {
         state.tx = reloaded.tx;
         state.balances = computeBalances(state.tx, state.accounts);
+        // F-H4 (CODE_REVIEW_2026-06-12): the O(1) lookup indexes kept
+        // pointing at the PRE-mutation tx array — the account page then
+        // showed the old TX list with a fresh balance. Rebuild alongside
+        // every state.tx replacement (mirrors refreshData()).
+        state.txIndex = buildTxIndexes(state.tx);
       }
     }
     renderVehiclesPage();

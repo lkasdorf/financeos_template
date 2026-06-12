@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FinanceOS — Unit Tests</title>
+<style>
+  body { font-family: ui-monospace, "Cascadia Mono", monospace; max-width: 900px; margin: 24px auto; padding: 0 16px; background: #fafafa; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  #summary { padding: 8px 12px; border-radius: 4px; margin-bottom: 16px; font-weight: 600; }
+  .ok  { background: #d4edda; color: #155724; }
+  .bad { background: #f8d7da; color: #721c24; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 13px; }
+  li.pass::before { content: "✓ "; color: #28a745; font-weight: 700; }
+  li.fail::before { content: "✗ "; color: #dc3545; font-weight: 700; }
+  li.fail { color: #721c24; background: #fff5f5; }
+  pre { font-size: 11px; color: #777; margin: 4px 0 0 18px; white-space: pre-wrap; }
+  p.note { font-size: 11px; color: #666; }
+</style>
+</head>
+<body>
+
+<h1>FinanceOS — Unit Tests</h1>
+<p class="note">
+  Single-page test runner for pure dashboard helpers. No build, no npm — open
+  this file via the dashboard server (<code>/dashboard/tests.html</code>) and
+  the suite runs automatically. Add new tests at the bottom of this file.
+</p>
+
+<div id="summary">running…</div>
+<ul id="results"></ul>
+
+<!-- Hidden stubs for DOM nodes core.js touches at top-level (source-tag,
+     source-label, refresh-btn, currency-switcher). Without these, top-level
+     statements throw and halt subsequent function definitions in some
+     browsers. They stay hidden — tests never look at them. -->
+<div style="display:none">
+  <span id="source-tag"></span>
+  <span id="source-label"></span>
+  <button id="refresh-btn"></button>
+  <div id="currency-switcher"></div>
+  <span id="date-range"></span>
+  <span id="tx-count"></span>
+  <span id="footer-updated"></span>
+  <div id="dashboard"></div>
+</div>
+
+<!-- Pull the helpers from core.js. Only pure functions are tested here;
+     anything that touches the DOM, network, or state is out of scope. -->
+<script src="i18n.js"></script>
+<script src="core.js"></script>
+
+<script>
+// ─── Tiny test harness ─────────────────────────────────────────────────
+const _tests = [];
+function test(name, fn) { _tests.push({ name, fn }); }
+function eq(actual, expected, label) {
+  const a = JSON.stringify(actual);
+  const e = JSON.stringify(expected);
+  if (a !== e) throw new Error(`${label || 'eq'}: expected ${e}, got ${a}`);
+}
+function approx(actual, expected, eps, label) {
+  if (Math.abs(actual - expected) > (eps || 1e-9))
+    throw new Error(`${label || 'approx'}: expected ~${expected}, got ${actual}`);
+}
+function assert(cond, label) { if (!cond) throw new Error(label || 'assertion failed'); }
+
+// ─── Tests ─────────────────────────────────────────────────────────────
+
+test('parseAmountInput: plain integer', () => {
+  eq(parseAmountInput('45'), 45);
+});
+
+test('parseAmountInput: k-suffix', () => {
+  eq(parseAmountInput('45k'), 45000);
+  eq(parseAmountInput('2.5k'), 2500);
+});
+
+test('parseAmountInput: m-suffix', () => {
+  eq(parseAmountInput('2.5m'), 2500000);
+});
+
+test('parseAmountInput: EU decimal comma', () => {
+  approx(parseAmountInput('125,48'), 125.48, 1e-9);
+  approx(parseAmountInput('1.234,56'), 1234.56, 1e-9);
+});
+
+test('parseAmountInput: US decimal dot + thousands', () => {
+  approx(parseAmountInput('1,234.56'), 1234.56, 1e-9);
+});
+
+test('parseAmountInput: space as thousands sep (fr-FR)', () => {
+  approx(parseAmountInput('1 234,56'), 1234.56, 1e-9);
+});
+
+test('parseAmountInput: invalid input returns NaN', () => {
+  assert(Number.isNaN(parseAmountInput('abc')), 'abc');
+  assert(Number.isNaN(parseAmountInput('')), 'empty');
+  assert(Number.isNaN(parseAmountInput(null)), 'null');
+});
+
+test('parseAmountInputStr: NaN becomes empty string', () => {
+  eq(parseAmountInputStr('abc'), '');
+  eq(parseAmountInputStr('45k'), '45000');
+});
+
+test('escapeHtml: escapes the five HTML-significant chars', () => {
+  eq(escapeHtml(`<a href="x">&'</a>`), '&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;');
+});
+
+test('escapeHtml: handles null + undefined', () => {
+  eq(escapeHtml(null), '');
+  eq(escapeHtml(undefined), '');
+});
+
+test('computeBalances: expense and income on tracked accounts', () => {
+  const accounts = [
+    { alias: 'cash', initial_balance: 100 },
+    { alias: 'crdb', initial_balance: 1000 },
+  ];
+  const tx = [
+    { type: 'expense', account: 'cash', amount: 30 },
+    { type: 'income',  account: 'crdb', amount: 500 },
+  ];
+  const b = computeBalances(tx, accounts);
+  eq(b.cash, 70);
+  eq(b.crdb, 1500);
+});
+
+test('computeBalances: transfer moves between accounts', () => {
+  const accounts = [
+    { alias: 'crdb', initial_balance: 1000 },
+    { alias: 'sav',  initial_balance: 0 },
+  ];
+  const tx = [
+    { type: 'transfer', account: 'crdb', amount: 400, transfer_to_account: 'sav' },
+  ];
+  const b = computeBalances(tx, accounts);
+  eq(b.crdb, 600);
+  eq(b.sav, 400);
+});
+
+test('computeBalances: transfer with explicit transfer_to_amount (FX)', () => {
+  const accounts = [
+    { alias: 'crdb', initial_balance: 1000000 },
+    { alias: 'eur',  initial_balance: 0 },
+  ];
+  const tx = [
+    { type: 'transfer', account: 'crdb', amount: 600000,
+      transfer_to_account: 'eur', transfer_to_amount: 200 },
+  ];
+  const b = computeBalances(tx, accounts);
+  eq(b.crdb, 400000);
+  eq(b.eur, 200);
+});
+
+test('isInNetWorth: explicit flag wins', () => {
+  assert(isInNetWorth({ include_in_net_worth: 'true', owner: 'beate' }), 'beate true');
+  assert(!isInNetWorth({ include_in_net_worth: 'false', owner: 'self', status: 'active' }), 'self false');
+});
+
+test('buildTxIndexes: byAccount groups by source account', () => {
+  const tx = [
+    { account: 'cash', type: 'expense', amount: 10, date: '2026-01-15' },
+    { account: 'cash', type: 'expense', amount: 20, date: '2026-01-16' },
+    { account: 'crdb', type: 'income',  amount: 100, date: '2026-01-15' },
+  ];
+  const { byAccount } = buildTxIndexes(tx);
+  eq(byAccount.get('cash').length, 2);
+  eq(byAccount.get('crdb').length, 1);
+});
+
+test('buildTxIndexes: transfer surfaces under both endpoints', () => {
+  const tx = [
+    { account: 'crdb', type: 'transfer', amount: 500, transfer_to_account: 'sav', date: '2026-01-15' },
+  ];
+  const { byAccount } = buildTxIndexes(tx);
+  eq(byAccount.get('crdb').length, 1);
+  eq(byAccount.get('sav').length, 1);
+});
+
+test('buildTxIndexes: same-account transfer not double-counted', () => {
+  const tx = [
+    { account: 'crdb', type: 'transfer', amount: 0, transfer_to_account: 'crdb', date: '2026-01-15' },
+  ];
+  const { byAccount } = buildTxIndexes(tx);
+  eq(byAccount.get('crdb').length, 1);
+});
+
+test('buildTxIndexes: byYearMonth keys are YYYY-MM slices', () => {
+  const tx = [
+    { account: 'cash', type: 'expense', amount: 1, date: '2026-01-15' },
+    { account: 'cash', type: 'expense', amount: 2, date: '2026-01-16' },
+    { account: 'cash', type: 'expense', amount: 3, date: '2026-02-01' },
+  ];
+  const { byYearMonth } = buildTxIndexes(tx);
+  eq(byYearMonth.get('2026-01').length, 2);
+  eq(byYearMonth.get('2026-02').length, 1);
+});
+
+test('buildTxIndexes: rows with empty date or account are skipped', () => {
+  const tx = [
+    { account: '',     type: 'expense', amount: 10, date: '2026-01-15' },
+    { account: 'cash', type: 'expense', amount: 20, date: '' },
+  ];
+  const { byAccount, byYearMonth } = buildTxIndexes(tx);
+  // First row: no account → no byAccount entry, but date present → byYearMonth entry
+  eq(byAccount.has(''), false);
+  eq(byYearMonth.get('2026-01').length, 1);
+  // Second row: account present → byAccount entry, but no date → no byYearMonth entry
+  eq(byAccount.get('cash').length, 1);
+  eq(byYearMonth.has(''), false);
+});
+
+test('isInNetWorth: legacy fallback when flag missing', () => {
+  // owner=self, status=active, type != pass_through → in
+  assert(isInNetWorth({ owner: 'self', status: 'active', type: 'cash' }), 'self/active/cash');
+  // pass_through excluded
+  assert(!isInNetWorth({ owner: 'self', status: 'active', type: 'pass_through' }), 'pass-through');
+  // archived excluded
+  assert(!isInNetWorth({ owner: 'self', status: 'archived', type: 'cash' }), 'archived');
+  // custody excluded
+  assert(!isInNetWorth({ owner: 'beate', status: 'active', type: 'cash' }), 'custody');
+});
+
+// ─── Runner ────────────────────────────────────────────────────────────
+(function run() {
+  const ul = document.getElementById('results');
+  let passed = 0, failed = 0;
+  for (const { name, fn } of _tests) {
+    const li = document.createElement('li');
+    try {
+      fn();
+      li.className = 'pass';
+      li.textContent = name;
+      passed++;
+    } catch (err) {
+      li.className = 'fail';
+      li.textContent = name;
+      const pre = document.createElement('pre');
+      pre.textContent = err.message;
+      li.appendChild(pre);
+      failed++;
+    }
+    ul.appendChild(li);
+  }
+  const sum = document.getElementById('summary');
+  sum.className = failed === 0 ? 'ok' : 'bad';
+  sum.textContent = `${passed}/${_tests.length} passed${failed ? `, ${failed} failed` : ''}`;
+  document.title = `${failed === 0 ? '✓' : '✗'} FinanceOS Tests (${passed}/${_tests.length})`;
+})();
+</script>
+</body>
+</html>

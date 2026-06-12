@@ -145,6 +145,24 @@ def calculate_next_run(frequency: str, from_date: date) -> date:
         return date(next_year, next_month, day)
 
 
+def advance_next_run(frequency: str, old_due: date, today: date) -> date:
+    """Return the first occurrence of ``frequency`` strictly after ``today``,
+    iterating from the entry's OLD due date (O-M1, CODE_REVIEW_2026-06-12).
+
+    Anchoring on today instead used to skip a cycle across month
+    boundaries: ``monthly:15`` due Jun 15 but fired Jul 1 advanced
+    straight to Aug 15 — Jul 15 was silently lost. Iterating from the
+    due date lands on Jul 15. The cap mirrors _missed_periods so a
+    malformed frequency cannot loop forever.
+    """
+    nxt = old_due
+    for _ in range(120):
+        nxt = calculate_next_run(frequency, nxt)
+        if nxt > today:
+            break
+    return nxt
+
+
 def _missed_periods(frequency: str, last_due: date, today: date) -> int:
     """Return the number of full periods skipped between ``last_due``
     and ``today`` because cron only fires once per due-entry.
@@ -226,6 +244,15 @@ def _build_primary_line(entry: dict, accounts: dict, categories: dict, today: da
         currency = accounts[account_alias]["currency"]
 
     manual_tags = [t.strip() for t in entry.get("manual_tags", "").split(";") if t.strip()]
+    # Optional property link: mirror forms-add-tx.js Property-Picker behavior.
+    # The property_id itself is never stored on transactions.csv — only the
+    # resolved cost_tag is appended, then apply_auto_tags merges it with
+    # account/payee/category rules and bridge tags.
+    property_id = (entry.get("property_id") or "").strip()
+    if property_id:
+        cost_tag = tx_engine._resolve_property_cost_tag(property_id)
+        if cost_tag and cost_tag not in manual_tags:
+            manual_tags.append(cost_tag)
     all_tags = tx_engine.apply_auto_tags(account_alias, payee, manual_tags, category)
 
     cat_info = categories.get(category, {})
@@ -332,7 +359,6 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     scheduled = tx_engine.load_scheduled()
     accounts = tx_engine.load_accounts()
     categories = tx_engine.load_categories()
-    existing_ids = tx_engine.load_existing_import_ids()
 
     due, warnings = _filter_due(scheduled, today)
     if selected_ids is not None:
@@ -342,7 +368,7 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     else:
         skipped_ids = []
 
-    if not due:
+    def _empty_result() -> dict:
         return {
             "today": today.isoformat(),
             "booked": 0,
@@ -353,15 +379,8 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
             "warnings": warnings,
         }
 
-    # v1.5.1: detect subscription-linked entries up-front so subscription_log
-    # is backed up before any write touches it. Strip whitespace before the
-    # truthiness check so a row with "  " is correctly treated as unlinked.
-    has_sub_links = any((e.get("subscription_id") or "").strip() for e in due)
-
-    backup_file("transactions", BACKUP_TARGETS["transactions"])
-    backup_file("scheduled", BACKUP_TARGETS["scheduled"])
-    if has_sub_links:
-        backup_file("subscription_log", BACKUP_TARGETS["subscription_log"])
+    if not due:
+        return _empty_result()
 
     all_tx_lines: list[dict] = []
     summaries: list[str] = []
@@ -374,6 +393,39 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     # since-removed import_id. The lock is reentrant (C-02) so nested
     # acquires from append_transactions / save_scheduled are fine.
     with tx_engine.tx_write_lock():
+        # O-M2 (CODE_REVIEW_2026-06-12): the pre-lock due check above is
+        # advisory — the 06:00 cron tick and a dashboard "Run due" click
+        # landing concurrently both saw the same entries as due, and the
+        # lock only serialized the WRITES, not the decision. Reload and
+        # re-filter under the lock; only entries still due get booked,
+        # and the reloaded list is what save_scheduled() persists.
+        scheduled = tx_engine.load_scheduled()
+        recheck, _ = _filter_due(scheduled, today)
+        still_due = {e.get("sched_id", "") for e in recheck}
+        fired_concurrently = [
+            e.get("sched_id", "") for e in due
+            if e.get("sched_id", "") not in still_due
+        ]
+        if fired_concurrently:
+            skipped_ids.extend(fired_concurrently)
+            warnings.append(
+                "skipped (fired concurrently): " + ", ".join(fired_concurrently))
+        sel_ids = {e.get("sched_id", "") for e in due}
+        due = [e for e in recheck if e.get("sched_id", "") in sel_ids]
+        if not due:
+            return _empty_result()
+
+        # v1.5.1: detect subscription-linked entries up-front so
+        # subscription_log is backed up before any write touches it.
+        # B-L6: backups now run UNDER the lock so the snapshot is
+        # guaranteed to reflect the pre-write state.
+        has_sub_links = any((e.get("subscription_id") or "").strip() for e in due)
+        backup_file("transactions", BACKUP_TARGETS["transactions"])
+        backup_file("scheduled", BACKUP_TARGETS["scheduled"])
+        if has_sub_links:
+            backup_file("subscription_log", BACKUP_TARGETS["subscription_log"])
+
+        existing_ids = tx_engine.load_existing_import_ids()
         for entry in due:
             primary = _build_primary_line(entry, accounts, categories, today, existing_ids)
             existing_ids.add(primary["import_id"])
@@ -389,10 +441,17 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
 
             summaries.append(f"{entry.get('name', '?')} ({entry.get('payee', '?')})")
 
+            # O-M1 (CODE_REVIEW_2026-06-12): anchor the advancement on the
+            # entry's DUE date, not on today — see advance_next_run().
+            try:
+                old_due = date.fromisoformat((entry.get("next_run") or "").strip())
+            except ValueError:
+                old_due = today
             entry["last_run"] = today.isoformat()
             try:
-                entry["next_run"] = calculate_next_run(entry.get("frequency", ""), today).isoformat()
-            except ValueError as e:
+                entry["next_run"] = advance_next_run(
+                    entry.get("frequency", ""), old_due, today).isoformat()
+            except (ValueError, RuntimeError) as e:
                 warnings.append(f"Could not calculate next_run for {entry.get('sched_id', '?')}: {e}")
                 entry["next_run"] = (today + timedelta(days=30)).isoformat()
 
@@ -483,6 +542,22 @@ def main() -> int:
             p = e["primary"]
             print(f"    {e['sched_id']}: {e['name']} — {p['amount']} {p['currency']} to {p['payee']}")
         return 0
+
+    # O-H3 (CODE_REVIEW_2026-06-12): a fenced standby must not book
+    # scheduled TX — that's the double-booking half of the dual-primary
+    # hazard. The role file covers the normal case; the origin refresh
+    # additionally catches a just-rebooted ex-primary whose first
+    # cron_commit tick hasn't propagated the demotion yet (this script
+    # books money, so the extra fetch is worth it).
+    import host_role
+    if host_role.is_standby():
+        print("  host role is standby — fenced, not booking (O-H3)")
+        return 0
+    if host_role.my_host_type():
+        host_role.fetch_origin()
+        if host_role.demote_if_peer_primary(log_prefix="cron_sched"):
+            print("  self-pacified to standby — not booking (O-H3)")
+            return 0
 
     summary = run_due(today, source="cron")
     for w in summary["warnings"]:

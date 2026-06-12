@@ -18,6 +18,70 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.7.2-rc.1] — 2026-06-12
+
+Security- and integrity-focused release following a full multi-agent code review
+of the upstream codebase, plus everything shipped upstream since mid-May.
+
+### Security
+
+- **Server-side regeneration of auto-generated TX lines.** `/api/tx/confirm` no
+  longer trusts round-tripped preview lines flagged `is_auto_generated` — pass-through
+  counter-entries and ATM fee rows are rebuilt server-side and every user line is
+  validated. A stale or manipulated client can no longer skip validation.
+- **XSS hardening across the dashboard.** Category paths and tag names (both
+  free-text) are now escaped in every `<option>`/checkbox-value sink (settings
+  modals, payee defaults, transaction/account filters, edit modal); the branding
+  `display_name_html` is routed through the strict i18n HTML sanitizer instead of
+  raw `innerHTML`.
+
+### Added
+
+- **Booking idempotency.** Clients send a `client_id` per booking; the server
+  remembers recent confirmations (7-day TTL, runtime file) and replays the stored
+  import IDs on a lost-ack retry instead of booking a duplicate.
+- **Host-role fencing (primary/standby pairs).** New `scripts/host_role.py`:
+  a `~/.fos-role` marker plus a tracked `config/active_primary.json` let a
+  recovering ex-primary self-pacify after a failover — crons exit cleanly and
+  write endpoints answer 503 on a fenced standby while the read-only dashboard
+  stays usable. Inert unless `FINANCEOS_HOST_TYPE` / `host.*_hostnames` are
+  configured, so single-host installs are unaffected.
+- **Spanish + French locales** (2051 keys each) with BCP-47 number/date
+  formatting, plus translated FAQs (`docs/faq.es.md`, `docs/faq.fr.md`).
+- **Bulk edit** on the Transactions page: set/remove property, link/unlink
+  subscription, change payee, move account (with currency pre-flight).
+- **In-browser unit test runner** (`dashboard/tests.html`) for pure helpers.
+
+### Changed
+
+- **Settings navigation** rebuilt as a grouped left sidebar (19 tabs in 5
+  sections; collapses to a native select on mobile).
+- **Mobile polish series**: transaction table becomes a stacked card list on
+  phones, denser dashboard KPIs, compact properties page, tighter report
+  toolbars and modals with full-width stacked footer buttons.
+- **Performance.** Gzip for all API/text responses; conditional GET (ETag/304)
+  for `/data/*` and `/config/*`; combined `/api/properties/page` endpoint with
+  stale-while-revalidate cache; goals/budgets load in parallel with the boot
+  batch; `/api/scheduled/list` is single-flight per render burst; `/api/health`
+  caches its expensive git/data-size snapshot for 30s; mutation refreshes use a
+  targeted `refreshData()` instead of a full re-boot.
+
+### Fixed
+
+- **Pass-through counter-entries can no longer be orphaned.** Generic TX
+  delete/update (single and bulk) now cascades via the `counter_entry_id` FK:
+  deleting either half removes the pair, edits mirror date/amount/currency/
+  account/tags onto the income leg, and moving a TX onto/off a pass-through
+  account creates/removes the twin.
+- **Scheduled transactions fired late across a month boundary no longer skip a
+  cycle** — the next-run advancement anchors on the entry's due date instead of
+  today, and due-ness is re-validated under the write lock.
+- **PWA**: queue dates use the local calendar day (UTC shifted bookings before
+  3am to the previous day), 401s no longer burn the retry budget, stranded
+  error rows have per-item retry/delete, receipt uploads are not repeated on
+  retry, duplicate-type restore when duplicating a TX, FX rate overrides
+  survive refreshes, the account detail page re-renders after mutations.
+
 ## [1.7.1-rc.1] - 2026-05-14
 
 Patch release on top of `v1.7.0`. Three backend fixes — no schema or

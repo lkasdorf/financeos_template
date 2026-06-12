@@ -526,7 +526,14 @@ def build_luku_tx(luku_row: dict, prop: dict) -> dict:
     payee = prop.get("electricity_payee", "") or ""
     category = prop.get("electricity_category", "Bills:Electricity") or "Bills:Electricity"
     cost_tag = (prop.get("cost_tag") or "").strip()
+    # Extra tags from the modal/picker arrive via luku_row["_extra_tags"];
+    # merged with the property cost_tag as explicit_tags so apply_auto_tags
+    # treats them as user-set (additive, never removed by auto rules).
     explicit = [cost_tag] if cost_tag else []
+    for et in luku_row.get("_extra_tags") or []:
+        et = (et or "").strip()
+        if et and et not in explicit:
+            explicit.append(et)
     tags = ";".join(
         tx_engine.apply_auto_tags(luku_row["account"], payee, explicit, category)
     )
@@ -560,7 +567,12 @@ def build_water_tx(water_row: dict, prop: dict) -> dict:
     payee = prop.get("water_payee", "") or ""
     category = prop.get("water_category", "Bills:Water") or "Bills:Water"
     cost_tag = (prop.get("cost_tag") or "").strip()
+    # See build_luku_tx for the _extra_tags rationale.
     explicit = [cost_tag] if cost_tag else []
+    for et in water_row.get("_extra_tags") or []:
+        et = (et or "").strip()
+        if et and et not in explicit:
+            explicit.append(et)
     tags = ";".join(
         tx_engine.apply_auto_tags(water_row["account"], payee, explicit, category)
     )
@@ -591,6 +603,7 @@ def add_luku_entry(
     account: str | None = None, meter: str = "",
     meter_reading_kwh: float | str = "",
     note: str = "",
+    tags: list[str] | None = None,
 ) -> dict:
     """Create a LUKU entry and the linked transaction(s).
 
@@ -648,6 +661,9 @@ def add_luku_entry(
         "meter_reading_kwh": reading_str,
         "tx_import_id": "",
         "note": note,
+        # _extra_tags is consumed by build_luku_tx and dropped by
+        # append_luku_log (which projects to LUKU_LOG_COLUMNS only).
+        "_extra_tags": list(tags or []),
     }
 
     # Atomic across existing_ids snapshot + append + log persist so
@@ -700,6 +716,7 @@ def add_water_entry(
     *, date: str, property_id: str, total_price: float,
     account: str | None = None, control_number: str = "",
     meter: str = "", note: str = "",
+    tags: list[str] | None = None,
 ) -> dict:
     """Create a water bill entry and the linked transaction(s).
 
@@ -735,6 +752,8 @@ def add_water_entry(
         "account": account_alias,
         "tx_import_id": "",
         "note": note,
+        # See add_luku_entry for the _extra_tags rationale.
+        "_extra_tags": list(tags or []),
     }
 
     # See add_luku_entry for the atomicity rationale — same shape.
@@ -955,6 +974,9 @@ def update_luku_entry(luku_id: str, **fields) -> dict:
             "meter_reading_kwh", target.get("meter_reading_kwh", ""),
         ),
         "note": fields.get("note", target.get("note", "")),
+        # No tag persistence on the log row — caller must pass `tags`
+        # explicitly on update or the recreated TX loses any extras.
+        "tags": list(fields.get("tags") or []),
     }
     old_tx = target.get("tx_import_id", "")
     # delete_luku_entry + add_luku_entry both take the lock internally
@@ -984,6 +1006,8 @@ def update_water_entry(water_id: str, **fields) -> dict:
         "control_number": fields.get("control_number", target.get("control_number", "")),
         "meter": fields.get("meter", target.get("meter", "")),
         "note": fields.get("note", target.get("note", "")),
+        # See update_luku_entry for the tag pass-through rationale.
+        "tags": list(fields.get("tags") or []),
     }
     old_tx = target.get("tx_import_id", "")
     # See update_luku_entry for the outer-lock rationale.

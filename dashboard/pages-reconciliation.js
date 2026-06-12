@@ -257,7 +257,7 @@ async function bookReconSuggestions() {
     if (data.error) { statusEl.textContent = t('pages.recon.err.generic_prefix', { err: data.error }, `Error: ${data.error}`); return; }
     statusEl.innerHTML = `<span class="c-pos">${t('pages.recon.ok.booked', { count: lines.length, ids: data.import_ids.join(', ') }, `Booked ${lines.length} transactions. IDs: ${data.import_ids.join(', ')}`)}</span>`;
     // Reload data
-    setTimeout(() => boot(), 500);
+    setTimeout(() => refreshData(), 500);
   } catch (e) {
     statusEl.textContent = t('pages.recon.err.booking_failed', { err: e.message }, `Booking failed: ${e.message}`);
   }

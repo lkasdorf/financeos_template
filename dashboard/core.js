@@ -8,7 +8,7 @@ var reportCharts = [];
 window.FEATURES = { metals: true, pwa: true, crdb_recon: true, debt_tracking: true, vehicles: true };
 async function loadFeatures() {
   try {
-    const res = await fetch('../config/features.json', { cache: 'no-store' });
+    const res = await fetch('../config/features.json', { cache: 'no-cache' });
     if (res.ok) Object.assign(window.FEATURES, await res.json());
   } catch { /* keep defaults */ }
 }
@@ -72,7 +72,7 @@ window.REPORTS_CONFIG = {
 };
 async function loadReportsConfig() {
   try {
-    const res = await fetch('../config/reports.json', { cache: 'no-store' });
+    const res = await fetch('../config/reports.json', { cache: 'no-cache' });
     if (res.ok) {
       const data = await res.json();
       // Strip _comment if present, deep-merge top-level keys.
@@ -152,7 +152,7 @@ function _deepMerge(target, source) {
 
 async function loadDefaults() {
   try {
-    const res = await fetch('../config/defaults.json', { cache: 'no-store' });
+    const res = await fetch('../config/defaults.json', { cache: 'no-cache' });
     if (res.ok) _deepMerge(window.DEFAULTS, await res.json());
   } catch { /* keep defaults */ }
 }
@@ -173,7 +173,7 @@ window.BRANDING = {
 };
 async function loadBranding() {
   try {
-    const res = await fetch('../config/branding.json', { cache: 'no-store' });
+    const res = await fetch('../config/branding.json', { cache: 'no-cache' });
     if (res.ok) {
       const data = await res.json();
       Object.assign(window.BRANDING, data);
@@ -192,7 +192,14 @@ function applyBranding() {
   const nameHtml = window.BRANDING.display_name_html || name;
   document.title = name;
   document.querySelectorAll('[data-brand]').forEach(el => { el.textContent = name; });
-  document.querySelectorAll('[data-brand-html]').forEach(el => { el.innerHTML = nameHtml; });
+  // F-M1 (CODE_REVIEW_2026-06-12): display_name_html comes from
+  // config/branding.json (editable via Settings → Branding) — route it
+  // through the same strict tag whitelist locale HTML uses instead of
+  // trusting it raw (stored-XSS sink on every page load otherwise).
+  const safeNameHtml = (typeof sanitizeI18nHtml === 'function')
+    ? sanitizeI18nHtml(nameHtml)
+    : escapeHtml(nameHtml);
+  document.querySelectorAll('[data-brand-html]').forEach(el => { el.innerHTML = safeNameHtml; });
   // Accent color — propagated as both --accent-color (legacy) and --accent
   // (newer chart/report styles) on :root, plus the derived variants so
   // hover glows / subtle backgrounds / lighter accent recolor with the
@@ -254,7 +261,7 @@ function _blendHex(aHex, bHex, amount) {
 }
 async function loadSmartDefaults() {
   try {
-    const res = await fetch('../config/smart_defaults.json', { cache: 'no-store' });
+    const res = await fetch('../config/smart_defaults.json', { cache: 'no-cache' });
     // L-F6 — same deep-merge as loadDefaults so a partial overlay
     // doesn't replace nested objects in SMART_DEFAULTS.
     if (res.ok) _deepMerge(window.SMART_DEFAULTS, await res.json());
@@ -269,7 +276,7 @@ async function loadSmartDefaults() {
 window.BUSINESSES = { entities: [] };
 async function loadBusinesses() {
   try {
-    const res = await fetch('../config/businesses.json', { cache: 'no-store' });
+    const res = await fetch('../config/businesses.json', { cache: 'no-cache' });
     if (res.ok) Object.assign(window.BUSINESSES, await res.json());
   } catch { /* keep defaults */ }
 }
@@ -314,6 +321,11 @@ var state = {
   savingsGoals: [],
   budgets: [],
   balances: {},
+  // Pre-built lookup tables — populated in loadAllData / refreshData via
+  // buildTxIndexes(state.tx). Defaulted to empty Maps so callers that
+  // run before the first data load (e.g. on a fresh setup wizard) don't
+  // hit `Cannot read property 'get' of undefined`.
+  txIndex: { byAccount: new Map(), byYearMonth: new Map() },
   currentMonth: null,  // 'YYYY-MM'
   primaryCurrency: window.DEFAULTS.currency.primary,
   alerts: [],
@@ -616,6 +628,48 @@ async function loadAllData() {
     tp.original_amount = parseFloat(tp.original_amount) || tp.amount;
   }
   return { tx, accounts, categories, thirdParty };
+}
+
+// ─── TX Indexes ──────────────────────────────────────────────────────────
+//
+// Pre-built Maps so hot filter paths don't have to linear-scan state.tx
+// (~4k rows today, growing ~1500/year). Computed once after every data
+// reload — boot() and refreshData() both call buildTxIndexes(state.tx)
+// before render so any callers can rely on state.txIndex being current.
+//
+// `byAccount`: account-alias → array of TXs that either originate from
+//   that account OR transfer into it. Used by the Account-page to skip
+//   a full state.tx scan on every render. Transfer-in rows show up under
+//   both the source and target buckets so the page filter logic stays
+//   identical (one filter, two sources combined).
+//
+// `byYearMonth`: 'YYYY-MM' → array of TXs in that month. Useful for
+//   monthly aggregations (cashflow chart, monthly summary, reports).
+//   Empty months simply have no key — callers should treat undefined as
+//   an empty array.
+function buildTxIndexes(tx) {
+  const byAccount = new Map();
+  const byYearMonth = new Map();
+  for (const t of tx) {
+    const acc = t.account;
+    if (acc) {
+      if (!byAccount.has(acc)) byAccount.set(acc, []);
+      byAccount.get(acc).push(t);
+    }
+    // A transfer-in row needs to surface under the destination account
+    // too, so the Account-page sees it when viewing the receiving side.
+    if (t.type === 'transfer' && t.transfer_to_account && t.transfer_to_account !== acc) {
+      const dest = t.transfer_to_account;
+      if (!byAccount.has(dest)) byAccount.set(dest, []);
+      byAccount.get(dest).push(t);
+    }
+    const ym = (t.date || '').slice(0, 7);
+    if (ym) {
+      if (!byYearMonth.has(ym)) byYearMonth.set(ym, []);
+      byYearMonth.get(ym).push(t);
+    }
+  }
+  return { byAccount, byYearMonth };
 }
 
 // ─── Amount Input Parser ─────────────────────────────────────────────────
@@ -1928,6 +1982,8 @@ async function loadHealthStatus() {
   // Server location
   if (h.is_pi) {
     parts.push('<span class="c-pos">Pi</span>');
+  } else if (h.is_vps) {
+    parts.push('<span class="c-pos">VPS</span>');
   } else {
     parts.push('<span class="c-mut2">Local</span>');
   }
@@ -1952,8 +2008,16 @@ async function loadHealthStatus() {
   // URL is configured in defaults.json#dev.peer_health_url). Lets a dev
   // machine check that the always-on host is alive and on the same commit.
   // Empty config (template default) skips the probe entirely.
+  //
+  // Under HTTPS context (Dashboard via Tailscale FQDN like
+  // https://your-host.your-tailnet.ts.net/dashboard/) the browser blocks
+  // any http:// peer probe as mixed-content AND the request error gets
+  // logged red to the console — same trap the PWA fell into pre-v2026-05-14.15.
+  // Skip the probe entirely when the protocols don't match.
   const peerUrl = window.DEFAULTS?.dev?.peer_health_url || '';
-  if (!h.is_pi && peerUrl) {
+  const pageIsHttps = window.location.protocol === 'https:';
+  const peerIsHttp = /^http:\/\//i.test(peerUrl);
+  if (!h.is_pi && peerUrl && !(pageIsHttps && peerIsHttp)) {
     const piSpan = document.createElement('span');
     piSpan.className = 'c-mut';
     piSpan.textContent = ' · Pi ...';
@@ -1976,7 +2040,12 @@ async function loadHealthStatus() {
         piSpan.innerHTML = ` ${dot} <span class="c-neg">Pi error</span>`;
       }
     } catch (e) {
-      piSpan.innerHTML = ` ${dot} <span class="c-neg">Pi offline</span>`;
+      // When running on VPS, Pi is expected to be Warm-Standby (financeos.service
+      // inactive). Render "Pi: Standby" in muted color instead of red "Pi offline"
+      // so the footer doesn't look alarming during normal Active-Passive operation.
+      const offlineLabel = h.is_vps ? 'Pi: Standby' : 'Pi offline';
+      const offlineClass = h.is_vps ? 'c-mut2' : 'c-neg';
+      piSpan.innerHTML = ` ${dot} <span class="${offlineClass}">${offlineLabel}</span>`;
     }
   }
 }
@@ -1998,6 +2067,15 @@ async function boot() {
       displayCurrency = window.SMART_DEFAULTS.ui.default_display_currency;
     }
 
+    // OPT-2 (CODE_REVIEW_2026-06-12): goals/budgets used to be two
+    // sequential POSTs awaited AFTER the parallel batch — two extra RTTs
+    // (~600ms) on every boot over the 300ms link. Kick them off alongside
+    // the batch and await the (then already settled) promises after it.
+    const goalsP = fetch('/api/goals/list', { method: 'POST' })
+      .then(r => r.json()).then(j => j.goals || []).catch(() => []);
+    const budgetsP = fetch('/api/budgets/list', { method: 'POST' })
+      .then(r => r.json()).then(j => j.budgets || []).catch(() => []);
+
     const loaders = [loadAllData(), loadFxRates(), loadFxHistory()];
     if (isFeatureEnabled('metals')) loaders.push(loadMetalPrices(), loadMetalsData());
     const [{ tx, accounts, categories, thirdParty }] = await Promise.all(loaders);
@@ -2006,17 +2084,11 @@ async function boot() {
     state.categories = categories;
     state.thirdParty = thirdParty || [];
     state.balances = computeBalances(tx, accounts);
+    state.txIndex = buildTxIndexes(tx);
 
     // Load savings goals (non-blocking, falls back to empty)
-    try {
-      const goalsRes = await fetch('/api/goals/list', { method: 'POST' });
-      state.savingsGoals = (await goalsRes.json()).goals || [];
-    } catch { state.savingsGoals = []; }
-
-    try {
-      const budgetsRes = await fetch('/api/budgets/list', { method: 'POST' });
-      state.budgets = (await budgetsRes.json()).budgets || [];
-    } catch { state.budgets = []; }
+    state.savingsGoals = await goalsP;
+    state.budgets = await budgetsP;
 
     // Wire currency switcher
     document.querySelectorAll('#currency-switcher button').forEach(btn => {
@@ -2075,11 +2147,41 @@ async function boot() {
 
 // ─── Refresh Data ───────────────────────────────────────────────────────
 
+// OPT-4 (CODE_REVIEW_2026-06-12): the dashboard "Upcoming" widget, the
+// month forecast and the alerts page all request /api/scheduled/list in
+// the same render burst — three identical POSTs per boot/refresh over the
+// 300ms link. Share one in-flight promise: concurrent callers piggyback,
+// and the first call AFTER resolution fetches fresh again, so there is no
+// staleness window for post-mutation re-renders.
+let _schedListInFlight = null;
+function fetchScheduledList() {
+  if (_schedListInFlight) return _schedListInFlight;
+  _schedListInFlight = fetch('/api/scheduled/list', { method: 'POST' })
+    .then(r => (r.ok ? r.json() : null))
+    .catch(() => null)
+    .finally(() => { _schedListInFlight = null; });
+  return _schedListInFlight;
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
   try {
-    const loaders = [loadAllData(), loadFxRates(), loadFxHistory()];
+    // F-H5 (CODE_REVIEW_2026-06-12): manual FX overrides (Settings → FX
+    // Rates) must survive the post-mutation refresh — loadFxRates() used
+    // to clobber them with live rates milliseconds after
+    // applyFxOverrides() set them, making the feature a no-op.
+    // resetFxRates() calls loadFxRates() directly, which resets fxSource
+    // and unfreezes the loader again.
+    const fxLoader = (typeof fxSource !== 'undefined' && fxSource === 'manual-override')
+      ? Promise.resolve()
+      : loadFxRates();
+    // OPT-2: same parallel kickoff as boot() — see comment there.
+    const goalsP = fetch('/api/goals/list', { method: 'POST' })
+      .then(r => r.json()).then(j => j.goals || []).catch(() => []);
+    const budgetsP = fetch('/api/budgets/list', { method: 'POST' })
+      .then(r => r.json()).then(j => j.budgets || []).catch(() => []);
+    const loaders = [loadAllData(), fxLoader, loadFxHistory()];
     if (isFeatureEnabled('metals')) loaders.push(loadMetalPrices(), loadMetalsData());
     const [{ tx, accounts, categories, thirdParty }] = await Promise.all(loaders);
     state.tx = tx;
@@ -2087,16 +2189,10 @@ async function refreshData() {
     state.categories = categories;
     state.thirdParty = thirdParty || [];
     state.balances = computeBalances(tx, accounts);
+    state.txIndex = buildTxIndexes(tx);
 
-    try {
-      const goalsRes = await fetch('/api/goals/list', { method: 'POST' });
-      state.savingsGoals = (await goalsRes.json()).goals || [];
-    } catch { state.savingsGoals = []; }
-
-    try {
-      const budgetsRes = await fetch('/api/budgets/list', { method: 'POST' });
-      state.budgets = (await budgetsRes.json()).budgets || [];
-    } catch { state.budgets = []; }
+    state.savingsGoals = await goalsP;
+    state.budgets = await budgetsP;
 
     // Update meta
     const range = dataDateRange(tx);
@@ -2118,7 +2214,16 @@ async function refreshData() {
     const activePage = document.querySelector('.page.active');
     if (activePage) {
       const pageId = activePage.id.replace('page-', '');
-      if (pageId !== 'dashboard') navigateTo(pageId);
+      // F-H3 (CODE_REVIEW_2026-06-12): the account detail page's element
+      // is #page-account, but its navigateTo route is "account:<alias>".
+      // The bare "account" id fell through to the generic branch, which
+      // only re-added the active class — TX edits/deletes made FROM the
+      // account page saved correctly but the visible table stayed stale.
+      if (pageId === 'account') {
+        if (accountPage.alias) navigateTo('account:' + accountPage.alias);
+      } else if (pageId !== 'dashboard') {
+        navigateTo(pageId);
+      }
     }
   } catch (err) {
     console.error('Refresh failed:', err);

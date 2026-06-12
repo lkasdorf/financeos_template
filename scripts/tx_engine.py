@@ -650,7 +650,7 @@ def delete_tag(tag_name: str) -> bool:
 SCHEDULED_FIELDS = [
     "sched_id", "name", "account", "amount", "currency", "payee",
     "category", "note", "manual_tags", "frequency", "next_run", "last_run", "active",
-    "subscription_id",
+    "subscription_id", "property_id",
 ]
 
 
@@ -1295,6 +1295,69 @@ def expand_atm_fees(
         fee_lines.append(row)
 
     return fee_lines
+
+
+def rebuild_auto_lines(user_lines: list[dict]) -> list[dict]:
+    """Regenerate all auto-generated lines server-side for a confirm payload.
+
+    B-H2 (CODE_REVIEW_2026-06-12): /api/tx/confirm used to trust the
+    client's round-tripped preview verbatim — any line flagged
+    is_auto_generated skipped validation entirely, so a stale or
+    manipulated client could book arbitrary rows or drop the income twin
+    of a pass-through expense. Auto lines (pass-through counter-entries,
+    ATM fee rows) are now derived fresh from the user lines at confirm
+    time; whatever the client sent as auto lines is discarded.
+
+    Mirrors build_manual_lines(): split lines (shared receipt_group) on a
+    pass-through account get ONE counter-entry over the group total with
+    the FK pointing at the first split line; single expenses get one
+    counter each; transfers matching an atm_fees.csv preset get the fee
+    cascade (side effect: ensures the ATM tag on the transfer line, same
+    as the preview path).
+
+    Returns user_lines + regenerated auto lines.
+    """
+    accounts = load_accounts()
+    existing_ids = load_existing_import_ids()
+    for l in user_lines:
+        if l.get("import_id"):
+            existing_ids.add(l["import_id"])
+
+    out = list(user_lines)
+
+    handled_groups: set[str] = set()
+    for line in user_lines:
+        if line.get("type") != "expense":
+            continue
+        acc_info = accounts.get(line.get("account", ""), {})
+        if not (acc_info.get("pass_through_payee") or "").strip():
+            continue
+        group = (line.get("receipt_group") or "").strip()
+        if group:
+            if group in handled_groups:
+                continue
+            handled_groups.add(group)
+            members = [
+                l for l in user_lines
+                if (l.get("receipt_group") or "").strip() == group
+                and l.get("type") == "expense"
+                and l.get("account") == line.get("account")
+            ]
+            total = sum(float(l.get("amount", 0) or 0) for l in members)
+            pt_base = dict(line)
+            pt_base["amount"] = str(total)
+        else:
+            pt_base = line
+        pt_line = generate_pass_through_line(pt_base, acc_info, existing_ids)
+        if pt_line:
+            existing_ids.add(pt_line["import_id"])
+            out.append(pt_line)
+
+    for line in user_lines:
+        if line.get("type") == "transfer":
+            out.extend(expand_atm_fees(line, accounts, existing_ids))
+
+    return out
 
 
 # ── Custom Reports CRUD ──────────────────────────────────────────────────────
@@ -2114,6 +2177,59 @@ def validate_savings_goal(body: dict, accounts: dict, categories: dict) -> list[
     return errors
 
 
+# ── Confirm idempotency (P-H1, CODE_REVIEW_2026-06-12) ──────────────────────
+#
+# The PWA (and the dashboard on a flaky link) can lose the /api/tx/confirm
+# response after the server already booked the batch. The client then
+# retries the same payload and the H-01 collision handler happily books a
+# second copy under a `_2` id. Clients now send a client-generated UUID
+# per booking; the server remembers recent (client_id → import_ids)
+# mappings and replays the stored result instead of booking again.
+# The store is a runtime artifact (gitignored, like .last_successful_push).
+
+CONFIRM_SEEN_PATH = DATA_DIR / ".confirm_seen.json"
+_CONFIRM_SEEN_TTL_DAYS = 7
+
+
+def _load_confirm_seen() -> dict:
+    try:
+        with open(CONFIRM_SEEN_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+@with_tx_lock
+def check_confirm_seen(client_id: str) -> list[str] | None:
+    """Return the stored import_ids for a known client_id, else None."""
+    if not client_id:
+        return None
+    entry = _load_confirm_seen().get(client_id)
+    if not isinstance(entry, dict):
+        return None
+    ids = entry.get("import_ids")
+    return ids if isinstance(ids, list) else None
+
+
+@with_tx_lock
+def record_confirm_seen(client_id: str, import_ids: list[str]) -> None:
+    """Persist a booked client_id, pruning entries older than the TTL."""
+    if not client_id:
+        return
+    seen = _load_confirm_seen()
+    cutoff = (datetime.now() - timedelta(days=_CONFIRM_SEEN_TTL_DAYS)).isoformat()
+    seen = {
+        cid: entry for cid, entry in seen.items()
+        if isinstance(entry, dict) and entry.get("ts", "") >= cutoff
+    }
+    seen[client_id] = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "import_ids": list(import_ids),
+    }
+    _atomic_write_text(CONFIRM_SEEN_PATH, json.dumps(seen, indent=1))
+
+
 @with_tx_lock
 def append_transactions(lines: list[dict]) -> None:
     """Append transaction lines to transactions.csv (append-only, never overwrites).
@@ -2140,6 +2256,7 @@ def append_transactions(lines: list[dict]) -> None:
 
     # H-01 — re-validate import_ids against live state under the lock.
     on_disk_ids = load_existing_import_ids()
+    id_remap: dict[str, str] = {}
     for line in lines:
         line_id = line.get("import_id", "")
         if not line_id:
@@ -2161,7 +2278,18 @@ def append_transactions(lines: list[dict]) -> None:
                 line.get("category", ""), line.get("note", ""),
                 on_disk_ids,
             )
+            id_remap[line_id] = line["import_id"]
         on_disk_ids.add(line["import_id"])
+
+    # B-M1 (CODE_REVIEW_2026-06-12) — when H-01 re-bumped an expense's id,
+    # any sibling counter-entry in the same batch still points its
+    # counter_entry_id FK at the OLD id (which now belongs to a different,
+    # pre-existing TX on disk). Re-point batch-internal FKs at the bumped ids.
+    if id_remap:
+        for line in lines:
+            fk = line.get("counter_entry_id", "")
+            if fk in id_remap:
+                line["counter_entry_id"] = id_remap[fk]
 
     with open(tx_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -2254,6 +2382,242 @@ def batch_delete_transactions(import_ids: list[str]) -> int:
         return 0
     _atomic_csv_rewrite(tx_path, fieldnames, rows)
     return deleted
+
+
+@with_tx_lock
+def delete_transactions_with_counters(import_ids: list[str]) -> list[str]:
+    """Delete TXs plus their pass-through counter-entries (B-H1).
+
+    The generic delete paths used to ignore the counter_entry_id FK, so
+    deleting a pass-through expense from the Transactions page left the
+    auto income twin behind and the pass-through balance drifted off
+    zero. The pair is one logical booking, so closure works in both
+    directions: deleting an expense removes every income leg whose
+    counter_entry_id points at it, and deleting an income leg removes
+    its expense (keeping either half alone breaks the invariant).
+
+    Returns the import_ids actually removed (empty when none matched).
+    """
+    tx_path = DATA_DIR / "transactions.csv"
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    present = {r["import_id"] for r in rows}
+    expanded = {i for i in import_ids if i in present}
+    if not expanded:
+        return []
+
+    # Fixed-point closure over the FK in both directions. Rows are few
+    # enough (single-user CSV) that the simple loop is fine.
+    changed = True
+    while changed:
+        changed = False
+        for r in rows:
+            rid = r["import_id"]
+            fk = (r.get("counter_entry_id") or "").strip()
+            if not fk:
+                continue
+            if rid in expanded and fk in present and fk not in expanded:
+                expanded.add(fk)
+                changed = True
+            if fk in expanded and rid not in expanded:
+                expanded.add(rid)
+                changed = True
+
+    kept = [r for r in rows if r["import_id"] not in expanded]
+    _atomic_csv_rewrite(tx_path, fieldnames, kept)
+    return sorted(expanded)
+
+
+@with_tx_lock
+def sync_counter_entries(import_ids: list[str]) -> dict:
+    """Bring pass-through counter-entries back in sync after TX edits (B-H1).
+
+    For every edited TX:
+      - still a pass-through expense and has counters → mirror date /
+        amount / currency / account / tags / receipt_group onto the
+        income leg and refresh payee + reimbursement category from the
+        (possibly new) account's pass_through_payee
+      - no longer a pass-through expense (type or account changed) but
+        counters exist → delete the now-orphaned counters
+      - pass-through expense without a counter (account changed onto a
+        pass-through account, or healing a legacy orphan) → create one
+
+    Income legs themselves (rows carrying a counter_entry_id FK) are
+    skipped — the expense leg is the canonical edit surface.
+
+    Returns {"updated": [...], "created": [...], "deleted": [...]} with
+    the counter-entry import_ids touched per action.
+    """
+    accounts = load_accounts()
+    tx_path = DATA_DIR / "transactions.csv"
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    by_id = {r["import_id"]: r for r in rows}
+    counters_by_fk: dict[str, list[dict]] = {}
+    for r in rows:
+        fk = (r.get("counter_entry_id") or "").strip()
+        if fk:
+            counters_by_fk.setdefault(fk, []).append(r)
+
+    result = {"updated": [], "created": [], "deleted": []}
+    to_delete: set[str] = set()
+    existing_ids = set(by_id)
+
+    # Columns the income leg mirrors verbatim from the expense leg
+    # (tag copy is intentional — see generate_pass_through_line, M-B2).
+    mirror_cols = ("date", "amount", "currency", "account", "tags", "receipt_group")
+
+    for import_id in import_ids:
+        target = by_id.get(import_id)
+        if target is None:
+            continue
+        if (target.get("counter_entry_id") or "").strip():
+            continue  # the edited row IS an income leg — leave it alone
+        counters = [
+            c for c in counters_by_fk.get(import_id, [])
+            if c["import_id"] not in to_delete
+        ]
+        acc_info = accounts.get(target.get("account", ""), {})
+        ptp = (acc_info.get("pass_through_payee") or "").strip()
+        is_pt_expense = target.get("type") == "expense" and bool(ptp)
+
+        if counters and not is_pt_expense:
+            for c in counters:
+                to_delete.add(c["import_id"])
+                result["deleted"].append(c["import_id"])
+        elif counters and is_pt_expense:
+            reimb_cat = REIMBURSEMENT_CATEGORIES.get(
+                ptp, f"Income:{ptp} Reimbursement")
+            for c in counters:
+                changed = False
+                for col in mirror_cols:
+                    val = target.get(col, "")
+                    if c.get(col, "") != val:
+                        c[col] = val
+                        changed = True
+                if c.get("payee", "") != ptp:
+                    c["payee"] = ptp
+                    changed = True
+                if c.get("category", "") != reimb_cat:
+                    c["category"] = reimb_cat
+                    changed = True
+                if changed:
+                    result["updated"].append(c["import_id"])
+        elif not counters and is_pt_expense:
+            pt_line = generate_pass_through_line(target, acc_info, existing_ids)
+            if pt_line:
+                existing_ids.add(pt_line["import_id"])
+                new_row = {k: str(pt_line.get(k, "") or "") for k in fieldnames}
+                new_row["amount"] = f"{float(pt_line.get('amount') or 0):.2f}"
+                rows.append(new_row)
+                by_id[new_row["import_id"]] = new_row
+                result["created"].append(new_row["import_id"])
+
+    if not (result["updated"] or result["created"] or result["deleted"]):
+        return result
+
+    kept = [r for r in rows if r["import_id"] not in to_delete]
+    _atomic_csv_rewrite(tx_path, fieldnames, kept)
+    return result
+
+
+@with_tx_lock
+def batch_update_payee(import_ids: list[str], new_payee: str) -> int:
+    """Replace the payee on every TX in ``import_ids``. Returns count modified.
+
+    `import_id` itself stays stable — matches the single-row update_transaction
+    convention (the comment there explicitly says "import_id itself cannot
+    be changed"). Keeping IDs stable means subscription_log / luku_log /
+    water_log / fuel_log references don't dangle, which would otherwise
+    cascade into orphaned linked rows.
+    """
+    if not new_payee or not import_ids:
+        return 0
+    id_set = set(import_ids)
+    tx_path = DATA_DIR / "transactions.csv"
+    rows = []
+    modified = 0
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            if row["import_id"] in id_set and (row.get("payee") or "") != new_payee:
+                row["payee"] = new_payee
+                modified += 1
+            rows.append(row)
+    if modified == 0:
+        return 0
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
+    return modified
+
+
+@with_tx_lock
+def batch_update_account(
+    import_ids: list[str], new_account: str
+) -> dict:
+    """Move a batch of TXs to a different account.
+
+    Pre-flight check: every TX's currency must match ``new_account``'s
+    currency, otherwise the whole operation aborts and we return the
+    conflict list so the UI can show the user which rows would have
+    broken. Same convention as the single-row update — import_id stays
+    stable so linked rows (subscription_log / luku_log / water_log /
+    fuel_log) don't dangle.
+
+    Returns:
+        {modified: int, currency_conflicts: [{import_id, tx_currency,
+        target_currency}]}. ``modified`` is 0 when there are any conflicts.
+    """
+    if not new_account or not import_ids:
+        return {"modified": 0, "currency_conflicts": []}
+    accounts = load_accounts()
+    target = accounts.get(new_account)
+    if target is None:
+        raise ValueError(f"Unknown account: {new_account}")
+    target_currency = (target.get("currency") or "").strip()
+
+    id_set = set(import_ids)
+    tx_path = DATA_DIR / "transactions.csv"
+    rows = []
+    conflicts: list[dict] = []
+    candidates: list[dict] = []
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            if row["import_id"] in id_set:
+                tx_ccy = (row.get("currency") or "").strip()
+                if tx_ccy and target_currency and tx_ccy != target_currency:
+                    conflicts.append({
+                        "import_id": row["import_id"],
+                        "tx_currency": tx_ccy,
+                        "target_currency": target_currency,
+                    })
+                else:
+                    candidates.append(row)
+            rows.append(row)
+
+    # Abort on any conflict — partial moves would be confusing and
+    # impossible to undo without manual surgery.
+    if conflicts:
+        return {"modified": 0, "currency_conflicts": conflicts}
+
+    modified = 0
+    for row in candidates:
+        if (row.get("account") or "") == new_account:
+            continue
+        row["account"] = new_account
+        modified += 1
+    if modified == 0:
+        return {"modified": 0, "currency_conflicts": []}
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
+    return {"modified": modified, "currency_conflicts": []}
 
 
 @with_tx_lock

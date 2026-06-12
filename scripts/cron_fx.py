@@ -262,6 +262,13 @@ def main() -> int:
     Returns:
         0 on success (including 'no change'), 1 if API fetch failed.
     """
+    # O-H3 (CODE_REVIEW_2026-06-12): fenced standby hosts skip every
+    # data-writing cron so the working tree stays clean for the mirror.
+    import host_role
+    if host_role.is_standby():
+        print("[cron_fx] host role is standby — fenced, skipping (O-H3)")
+        return 0
+
     now = datetime.now()
     ts = now.strftime("%Y-%m-%d %H:%M:%S")
     today_str = date.today().isoformat()

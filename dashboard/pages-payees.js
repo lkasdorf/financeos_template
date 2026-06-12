@@ -242,7 +242,7 @@ async function showPayeeModal(editId) {
     `<option value="${escapeHtml(a.alias)}" ${payee && payee.default_account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)}</option>`
   ).join('');
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
-    `<option value="${c.path}" ${payee && payee.default_category === c.path ? 'selected' : ''}>${c.path}</option>`
+    `<option value="${escapeHtml(c.path)}" ${payee && payee.default_category === c.path ? 'selected' : ''}>${escapeHtml(c.path)}</option>`
   ).join('');
 
   // Extract unique groups

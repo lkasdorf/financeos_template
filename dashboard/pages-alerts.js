@@ -11,7 +11,7 @@ async function computeAlerts() {
   //    at 5 to keep the alert card readable and append a "+N more"
   //    note for the rest.
   try {
-    const res = await fetch('/data/integrity_report.txt', { cache: 'no-store' });
+    const res = await fetch('/data/integrity_report.txt', { cache: 'no-cache' });
     if (res.ok) {
       const text = await res.text();
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -31,10 +31,9 @@ async function computeAlerts() {
 
   // 1. Overdue Scheduled TX
   try {
-    const res = await fetch('/api/scheduled/list', { method: 'POST' });
-    if (res.ok) {
+    const data = await fetchScheduledList();
+    if (data) {
       // API returns { scheduled: [...] }; tolerate a bare array for safety.
-      const data = await res.json();
       const scheduled = Array.isArray(data) ? data : (data && data.scheduled) || [];
       scheduled.forEach(s => {
         if (s.active === true || s.active === 'true') {

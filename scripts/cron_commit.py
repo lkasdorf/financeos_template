@@ -6,7 +6,7 @@ serializes against tx_engine writes via a shared lockfile and then:
 
 1. Fetches origin/main (always — picks up remote data + code updates).
 2. Rebases local commits onto FETCH_HEAD if anything new came in.
-3. Commits any pending data/ changes as a batch commit.
+3. Commits any pending data/ or config/ changes as a batch commit.
 4. Pushes if local is ahead of origin (best-effort, retries next run).
 
 Code-deploy (restart of the financeos service after a non-data pull) is
@@ -104,15 +104,24 @@ def run(cmd: list[str], check: bool = False, timeout: int = 30):
     )
 
 
+# Paths that the cron stages before rebase. data/ is the primary churn
+# source (TX/SCHED/FX/metals writes); config/ catches runtime-edited UI
+# settings (branding, reports mapping, auto-tags, auth) whose own API
+# handlers also try to commit them but silently swallow failures —
+# leaving the file dirty and blocking every subsequent rebase. Staging
+# config/ here is the belt-and-suspenders that keeps the cron self-healing.
+STAGED_PATHS = ["data/", "config/"]
+
+
 def _data_has_uncommitted_changes() -> bool:
-    """True if data/ has any modified, staged, or untracked changes."""
-    result = run(["git", "status", "--porcelain", "data/"])
+    """True if any tracked staging path has modified, staged, or untracked changes."""
+    result = run(["git", "status", "--porcelain", *STAGED_PATHS])
     return bool(result.stdout.strip())
 
 
 def has_pending_changes() -> bool:
-    """Check if there are uncommitted changes under data/."""
-    result = run(["git", "status", "--porcelain", "data/"])
+    """Check if there are uncommitted changes under data/ or config/."""
+    result = run(["git", "status", "--porcelain", *STAGED_PATHS])
     return bool(result.stdout.strip())
 
 
@@ -202,7 +211,7 @@ def abort_rebase_safely() -> None:
 
 def summarize_changes() -> str:
     """Build a short commit-message summary from git status output."""
-    result = run(["git", "status", "--porcelain", "data/"])
+    result = run(["git", "status", "--porcelain", *STAGED_PATHS])
     files = [line[3:] for line in result.stdout.strip().split("\n") if line.strip()]
     count = len(files)
     # Group by filename stem for a concise list
@@ -251,6 +260,14 @@ def main() -> int:
     module docstring) so an active dashboard session is never interrupted
     by a background `*/5` tick.
     """
+    # O-H3 (CODE_REVIEW_2026-06-12): a fenced standby must never commit or
+    # push — that's exactly the dual-primary divergence the role marker
+    # exists to prevent. Mirror-pulling is git-pull-mirror.sh's job.
+    import host_role
+    if host_role.is_standby():
+        print("[cron_commit] host role is standby — fenced, nothing to do (O-H3)")
+        return 0
+
     with tx_write_lock():
         if not recover_stuck_rebase():
             print("[cron_commit] cannot recover from stale rebase state, bailing", file=sys.stderr)
@@ -273,7 +290,18 @@ def main() -> int:
                 )
                 return 1
 
-            # ── Step 2: commit local data/ changes (if any) ──────────────
+            # ── Step 1b: O-H3 self-pacify ────────────────────────────────
+            # The fetch above just refreshed origin/main. If the repo's
+            # active-primary statement (config/active_primary.json) names
+            # the OTHER host — a failover happened while this host was
+            # down — persist 'standby' into ~/.fos-role and bail BEFORE
+            # committing or pushing anything. This is the only automatic
+            # demotion path; promotion is always an explicit failback.
+            if host_role.demote_if_peer_primary(log_prefix="cron_commit"):
+                print("[cron_commit] self-pacified to standby — skipping commit/rebase/push")
+                return 0
+
+            # ── Step 2: commit local data/ + config/ changes (if any) ────
             # Must run BEFORE rebase — otherwise git refuses to rebase with
             # "cannot rebase: You have unstaged changes" and the entire run
             # bails, leaving data uncommitted and the host stuck N commits
@@ -282,7 +310,7 @@ def main() -> int:
                 summary = summarize_changes()
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M")
                 message = f"batch: {summary} [{ts}]"
-                add_result = run(["git", "add", "data/"])
+                add_result = run(["git", "add", *STAGED_PATHS])
                 if add_result.returncode != 0:
                     print(f"[cron_commit] add failed: {add_result.stderr.strip()}", file=sys.stderr)
                     return 1

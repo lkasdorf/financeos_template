@@ -22,7 +22,12 @@ function render(scope) {
       <div id="dash-charts">${renderChartsSection()}</div>
       <div id="dash-recent">${renderRecentTx()}</div>
     `;
-    initCharts();
+    // Defer chart init to the next animation frame so the freshly-written
+    // DOM gets laid out once before Chart.js reads canvas/parent sizes.
+    // Otherwise the new Chart() constructor for cat-chart + cashflow-chart
+    // forces a synchronous layout recompute (visible as "Forced reflow
+    // took ~30ms" in DevTools). Pages remain interactive in the same frame.
+    requestAnimationFrame(initCharts);
     wireMonthNav();
     return;
   }
@@ -71,10 +76,9 @@ async function loadMonthForecast() {
   // reimbursement income cron_sched will emit).
   let schedIncome = 0, schedExpense = 0;
   try {
-    const res = await fetch('/api/scheduled/list', { method: 'POST' });
-    if (res.ok) {
+    const data = await fetchScheduledList();
+    if (data) {
       // API returns { scheduled: [...] }; tolerate a bare array for safety.
-      const data = await res.json();
       const items = Array.isArray(data) ? data : (data && data.scheduled) || [];
       for (const s of items) {
         if (s.active !== true && s.active !== 'true') continue;
@@ -188,10 +192,9 @@ async function loadScheduledPreview() {
 
   let items = [];
   try {
-    const res = await fetch('/api/scheduled/list', { method: 'POST' });
-    if (res.ok) {
+    const data = await fetchScheduledList();
+    if (data) {
       // API returns { scheduled: [...] }; tolerate a bare array for safety.
-      const data = await res.json();
       items = Array.isArray(data) ? data : (data && data.scheduled) || [];
     }
   } catch (e) { return; }
@@ -354,7 +357,7 @@ async function openSchedRunDueModal() {
       if (window.uiAlert) uiAlert(msg, { type: summary.commit_ok ? 'info' : 'warning' });
       // Refresh the dashboard so the upcoming-payments widget updates and
       // any new TXs appear in recent-transactions and balance summaries.
-      if (typeof boot === 'function') boot();
+      if (typeof refreshData === 'function') refreshData();
     } catch (e) {
       confirmBtn.disabled = false;
       confirmBtn.textContent = t('sched.modal.confirm', {}, 'Book selected');

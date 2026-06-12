@@ -278,6 +278,102 @@ def append_subscription_log(row: dict) -> str:
     return new_row["log_id"]
 
 
+def batch_link_tx_to_subscription(
+    tx_import_ids: list[str], subscription_id: str
+) -> dict:
+    """Link a batch of TXs to a subscription via subscription_log rows.
+
+    For each ``tx_import_id`` in the list, looks up the TX row to copy
+    date/amount/currency/account into the new subscription_log entry.
+    TXs already linked to the same subscription are skipped silently
+    (idempotent re-runs). TXs linked to a DIFFERENT subscription are
+    reported in ``skipped`` so the UI can show "X linked, Y already on
+    another subscription" — matches the user's chosen Skip-with-Hint
+    behavior, not the more aggressive overwrite path.
+
+    Returns:
+        {linked: int, skipped: [{import_id, reason, existing_subscription_id?}],
+         missing: [import_id]}. ``missing`` covers IDs that don't exist
+        in transactions.csv (most likely a stale frontend selection).
+    """
+    if not subscription_id or not tx_import_ids:
+        return {"linked": 0, "skipped": [], "missing": list(tx_import_ids or [])}
+
+    # Index existing log rows by tx_import_id — lets us detect both
+    # same-sub idempotency and cross-sub conflicts in O(1) per TX.
+    existing_log = load_subscription_log()
+    log_by_tx: dict[str, dict] = {}
+    for r in existing_log:
+        tid = (r.get("tx_import_id") or "").strip()
+        if tid:
+            log_by_tx[tid] = r
+
+    # Load all transactions once so we can resolve every requested
+    # import_id without re-reading the file per row.
+    tx_path = tx_engine.DATA_DIR / "transactions.csv"
+    tx_by_id: dict[str, dict] = {}
+    if tx_path.exists():
+        with open(tx_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                tx_by_id[row["import_id"]] = row
+
+    linked = 0
+    skipped: list[dict] = []
+    missing: list[str] = []
+    new_rows: list[dict] = []
+    for tid in tx_import_ids:
+        tx = tx_by_id.get(tid)
+        if tx is None:
+            missing.append(tid)
+            continue
+        existing = log_by_tx.get(tid)
+        if existing is not None:
+            existing_sub = (existing.get("subscription_id") or "").strip()
+            if existing_sub == subscription_id:
+                skipped.append({
+                    "import_id": tid, "reason": "already_linked",
+                    "existing_subscription_id": existing_sub,
+                })
+            else:
+                skipped.append({
+                    "import_id": tid, "reason": "linked_to_other",
+                    "existing_subscription_id": existing_sub,
+                })
+            continue
+        new_rows.append({
+            "log_id": "",  # filled below
+            "date": (tx.get("date") or "").strip(),
+            "subscription_id": subscription_id,
+            "amount": (tx.get("amount") or "").strip(),
+            "currency": (tx.get("currency") or "").strip(),
+            "account": (tx.get("account") or "").strip(),
+            "tx_import_id": tid,
+            "note": "",
+        })
+
+    # Single rewrite at the end (one backup) instead of N appends.
+    # next_log_id() reads the file each call, so we manually advance
+    # the counter for the batch — otherwise every row in `new_rows`
+    # would compete for the same id before the first save flushed.
+    if new_rows:
+        rows = existing_log[:]
+        # Match next_log_id's `slog-NNN` convention. Pre-compute max so
+        # the batch shares one save_subscription_log() backup write.
+        max_num = 0
+        for r in existing_log:
+            m = re.match(r"^slog-(\d+)$", (r.get("log_id") or "").strip())
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+        for r in new_rows:
+            max_num += 1
+            r["log_id"] = f"slog-{max_num:03d}"
+            rows.append(r)
+            linked += 1
+        save_subscription_log(rows)
+
+    return {"linked": linked, "skipped": skipped, "missing": missing}
+
+
 # ── Aggregates / list helpers ───────────────────────────────────────────────
 
 def _safe_float(s: str) -> float:

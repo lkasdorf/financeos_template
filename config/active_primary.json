@@ -1,0 +1,5 @@
+{
+  "_comment": "Which host type currently holds the PRIMARY role (O-H3 fencing). Written and pushed by deploy/failover-to-pi.sh and deploy/failback-to-vps.sh — do not edit by hand during normal operation. A recovering ex-primary compares this (fetched from origin) against its own FINANCEOS_HOST_TYPE and self-pacifies to standby when it no longer leads. Hosts without a configured type (dev machines, template forks) ignore this file entirely.",
+  "host_type": "vps",
+  "since": "2026-06-12T00:00:00+03:00"
+}
