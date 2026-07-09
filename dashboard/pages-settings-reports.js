@@ -143,7 +143,7 @@ async function renderReportsConfigTab() {
       <div style="display:flex;gap:10px;align-items:center;margin-top:18px;">
         <button class="btn btn-primary" id="reports-config-save">${escapeHtml(t('settings.reports.save', {}, 'Save'))}</button>
         <button class="btn" id="reports-config-reset">${escapeHtml(t('settings.reports.reset', {}, 'Reset to defaults'))}</button>
-        <span id="reports-config-status" class="c-mut" style="font-size:12px;"></span>
+        <span id="reports-config-status" class="c-mut fs-12"></span>
       </div>
     </div>
   `;
@@ -165,7 +165,7 @@ function _renderFlatSection(sec, node, allCats) {
   const cats = node.categories || [];
   return `
     <div class="card" data-section="${sec.key}">
-      <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
+      <div class="fw-600">${escapeHtml(sec.title)}</div>
       <div class="c-mut" style="font-size:12px;margin:2px 0 8px;">${escapeHtml(sec.hint)}</div>
       ${_selectMultiple(`${sec.key}.categories`, allCats, cats, 5)}
     </div>
@@ -185,7 +185,7 @@ function _renderBucketSection(sec, node, allCats) {
   }).join('');
   return `
     <div class="card" data-section="${sec.key}" data-shape="buckets">
-      <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
+      <div class="fw-600">${escapeHtml(sec.title)}</div>
       <div class="c-mut" style="font-size:12px;margin:2px 0 12px;">${escapeHtml(sec.hint)}</div>
       ${inner}
     </div>
@@ -197,7 +197,7 @@ function _renderCashDiscrepancySection(sec, node, allCats) {
   const inc = node.income_categories || [];
   return `
     <div class="card" data-section="${sec.key}" data-shape="cd_split">
-      <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
+      <div class="fw-600">${escapeHtml(sec.title)}</div>
       <div class="c-mut" style="font-size:12px;margin:2px 0 12px;">${escapeHtml(sec.hint)}</div>
       <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:start;margin-bottom:8px;">
         <div style="padding-top:4px;font-weight:500;">${escapeHtml(t('settings.reports.cd.expense', {}, 'Expense side'))}</div>
@@ -215,7 +215,7 @@ function _renderPrefixSection(sec, node) {
   const prefixes = node.fixed_prefixes || [];
   return `
     <div class="card" data-section="${sec.key}" data-shape="prefixes">
-      <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
+      <div class="fw-600">${escapeHtml(sec.title)}</div>
       <div class="c-mut" style="font-size:12px;margin:2px 0 8px;">${escapeHtml(sec.hint)}</div>
       <textarea name="${sec.key}.fixed_prefixes" rows="6" placeholder="${escapeHtml(t('settings.reports.disc_fixed.placeholder', {}, 'e.g.\nRent\nBills:\nInsurance:'))}" style="width:100%;min-height:120px;padding:8px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
     </div>

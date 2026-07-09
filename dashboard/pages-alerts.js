@@ -29,6 +29,37 @@ async function computeAlerts() {
     }
   } catch (e) { console.warn('[alerts:integrity]', e); }
 
+  // 0b. Git-sync state (OF-M6, CODE_REVIEW_2026-07-08) — cron_commit
+  //     writes data/.sync_stuck.json when the sync is wedged (stuck
+  //     rebase + dirty data/) and /api/health exposes it together with
+  //     the consecutive-push-fail counter. Without this the only
+  //     detector was the WEEKLY integrity heartbeat check.
+  try {
+    const res = await fetch('/api/health', { method: 'POST', signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const h = await res.json();
+      if (h.sync_stuck && h.sync_stuck.reason) {
+        alerts.push({
+          type: 'sync',
+          severity: 'warning',
+          title: 'Git sync is stuck — manual recovery required',
+          detail: `${h.sync_stuck.reason} (since ${h.sync_stuck.since || '?'})`,
+          link: '#alerts',
+        });
+      } else if ((h.push_fail_count || 0) >= 3) {
+        alerts.push({
+          type: 'sync',
+          severity: 'warning',
+          title: `Git push failing (${h.push_fail_count} consecutive attempts)`,
+          detail: h.last_push_age_hours != null
+            ? `Last successful push ${h.last_push_age_hours}h ago — bookings are not reaching the standby mirror.`
+            : 'No successful push recorded — bookings are not reaching the standby mirror.',
+          link: '#alerts',
+        });
+      }
+    }
+  } catch (e) { console.warn('[alerts:sync]', e); }
+
   // 1. Overdue Scheduled TX
   try {
     const data = await fetchScheduledList();
@@ -211,7 +242,19 @@ async function computeAlerts() {
     if (res.ok) {
       const data = await res.json();
       const propAlerts = Array.isArray(data.alerts) ? data.alerts : [];
-      for (const a of propAlerts) alerts.push(a);
+      for (const a of propAlerts) {
+        // The server ships i18n_key + pre-formatted i18n_params alongside
+        // English title/detail fallbacks; resolve here so the active
+        // locale applies. price_anomaly's direction param maps to its
+        // own translated .high/.low sub-key before substitution.
+        if (a.i18n_key) {
+          const params = Object.assign({}, a.i18n_params);
+          if (params.direction) params.direction = t(`${a.i18n_key}.${params.direction}`, {}, params.direction);
+          a.title = t(`${a.i18n_key}.title`, params, a.title);
+          a.detail = t(`${a.i18n_key}.detail`, params, a.detail);
+        }
+        alerts.push(a);
+      }
     }
   } catch (e) { /* API not available — ignore */ }
 

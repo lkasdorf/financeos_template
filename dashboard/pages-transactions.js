@@ -108,9 +108,14 @@ function renderTransactionsPage() {
   const allTags = [...new Set(state.tx.flatMap(t => (t.tags || '').split(';').filter(Boolean)))].sort();
   const allPayees = [...new Set(state.tx.map(t => t.payee).filter(Boolean))].sort();
 
-  // Sum of filtered amounts
-  const sumIncome = filtered.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
-  const sumExpense = filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+  // Sum of filtered amounts. DP-M2: convert per row into the display
+  // currency — filters can select mixed-currency TX (tag/date filters
+  // without an account), and raw sums labelled 'TZS' were nonsense
+  // (15 EUR + 45.000 TZS = '45.015 TZS').
+  const sumIncome = filtered.filter(t => t.type === 'income')
+    .reduce((s, t) => s + convertTo(t.amount, t.currency, displayCurrency), 0);
+  const sumExpense = filtered.filter(t => t.type === 'expense')
+    .reduce((s, t) => s + convertTo(t.amount, t.currency, displayCurrency), 0);
 
   // Store filtered set for export
   txPage._filtered = filtered;
@@ -213,9 +218,9 @@ function renderTransactionsPage() {
     </div>
     <div class="report-toolbar" style="flex-wrap:wrap;gap:6px 12px;margin-bottom:16px;">
       <label>${t('tx.filter.from', {}, 'From')}</label>
-      <input type="date" id="txp-date-from" value="${txPage.filterDateFrom}" style="padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <input type="date" id="txp-date-from" value="${txPage.filterDateFrom}" class="input-compact">
       <label>${t('tx.filter.to', {}, 'To')}</label>
-      <input type="date" id="txp-date-to" value="${txPage.filterDateTo}" style="padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <input type="date" id="txp-date-to" value="${txPage.filterDateTo}" class="input-compact">
       <label>${t('tx.filter.payee', {}, 'Payee')}</label>
       <input type="text" id="txp-payee" list="txp-payee-list" value="${escapeHtml(txPage.filterPayee)}" placeholder="${t('search.placeholder', {}, 'Search...')}" autocomplete="off" style="width:200px;padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
       <datalist id="txp-payee-list">${allPayees.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
@@ -225,7 +230,7 @@ function renderTransactionsPage() {
       <input type="text" inputmode="numeric" id="txp-amt-max" value="${escapeHtml(txPage.filterAmountMax)}" placeholder="${t('tx.filter.amount_max', {}, 'max')}" style="width:110px;padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
       ${hasActiveFilters ? `<button id="txp-reset" style="padding:5px 12px;font-size:11px;">${t('txp.reset', {}, 'Reset')}</button>` : ''}
       ${hasActiveFilters ? `<button id="txp-save-preset" style="padding:5px 12px;font-size:11px;" title="${t('txp.save_preset_title', {}, 'Save current filters as preset')}">${t('txp.save_preset', {}, 'Save Preset')}</button>` : ''}
-      <select id="txp-presets" style="padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <select id="txp-presets" class="input-compact">
         <option value="">${t('txp.presets_default', {}, 'Presets')}</option>
         ${loadFilterPresets().map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('')}
       </select>
@@ -234,9 +239,9 @@ function renderTransactionsPage() {
     </div>
     ${hasActiveFilters ? `
     <div class="income-grid mb-16" style="grid-template-columns:repeat(3,1fr);">
-      <div class="income-cell"><div class="ic-label">${t('txp.sum_income', {}, 'Income')}</div><div class="ic-value c-pos">${formatCurrency(sumIncome, 'TZS')}</div></div>
-      <div class="income-cell"><div class="ic-label">${t('txp.sum_expenses', {}, 'Expenses')}</div><div class="ic-value c-neg">${formatCurrency(sumExpense, 'TZS')}</div></div>
-      <div class="income-cell"><div class="ic-label">${t('txp.sum_net', {}, 'Net')}</div><div class="ic-value" style="color:${sumIncome - sumExpense >= 0 ? 'var(--positive)' : 'var(--negative)'}">${formatCurrency(sumIncome - sumExpense, 'TZS')}</div></div>
+      <div class="income-cell"><div class="ic-label">${t('txp.sum_income', {}, 'Income')}</div><div class="ic-value c-pos">${formatCurrency(sumIncome, displayCurrency)} <span class="ic-cur">${displayCurrency}</span></div></div>
+      <div class="income-cell"><div class="ic-label">${t('txp.sum_expenses', {}, 'Expenses')}</div><div class="ic-value c-neg">${formatCurrency(sumExpense, displayCurrency)} <span class="ic-cur">${displayCurrency}</span></div></div>
+      <div class="income-cell"><div class="ic-label">${t('txp.sum_net', {}, 'Net')}</div><div class="ic-value" style="color:${sumIncome - sumExpense >= 0 ? 'var(--positive)' : 'var(--negative)'}">${formatCurrency(sumIncome - sumExpense, displayCurrency)} <span class="ic-cur">${displayCurrency}</span></div></div>
     </div>
     ` : ''}
     ${txPage.selected.size > 0 ? `
@@ -576,39 +581,32 @@ async function bulkDeleteSelected() {
 
 function openBulkTagModal() {
   const allTags = [...new Set(state.tx.flatMap(t => (t.tags || '').split(';').filter(Boolean)))].sort();
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:420px;">
-      <h3>Bulk <span class="accent">Tag</span></h3>
-      <p class="fs-12 c-mut" style="margin:8px 0 16px;">${txPage.selected.size} transactions selected</p>
-      <div style="margin-bottom:12px;">
-        <label class="fs-12" style="display:block;margin-bottom:6px;">Add tags:</label>
+  // DP-M6: rides the shared bulk shell (which rides openModal) instead
+  // of a fourth hand-rolled overlay with its own leaking esc handler.
+  const tagChip = (cls, tag) => `<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;"><input type="checkbox" class="${cls}" value="${escapeHtml(tag)}"> ${escapeHtml(tag)}</label>`;
+  const overlay = _bulkModalShell({
+    title: `Bulk <span class="accent">Tag</span>`,
+    applyLabel: t('common.actions.apply', {}, 'Apply'),
+    bodyHtml: `
+      <div class="mb-12">
+        <label class="fs-12 lbl-block">Add tags:</label>
         <div id="bulk-tag-add" style="display:flex;flex-wrap:wrap;gap:4px;">
-          ${allTags.map(t => `<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;"><input type="checkbox" class="bulk-add-tag" value="${escapeHtml(t)}"> ${escapeHtml(t)}</label>`).join('')}
+          ${allTags.map(tag => tagChip('bulk-add-tag', tag)).join('')}
         </div>
       </div>
-      <div style="margin-bottom:12px;">
-        <label class="fs-12" style="display:block;margin-bottom:6px;">Remove tags:</label>
+      <div class="mb-12">
+        <label class="fs-12 lbl-block">Remove tags:</label>
         <div id="bulk-tag-remove" style="display:flex;flex-wrap:wrap;gap:4px;">
-          ${allTags.map(t => `<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:6px;cursor:pointer;"><input type="checkbox" class="bulk-remove-tag" value="${escapeHtml(t)}"> ${escapeHtml(t)}</label>`).join('')}
+          ${allTags.map(tag => tagChip('bulk-remove-tag', tag)).join('')}
         </div>
-      </div>
-      <div id="bulk-tag-status"></div>
-      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
-        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
-        <button id="bulk-tag-apply" style="background:var(--accent);color:var(--bg);">${t('common.actions.apply', {}, 'Apply')}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
+      </div>`,
+  });
 
-  overlay.querySelector('#bulk-tag-apply').addEventListener('click', async () => {
+  overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
     const addTags = [...overlay.querySelectorAll('.bulk-add-tag:checked')].map(c => c.value);
     const removeTags = [...overlay.querySelectorAll('.bulk-remove-tag:checked')].map(c => c.value);
     if (!addTags.length && !removeTags.length) { uiAlert(t('pages.txbulk.alert.no_tags', {}, 'Select at least one tag to add or remove.')); return; }
-    const statusEl = overlay.querySelector('#bulk-tag-status');
+    const statusEl = overlay.querySelector('#bulk-modal-status');
     statusEl.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${t('pages.txbulk.spinner.applying', {}, 'Applying...')}</div>`;
     try {
       const res = await fetch('/api/tx/batch-tag', {
@@ -618,40 +616,33 @@ function openBulkTagModal() {
       });
       const data = await res.json();
       if (data.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`; return; }
-      overlay.remove();
+      overlay._close();
       txPage.selected.clear();
       refreshData();
     } catch (e) {
       statusEl.innerHTML = `<div class="atx-status error">${t('pages.txbulk.err.apply_failed', { err: escapeHtml(e.message) }, `Failed: ${escapeHtml(e.message)}`)}</div>`;
     }
   });
-
-  const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
-  document.addEventListener('keydown', handler);
 }
 
 // ── Bulk Edit modals (v2026-05-15.5) ────────────────────────────────────
-// Shared helper: build a centered modal shell. Returns the overlay + the
-// inner .modal element so each modal can drop its own body into it without
-// recopying the open/escape/click-out plumbing.
+// Shared helper: build a centered modal shell on top of the central
+// openModal() (DP-M6 — the old local shell leaked its esc handler on
+// every click-out/cancel close). Returns the overlay so each modal can
+// wire its own '.bulk-modal-apply' handler; close via overlay._close().
 function _bulkModalShell({ title, bodyHtml, applyLabel }) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:480px;">
-      <h3>${title}</h3>
+  const { overlay } = openModal({
+    title,
+    maxWidth: '480px',
+    bodyHtml: `
       <p class="fs-12 c-mut" style="margin:8px 0 16px;">${txPage.selected.size} transactions selected</p>
       ${bodyHtml}
       <div id="bulk-modal-status"></div>
-      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
-        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
-        <button class="bulk-modal-apply" style="background:var(--accent);color:var(--bg);">${applyLabel}</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const esc = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', esc); } };
-  document.addEventListener('keydown', esc);
+      <div class="form-actions">
+        <button type="button" data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
+        <button type="button" class="bulk-modal-apply" style="background:var(--accent);color:var(--bg);">${applyLabel}</button>
+      </div>`,
+  });
   return overlay;
 }
 
@@ -681,8 +672,8 @@ function openBulkPropertyModal() {
       const overlay = _bulkModalShell({
         title: `${t('txp.bulk_op.property_title', {}, 'Set Property')}`,
         bodyHtml: `
-          <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.property_label', {}, 'Property')}</label>
-          <select id="bulk-prop-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+          <label class="fs-12 lbl-block">${t('txp.bulk_op.property_label', {}, 'Property')}</label>
+          <select id="bulk-prop-select" class="input-std">${opts}</select>
           <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.property_hint', {}, "Adds the property's cost_tag to every selected transaction.")}</p>`,
         applyLabel: t('common.actions.apply', {}, 'Apply'),
       });
@@ -697,7 +688,7 @@ function openBulkPropertyModal() {
           });
           const out = await res.json();
           if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
-          overlay.remove();
+          overlay._close();
           txPage.selected.clear();
           refreshData();
         } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
@@ -725,8 +716,8 @@ function openBulkPropertyRemoveModal() {
       const overlay = _bulkModalShell({
         title: `${t('txp.bulk_op.property_remove_title', {}, 'Remove Property')}`,
         bodyHtml: `
-          <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.property_remove_label', {}, 'Property to remove')}</label>
-          <select id="bulk-prop-remove-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+          <label class="fs-12 lbl-block">${t('txp.bulk_op.property_remove_label', {}, 'Property to remove')}</label>
+          <select id="bulk-prop-remove-select" class="input-std">${opts}</select>
           <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.property_remove_hint', {}, "Strips the property's cost_tag from every selected transaction. Other tags are untouched.")}</p>`,
         applyLabel: t('common.actions.apply', {}, 'Apply'),
       });
@@ -742,7 +733,7 @@ function openBulkPropertyRemoveModal() {
           });
           const out = await res.json();
           if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
-          overlay.remove();
+          overlay._close();
           txPage.selected.clear();
           refreshData();
         } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
@@ -765,8 +756,8 @@ function openBulkSubscriptionModal() {
       const overlay = _bulkModalShell({
         title: `${t('txp.bulk_op.subscription_title', {}, 'Link Subscription')}`,
         bodyHtml: `
-          <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.subscription_label', {}, 'Subscription')}</label>
-          <select id="bulk-sub-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+          <label class="fs-12 lbl-block">${t('txp.bulk_op.subscription_label', {}, 'Subscription')}</label>
+          <select id="bulk-sub-select" class="input-std">${opts}</select>
           <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.subscription_hint', {}, 'Transactions already linked to a different subscription are skipped.')}</p>`,
         applyLabel: t('common.actions.apply', {}, 'Apply'),
       });
@@ -789,7 +780,7 @@ function openBulkSubscriptionModal() {
             `${linked} linked, ${skipped} already linked, ${missing} missing.`);
           _setBulkStatus(overlay, linked > 0 ? 'success' : 'error', escapeHtml(summary));
           if (linked > 0) {
-            setTimeout(() => { overlay.remove(); txPage.selected.clear(); refreshData(); }, 900);
+            setTimeout(() => { overlay._close(); txPage.selected.clear(); refreshData(); }, 900);
           }
         } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
       });
@@ -805,7 +796,7 @@ function openBulkSubscriptionUnlinkModal() {
   const overlay = _bulkModalShell({
     title: `${t('txp.bulk_op.subscription_unlink_title', {}, 'Unlink Subscription')}`,
     bodyHtml: `
-      <p class="fs-12 c-mut" style="margin:0;">${t('txp.bulk_op.subscription_unlink_hint', {}, 'Removes the subscription link from every selected transaction. The transactions themselves stay untouched.')}</p>`,
+      <p class="fs-12 c-mut m-0">${t('txp.bulk_op.subscription_unlink_hint', {}, 'Removes the subscription link from every selected transaction. The transactions themselves stay untouched.')}</p>`,
     applyLabel: t('txp.bulk_op.subscription_unlink_apply', {}, 'Unlink'),
   });
   overlay.querySelector('.bulk-modal-apply').addEventListener('click', async () => {
@@ -824,7 +815,7 @@ function openBulkSubscriptionUnlinkModal() {
         `${unlinked} unlinked, ${already} had no link.`);
       _setBulkStatus(overlay, unlinked > 0 ? 'success' : 'error', escapeHtml(summary));
       if (unlinked > 0) {
-        setTimeout(() => { overlay.remove(); txPage.selected.clear(); refreshData(); }, 900);
+        setTimeout(() => { overlay._close(); txPage.selected.clear(); refreshData(); }, 900);
       }
     } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
   });
@@ -838,8 +829,8 @@ function openBulkPayeeModal() {
   const overlay = _bulkModalShell({
     title: `${t('txp.bulk_op.payee_title', {}, 'Change Payee')}`,
     bodyHtml: `
-      <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.payee_label', {}, 'New payee')}</label>
-      <input type="text" id="bulk-payee-input" list="bulk-payee-list" autocomplete="off" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">
+      <label class="fs-12 lbl-block">${t('txp.bulk_op.payee_label', {}, 'New payee')}</label>
+      <input type="text" id="bulk-payee-input" list="bulk-payee-list" autocomplete="off" class="input-std">
       <datalist id="bulk-payee-list">${knownPayees.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
       <p class="fs-11 c-mut" style="margin:10px 0 0;">${t('txp.bulk_op.payee_hint', {}, 'Overwrites the payee on every selected transaction. import_id stays the same so linked rows (subscriptions, fuel, utilities) remain intact.')}</p>`,
     applyLabel: t('common.actions.apply', {}, 'Apply'),
@@ -856,7 +847,7 @@ function openBulkPayeeModal() {
       });
       const out = await res.json();
       if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
-      overlay.remove();
+      overlay._close();
       txPage.selected.clear();
       refreshData();
     } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
@@ -890,8 +881,8 @@ function openBulkAccountModal() {
   const overlay = _bulkModalShell({
     title: `${t('txp.bulk_op.account_title', {}, 'Move to Account')}`,
     bodyHtml: `
-      <label class="fs-12" style="display:block;margin-bottom:6px;">${t('txp.bulk_op.account_label', {}, 'Target account')}</label>
-      <select id="bulk-acc-select" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;">${opts}</select>
+      <label class="fs-12 lbl-block">${t('txp.bulk_op.account_label', {}, 'Target account')}</label>
+      <select id="bulk-acc-select" class="input-std">${opts}</select>
       <p class="fs-11 c-mut" style="margin:10px 0 0;">${escapeHtml(ccyHint)}</p>`,
     applyLabel: t('common.actions.apply', {}, 'Apply'),
   });
@@ -914,7 +905,7 @@ function openBulkAccountModal() {
         return;
       }
       if (out.error) { _setBulkStatus(overlay, 'error', escapeHtml(out.error)); return; }
-      overlay.remove();
+      overlay._close();
       txPage.selected.clear();
       refreshData();
     } catch (e) { _setBulkStatus(overlay, 'error', escapeHtml(e.message)); }
@@ -948,11 +939,11 @@ function _openTxReceiptsModal(tx) {
   ov.innerHTML = `
     <div class="modal-content modal-receipts">
       <h3>${escapeHtml(t('receipts.modal.title', {}, 'Attachments'))}</h3>
-      <div class="hint-sm" style="margin-bottom:8px">${escapeHtml(tx.payee || tx.account || '')} · ${escapeHtml(tx.date || '')}</div>
+      <div class="hint-sm mb-8">${escapeHtml(tx.payee || tx.account || '')} · ${escapeHtml(tx.date || '')}</div>
       <div id="tx-receipts-grid"></div>
       <div class="modal-footer">
         <div class="btn-right">
-          <button data-action="closeModal">${escapeHtml(t('common.actions.close', {}, 'Close'))}</button>
+          <button data-receipts-close>${escapeHtml(t('common.actions.close', {}, 'Close'))}</button>
         </div>
       </div>
     </div>
@@ -962,9 +953,12 @@ function _openTxReceiptsModal(tx) {
     document.removeEventListener('keydown', onKey);
     if (ov.parentNode) ov.parentNode.removeChild(ov);
   };
+  // DP-M6: expose the instance handle so the global closeModal() shim and
+  // stale-overlay dedupe paths can close this modal without leaking onKey.
+  ov._close = close;
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   ov.addEventListener('click', (e) => {
-    if (e.target === ov || e.target.closest('[data-action="closeModal"]')) close();
+    if (e.target === ov || e.target.closest('[data-receipts-close]')) close();
   });
   document.addEventListener('keydown', onKey);
   // Render the grid in read-only mode — receipts.js wires the tile click

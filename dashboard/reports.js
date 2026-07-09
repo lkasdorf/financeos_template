@@ -266,7 +266,7 @@ function renderReportDetail() {
   destroyReportCharts();
   detailEl.innerHTML = `
     <div style="display:flex;align-items:center;margin-bottom:12px;">
-      <button class="report-back" id="report-back-btn" style="margin:0;">${t('reports.detail.back', {}, '&larr; Back to Reports')}</button>
+      <button class="report-back m-0" id="report-back-btn">${t('reports.detail.back', {}, '&larr; Back to Reports')}</button>
       <button id="report-pdf-btn" style="margin-left:auto;padding:6px 14px;">${t('reports.detail.btn_pdf', {}, 'Export PDF')}</button>
       <button id="report-export-btn" style="margin-left:8px;padding:6px 14px;">${t('reports.detail.btn_xlsx', {}, 'Export XLSX')}</button>
     </div>

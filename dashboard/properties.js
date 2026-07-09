@@ -42,20 +42,17 @@ function _propsAccountAutotag(alias) {
   return byAccount[(alias || '').toLowerCase()] || '';
 }
 
-// Read the user's preferred display currency / format from core.js shared
-// state when available. Properties data is always TZS in source, but the
-// global currency switcher should still affect headline KPI rendering.
+// Read the user's preferred display currency from core.js shared state.
+// Properties data is always TZS in source, but the global currency
+// switcher affects headline KPI rendering. DR-M1: the previous
+// typeof-guards referenced phantom globals (toDisplayCurrency /
+// currentCurrency) and always fell back to raw TZS.
 function _propsToDisplay(amountTzs) {
-  if (typeof toDisplayCurrency === 'function') return toDisplayCurrency(amountTzs);
-  if (typeof toDisplayTzs === 'function') return toDisplayTzs(amountTzs);
-  return amountTzs;
+  return toDisplay(amountTzs, 'TZS');
 }
 
 function _propsCurrencySymbol() {
-  if (typeof currentCurrency === 'string') {
-    return ({ TZS: 'TZS', EUR: '€', USD: '$' })[currentCurrency] || currentCurrency;
-  }
-  return 'TZS';
+  return ({ TZS: 'TZS', EUR: '€', USD: '$' })[displayCurrency] || displayCurrency;
 }
 
 function _propsFmt(value, opts = {}) {
@@ -697,8 +694,8 @@ function renderDrilldownHeader(details) {
       <div class="muted">${meta}</div>
     </div>
     <div class="property-actions">
-      <button type="button" id="btn-add-luku" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${escapeHtml(t('page.properties.add_luku', {}, 'Buy Electricity'))}</button>
-      <button type="button" id="btn-add-water" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${escapeHtml(t('page.properties.add_water', {}, 'Pay Water'))}</button>
+      <button type="button" id="btn-add-luku" class="btn-accent">+ ${escapeHtml(t('page.properties.add_luku', {}, 'Buy Electricity'))}</button>
+      <button type="button" id="btn-add-water" class="btn-accent">+ ${escapeHtml(t('page.properties.add_water', {}, 'Pay Water'))}</button>
       <button type="button" id="btn-property-excel" style="padding:8px 14px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-weight:500;">${escapeHtml(t('page.properties.excel_export', {}, 'Excel Export'))}</button>
     </div>`;
   return div;
@@ -922,7 +919,7 @@ function renderLukuRows(rows) {
       <td class="num">${reading}</td>
       <td>${escapeHtml(r.account || '–')}</td>
       <td>${txLink}</td>
-      <td style="white-space:nowrap;">
+      <td class="nowrap">
         <button type="button" class="btn-icon btn-luku-edit" data-luku-id="${escapeHtml(r.luku_id)}" title="${escapeHtml(editTitle)}">✎</button>
         <button type="button" class="btn-icon btn-luku-delete" data-luku-id="${escapeHtml(r.luku_id)}" title="${escapeHtml(delTitle)}">✕</button>
       </td>
@@ -945,7 +942,7 @@ function renderWaterRows(rows) {
       <td>${escapeHtml(r.control_number || '–')}</td>
       <td>${escapeHtml(r.account || '–')}</td>
       <td>${txLink}</td>
-      <td style="white-space:nowrap;">
+      <td class="nowrap">
         <button type="button" class="btn-icon btn-water-edit" data-water-id="${escapeHtml(r.water_id)}" title="${escapeHtml(editTitle)}">✎</button>
         <button type="button" class="btn-icon btn-water-delete" data-water-id="${escapeHtml(r.water_id)}" title="${escapeHtml(delTitle)}">✕</button>
       </td>
@@ -979,7 +976,7 @@ function _avg(values) {
 function _avgLineDataset(label, avg, length) {
   return {
     label, type: 'line', data: Array(length).fill(avg),
-    borderColor: '#E74C3C', borderWidth: 2, borderDash: [6, 4],
+    borderColor: cssVar('--muted-soft'), borderWidth: 2, borderDash: [6, 4],
     pointRadius: 0, fill: false, tension: 0,
   };
 }
@@ -1075,43 +1072,43 @@ function drawMonthlyBreakdownChart(co) {
         {
           label: t('page.properties.chart.legend.rent', {}, 'Rent'),
           data: rent.map(_propsToDisplay),
-          backgroundColor: '#ef4444',
+          backgroundColor: chartPalette()[7],
           stack: 'cost',
         },
         {
           label: t('page.properties.chart.legend.service_charges', {}, 'Service Charges'),
           data: serviceCharges.map(_propsToDisplay),
-          backgroundColor: '#f97316',
+          backgroundColor: chartPalette()[1],
           stack: 'cost',
         },
         {
           label: t('page.properties.chart.legend.maintenance', {}, 'Maintenance'),
           data: maintenance.map(_propsToDisplay),
-          backgroundColor: '#a855f7',
+          backgroundColor: chartPalette()[2],
           stack: 'cost',
         },
         {
           label: t('page.properties.chart.legend.staff', {}, 'Staff'),
           data: staff.map(_propsToDisplay),
-          backgroundColor: '#10b981',
+          backgroundColor: chartPalette()[5],
           stack: 'cost',
         },
         {
           label: t('page.properties.chart.legend.electricity_short', {}, 'Electricity'),
           data: electricity.map(_propsToDisplay),
-          backgroundColor: '#3b82f6',
+          backgroundColor: chartPalette()[0],
           stack: 'cost',
         },
         {
           label: t('page.properties.chart.legend.water_short', {}, 'Water'),
           data: water.map(_propsToDisplay),
-          backgroundColor: '#06b6d4',
+          backgroundColor: chartPalette()[3],
           stack: 'cost',
         },
         {
           label: t('page.properties.chart.legend.other', {}, 'Other'),
           data: other.map(_propsToDisplay),
-          backgroundColor: '#94a3b8',
+          backgroundColor: chartPalette()[9],
           stack: 'cost',
         },
       ],
@@ -1143,10 +1140,7 @@ function drawOtherCategoryChart(co) {
     labels.push(t('page.properties.chart.other_rest', {}, 'Other (rest)'));
     data.push(_propsToDisplay(restAmount));
   }
-  const palette = [
-    '#a855f7', '#ef4444', '#f97316', '#10b981',
-    '#84cc16', '#7c3aed', '#0ea5e9', '#f59e0b', '#94a3b8',
-  ];
+  const palette = chartPalette();
   const chart = new Chart(ctx, {
     type: 'doughnut',
     data: {
@@ -1190,7 +1184,7 @@ function drawPriceTrendChart(rows) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.legend.price_per_kwh', {}, 'TZS / kWh'), data, borderColor: '#9333ea', backgroundColor: 'rgba(147,51,234,0.12)', fill: true, tension: 0.15, pointRadius: 2 },
+        { label: t('page.properties.chart.legend.price_per_kwh', {}, 'TZS / kWh'), data, borderColor: chartPalette()[2], backgroundColor: chartTint(chartPalette()[2], 0.12), fill: true, tension: 0.15, pointRadius: 2 },
         _avgLineDataset(t('page.properties.chart.legend.median', { value: _propsFmt(median, { decimals: 2 }) }, `Median ${_propsFmt(median, { decimals: 2 })}`), median, labels.length),
       ],
     },
@@ -1225,8 +1219,8 @@ function drawYtdElectricityChart(ytd) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.ytd.current', {}, 'Current Year'), data: ytd.current_strom, borderColor: '#3498DB', backgroundColor: 'rgba(52,152,219,0.18)', fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
-        { label: t('page.properties.chart.ytd.previous', {}, 'Previous Year'), data: ytd.previous_strom, borderColor: '#3498DB', borderDash: [5, 4], fill: false, tension: 0, pointRadius: 0, borderWidth: 1.5 },
+        { label: t('page.properties.chart.ytd.current', {}, 'Current Year'), data: ytd.current_strom, borderColor: chartPalette()[0], backgroundColor: 'rgba(52,152,219,0.18)', fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
+        { label: t('page.properties.chart.ytd.previous', {}, 'Previous Year'), data: ytd.previous_strom, borderColor: chartPalette()[0], borderDash: [5, 4], fill: false, tension: 0, pointRadius: 0, borderWidth: 1.5 },
       ],
     },
     options: {
@@ -1249,8 +1243,8 @@ function drawYtdWaterChart(ytd) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.ytd.current', {}, 'Current Year'), data: ytd.current_water, borderColor: '#1ABC9C', backgroundColor: 'rgba(26,188,156,0.18)', fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
-        { label: t('page.properties.chart.ytd.previous', {}, 'Previous Year'), data: ytd.previous_water, borderColor: '#1ABC9C', borderDash: [5, 4], fill: false, tension: 0, pointRadius: 0, borderWidth: 1.5 },
+        { label: t('page.properties.chart.ytd.current', {}, 'Current Year'), data: ytd.current_water, borderColor: chartPalette()[3], backgroundColor: 'rgba(26,188,156,0.18)', fill: true, tension: 0, pointRadius: 0, borderWidth: 2 },
+        { label: t('page.properties.chart.ytd.previous', {}, 'Previous Year'), data: ytd.previous_water, borderColor: chartPalette()[3], borderDash: [5, 4], fill: false, tension: 0, pointRadius: 0, borderWidth: 1.5 },
       ],
     },
     options: {
@@ -1275,7 +1269,7 @@ function drawPurchaseFreqChart(rows) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.purchase_freq.bars', {}, 'Purchases'), data, backgroundColor: '#f59e0b' },
+        { label: t('page.properties.chart.purchase_freq.bars', {}, 'Purchases'), data, backgroundColor: chartPalette()[1] },
         _avgLineDataset(`Ø ${avg.toFixed(1)}`, avg, labels.length),
       ],
     },
@@ -1359,7 +1353,7 @@ function drawLukuCostChart(monthly) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.legend.electricity_cost', {}, 'Electricity Cost'), data, backgroundColor: '#3498DB' },
+        { label: t('page.properties.chart.legend.electricity_cost', {}, 'Electricity Cost'), data, backgroundColor: chartPalette()[0] },
         _avgLineDataset(`Ø ${_propsFmt(avg)} TZS`, avg, labels.length),
       ],
     },
@@ -1379,7 +1373,7 @@ function drawLukuKwhChart(monthly) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.legend.consumption', {}, 'Consumption'), data, borderColor: '#F39C12', backgroundColor: 'rgba(243,156,18,0.15)', fill: true, tension: 0.2 },
+        { label: t('page.properties.chart.legend.consumption', {}, 'Consumption'), data, borderColor: chartPalette()[1], backgroundColor: chartTint(chartPalette()[1], 0.15), fill: true, tension: 0.2 },
         _avgLineDataset(`Ø ${_propsFmt(avg, { decimals: 0 })} kWh`, avg, labels.length),
       ],
     },
@@ -1399,7 +1393,7 @@ function drawWaterCostChart(monthly) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.legend.water_cost', {}, 'Water Cost'), data, backgroundColor: '#1ABC9C' },
+        { label: t('page.properties.chart.legend.water_cost', {}, 'Water Cost'), data, backgroundColor: chartPalette()[3] },
         _avgLineDataset(`Ø ${_propsFmt(avg)} TZS`, avg, labels.length),
       ],
     },
@@ -1418,8 +1412,8 @@ function drawYearlyChart(yearly) {
     data: {
       labels,
       datasets: [
-        { label: t('page.properties.chart.legend.electricity_short', {}, 'Electricity'), data: elec, backgroundColor: '#3498DB' },
-        { label: t('page.properties.chart.legend.water_short', {}, 'Water'), data: water, backgroundColor: '#1ABC9C' },
+        { label: t('page.properties.chart.legend.electricity_short', {}, 'Electricity'), data: elec, backgroundColor: chartPalette()[0] },
+        { label: t('page.properties.chart.legend.water_short', {}, 'Water'), data: water, backgroundColor: chartPalette()[3] },
       ],
     },
     options: { ..._baseChartOptions('TZS'), scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } },
@@ -1611,18 +1605,17 @@ async function downloadPropertyExcel(propertyId) {
 
 // Single overlay element reused across both modals; tearing down + re-
 // opening keeps form state from leaking between sessions.
-let _propsModalOverlay = null;
+let _propsModalInstance = null;
 
+// DP-M6: props modals ride the central openModal() lifecycle; this
+// wrapper only keeps the module-local handle so the booking flows can
+// close programmatically after a successful submit.
 function _closePropsModal() {
-  if (_propsModalOverlay && _propsModalOverlay.parentNode) {
-    _propsModalOverlay.parentNode.removeChild(_propsModalOverlay);
+  if (_propsModalInstance) {
+    const inst = _propsModalInstance;
+    _propsModalInstance = null;
+    inst.close();
   }
-  _propsModalOverlay = null;
-  document.removeEventListener('keydown', _propsModalKeyHandler);
-}
-
-function _propsModalKeyHandler(ev) {
-  if (ev.key === 'Escape') _closePropsModal();
 }
 
 function _propsTodayIso() {
@@ -1653,49 +1646,25 @@ function _propsAccountOptions(prop, selected) {
 
 function _buildPropsModal(title, bodyHtml, onSubmit) {
   _closePropsModal();
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  // Reuse the existing .modal-overlay > .modal styling. Inline styles
-  // here keep this self-contained without adding new CSS classes
-  // (matches vehicles.js openFuelModal convention).
-  overlay.innerHTML = `
-    <div class="modal" role="dialog" aria-modal="true" style="max-width:560px;width:min(560px,92vw);">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-        <h3 style="margin:0;font-size:16px;">${escapeHtml(title)}</h3>
-        <button type="button" data-modal-close aria-label="Close"
-          style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">×</button>
-      </div>
-      <form>
-        ${bodyHtml}
-        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
-          <button type="button" class="btn-secondary" data-modal-cancel style="padding:8px 14px;">${escapeHtml(t('common.actions.cancel', {}, 'Cancel'))}</button>
-          <button type="submit" class="btn-primary"
-            style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;">${escapeHtml(t('page.properties.modal.submit', {}, 'Book'))}</button>
-        </div>
-      </form>
-    </div>`;
-  document.body.appendChild(overlay);
-  _propsModalOverlay = overlay;
-
-  overlay.querySelector('[data-modal-close]').addEventListener('click', _closePropsModal);
-  overlay.querySelector('[data-modal-cancel]').addEventListener('click', _closePropsModal);
-  overlay.addEventListener('click', (ev) => {
-    if (ev.target === overlay) _closePropsModal();
+  // DP-M6: shell + lifecycle come from the central openModal() —
+  // esc/click-out/✕/cancel cleanup, the DP-H1 submit lock (LUKU/Water
+  // submits create real TX rows plus pass-through reimbursement; a
+  // second click during the request used to book everything twice)
+  // and initial focus all live there.
+  _propsModalInstance = openModal({
+    title: escapeHtml(title),
+    bodyHtml,
+    maxWidth: '560px',
+    submitLabel: t('page.properties.modal.submit', {}, 'Book'),
+    onSubmit: async (form) => {
+      try {
+        await onSubmit(form);
+      } catch (err) {
+        const alertFn = typeof window.uiAlert === 'function' ? window.uiAlert : (m) => Promise.resolve(window.alert(m));
+        await alertFn(t('page.properties.alert.book_failed', { msg: err.message }, `Booking failed: ${err.message}`));
+      }
+    },
   });
-  document.addEventListener('keydown', _propsModalKeyHandler);
-  const form = overlay.querySelector('form');
-  form.addEventListener('submit', async (ev) => {
-    ev.preventDefault();
-    try {
-      await onSubmit(form);
-    } catch (err) {
-      const alertFn = typeof window.uiAlert === 'function' ? window.uiAlert : (m) => Promise.resolve(window.alert(m));
-      await alertFn(t('page.properties.alert.book_failed', { msg: err.message }, `Booking failed: ${err.message}`));
-    }
-  });
-  // Focus the first input for fast keyboard entry.
-  const firstInput = form.querySelector('input, select');
-  if (firstInput) firstInput.focus();
 }
 
 // Tiny field renderer kept inline so the modal HTML reads naturally.
@@ -1768,7 +1737,7 @@ function openLukuModal(existing = null) {
   const accSelect = _propsAccountOptions(prop, existing?.account);
   const inputCss = 'padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;font:inherit;';
   const body = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <div class="grid-2col">
       ${_propsField('date', t('common.table.date', {}, 'Date'), `<input type="date" value="${escapeHtml(date)}" required style="${inputCss}">`)}
       ${_propsField('account', t('common.table.account', {}, 'Account'), `<select style="${inputCss}">${accSelect}</select>`)}
       ${_propsField('units_kwh', t('page.properties.units', {}, 'kWh (units)'), `<input type="number" value="${escapeHtml(kwh)}" step="0.01" min="0.01" required placeholder="e.g. 1820.3" style="${inputCss}">`)}
@@ -1824,7 +1793,7 @@ function openWaterModal(existing = null) {
   const accSelect = _propsAccountOptions(prop, existing?.account);
   const inputCss = 'padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:inherit;font:inherit;';
   const body = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <div class="grid-2col">
       ${_propsField('date', t('common.table.date', {}, 'Date'), `<input type="date" value="${escapeHtml(date)}" required style="${inputCss}">`)}
       ${_propsField('account', t('common.table.account', {}, 'Account'), `<select style="${inputCss}">${accSelect}</select>`)}
       ${_propsField('total_price', t('page.properties.amount_tzs', {}, 'Amount (TZS)'), `<input type="number" value="${escapeHtml(cost)}" step="0.01" min="0.01" required placeholder="e.g. 28553.71" style="${inputCss}">`, true)}
@@ -1893,7 +1862,7 @@ async function renderPropertiesSettingsTab() {
 
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-      <h3 style="margin:0;">${t('settings.properties.heading', {}, 'Properties')}</h3>
+      <h3 class="m-0">${t('settings.properties.heading', {}, 'Properties')}</h3>
       <button type="button" class="btn-secondary" id="btn-property-add">
         <svg width="14" height="14" style="vertical-align:-2px;"><use href="#i-plus"/></svg>
         ${t('settings.properties.add', {}, 'Add Property')}
@@ -1993,14 +1962,14 @@ function _renderPropertyRows(props, lukuCounts, waterCounts) {
       ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--accent-glow,rgba(70,89,155,0.15));color:var(--accent);font-size:11px;font-weight:600;">${labelActive}</span>`
       : `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:var(--border);color:var(--muted);font-size:11px;font-weight:600;">${labelArchived}</span>`;
     return `<tr>
-      <td><code style="font-size:11px;">${escapeHtml(p.property_id)}</code></td>
+      <td><code class="fs-11">${escapeHtml(p.property_id)}</code></td>
       <td>${escapeHtml(p.name || '')}</td>
       <td style="color:var(--muted);font-size:12px;">${escapeHtml(p.address || '–')}</td>
       <td>${escapeHtml(p.default_account || '–')}</td>
       <td>${escapeHtml(p.currency || '–')}</td>
       <td>${lukuN} / ${waterN}</td>
       <td>${statusBadge}</td>
-      <td style="white-space:nowrap;">
+      <td class="nowrap">
         <button type="button" class="btn-icon" data-prop-edit="${escapeHtml(p.property_id)}" title="${labelEdit}">✎</button>
         <button type="button" class="btn-icon" data-prop-toggle="${escapeHtml(p.property_id)}" title="${isActive ? labelArchive : labelActivate}">${isActive ? '📦' : '↻'}</button>
         <button type="button" class="btn-icon" data-prop-delete="${escapeHtml(p.property_id)}" ${deleteAttrs}>✕</button>
@@ -2043,7 +2012,7 @@ function openPropertyModal(existing = null) {
   const lblNotes = t('settings.properties.field.notes', {}, 'Notes');
 
   const body = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    <div class="grid-2col">
       ${_propsField('property_id', lblPropId, `<input type="text" value="${v('property_id')}" ${isEdit ? 'readonly' : 'required pattern="prop-[a-z0-9_-]+"'} placeholder="prop-myhouse" style="${inputCss}${isEdit ? 'background:var(--border);color:var(--muted);' : ''}">`)}
       ${_propsField('name', lblName, `<input type="text" value="${v('name')}" required placeholder="My House" style="${inputCss}">`)}
       ${_propsField('address', lblAddress, `<input type="text" value="${v('address')}" placeholder="123 Example Street" style="${inputCss}">`, true)}
@@ -2108,13 +2077,13 @@ function _renderLifecycleBadge(startDate, endDate) {
   if (!start && !end) return '';
   const baseStyle = 'display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;border-radius:8px;margin-left:8px;vertical-align:middle;';
   if (end && end <= today) {
-    return `<span class="lifecycle-badge lifecycle-archived" style="${baseStyle}background:rgba(148,163,184,0.18);color:var(--muted);">${escapeHtml(t('lifecycle.ended', { date: end.slice(0, 7) }, `ended ${end.slice(0, 7)}`))}</span>`;
+    return `<span class="lifecycle-badge lifecycle-archived" style="${baseStyle}background:color-mix(in srgb, var(--muted) 18%, transparent);color:var(--muted);">${escapeHtml(t('lifecycle.ended', { date: end.slice(0, 7) }, `ended ${end.slice(0, 7)}`))}</span>`;
   }
   if (end && end > today) {
-    return `<span class="lifecycle-badge lifecycle-planned" style="${baseStyle}background:rgba(245,158,11,0.18);color:#b45309;">${escapeHtml(t('lifecycle.until', { date: end.slice(0, 7) }, `until ${end.slice(0, 7)}`))}</span>`;
+    return `<span class="lifecycle-badge lifecycle-planned" style="${baseStyle}background:color-mix(in srgb, var(--warn) 18%, transparent);color:var(--warn);">${escapeHtml(t('lifecycle.until', { date: end.slice(0, 7) }, `until ${end.slice(0, 7)}`))}</span>`;
   }
   if (start) {
-    return `<span class="lifecycle-badge lifecycle-since" style="${baseStyle}background:rgba(70,89,155,0.12);color:var(--muted);">${escapeHtml(t('lifecycle.since', { date: start.slice(0, 7) }, `since ${start.slice(0, 7)}`))}</span>`;
+    return `<span class="lifecycle-badge lifecycle-since" style="${baseStyle}background:color-mix(in srgb, var(--accent) 12%, transparent);color:var(--muted);">${escapeHtml(t('lifecycle.since', { date: start.slice(0, 7) }, `since ${start.slice(0, 7)}`))}</span>`;
   }
   return '';
 }

@@ -10,16 +10,16 @@
 // thin renderer over that response.
 
 const PROPCOST_BUCKETS = [
-  { id: 'rent',                  color: '#ef4444', getLabel: () => t('reports.propcost.bucket.rent', {}, 'Rent') },
-  { id: 'service_charges',       color: '#f97316', getLabel: () => t('reports.propcost.bucket.service_charges', {}, 'Service charges') },
-  { id: 'utilities_electricity', color: '#3b82f6', getLabel: () => t('reports.propcost.bucket.electricity', {}, 'Electricity') },
-  { id: 'utilities_water',       color: '#06b6d4', getLabel: () => t('reports.propcost.bucket.water', {}, 'Water') },
-  { id: 'utilities_other',       color: '#0ea5e9', getLabel: () => t('reports.propcost.bucket.utilities_other', {}, 'Other utilities') },
-  { id: 'maintenance',           color: '#a855f7', getLabel: () => t('reports.propcost.bucket.maintenance', {}, 'Maintenance') },
-  { id: 'staff',                 color: '#10b981', getLabel: () => t('reports.propcost.bucket.staff', {}, 'Staff') },
-  { id: 'household',             color: '#84cc16', getLabel: () => t('reports.propcost.bucket.household', {}, 'Household') },
-  { id: 'legal',                 color: '#7c3aed', getLabel: () => t('reports.propcost.bucket.legal', {}, 'Legal & fees') },
-  { id: 'other',                 color: '#94a3b8', getLabel: () => t('reports.propcost.bucket.other', {}, 'Other') },
+  { id: 'rent',                  get color() { return chartPalette()[7]; }, getLabel: () => t('reports.propcost.bucket.rent', {}, 'Rent') },
+  { id: 'service_charges',       get color() { return chartPalette()[1]; }, getLabel: () => t('reports.propcost.bucket.service_charges', {}, 'Service charges') },
+  { id: 'utilities_electricity', get color() { return chartPalette()[0]; }, getLabel: () => t('reports.propcost.bucket.electricity', {}, 'Electricity') },
+  { id: 'utilities_water',       get color() { return chartPalette()[3]; }, getLabel: () => t('reports.propcost.bucket.water', {}, 'Water') },
+  { id: 'utilities_other',       get color() { return chartPalette()[8]; }, getLabel: () => t('reports.propcost.bucket.utilities_other', {}, 'Other utilities') },
+  { id: 'maintenance',           get color() { return chartPalette()[2]; }, getLabel: () => t('reports.propcost.bucket.maintenance', {}, 'Maintenance') },
+  { id: 'staff',                 get color() { return chartPalette()[5]; }, getLabel: () => t('reports.propcost.bucket.staff', {}, 'Staff') },
+  { id: 'household',             get color() { return chartPalette()[6]; }, getLabel: () => t('reports.propcost.bucket.household', {}, 'Household') },
+  { id: 'legal',                 get color() { return chartPalette()[4]; }, getLabel: () => t('reports.propcost.bucket.legal', {}, 'Legal & fees') },
+  { id: 'other',                 get color() { return chartPalette()[9]; }, getLabel: () => t('reports.propcost.bucket.other', {}, 'Other') },
 ];
 
 let _propCostState = {
@@ -91,12 +91,14 @@ function _propCostRender(properties) {
   const root = document.getElementById('report-output');
   if (!root) return;
   const data = _propCostState.data || {};
-  const cur = (typeof currentCurrency === 'string') ? currentCurrency : 'TZS';
+  // DR-M1: this used to reference phantom globals (currentCurrency /
+  // toDisplayCurrency) behind typeof-guards — the header currency
+  // switcher silently never affected this report. The real core.js API
+  // is displayCurrency + toDisplay(v, nativeCurrency); source data is
+  // always TZS.
+  const cur = displayCurrency;
   const sym = ({ TZS: 'TZS', EUR: '€', USD: '$' })[cur] || cur;
-  const fmt = (v) => {
-    if (typeof toDisplayCurrency === 'function') v = toDisplayCurrency(v);
-    return Math.round(v || 0).toLocaleString('de-DE');
-  };
+  const fmt = (v) => Math.round(toDisplay(v || 0, 'TZS')).toLocaleString(getLocaleTag());
 
   if (_propCostState.chart) {
     try { _propCostState.chart.destroy(); } catch (_) {}
@@ -165,8 +167,8 @@ function _propCostRender(properties) {
 
   root.innerHTML = `
     <div class="report-header" style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin:16px 0 12px;">
-      <div class="muted" style="font-size:13px;">${escapeHtml(propLabel)}${propAddr ? ' · ' + escapeHtml(propAddr) : ''}</div>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div class="muted fs-13">${escapeHtml(propLabel)}${propAddr ? ' · ' + escapeHtml(propAddr) : ''}</div>
+      <div class="flex-row gap-sm">
         <select id="propcost-property" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
           ${propertyOptions}
         </select>
@@ -176,7 +178,7 @@ function _propCostRender(properties) {
       ${yearPills}
     </div>
     ${data.cost_tag ? '' : `
-      <div class="alert-banner" style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #f59e0b;padding:12px 16px;margin:12px 0;border-radius:var(--radius-xs);">
+      <div class="alert-banner" style="background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--warn);padding:12px 16px;margin:12px 0;border-radius:var(--radius-xs);">
         <strong>${escapeHtml(t('reports.propcost.no_tag.title', {}, 'No cost tag set'))}</strong> —
         ${escapeHtml(t('reports.propcost.no_tag.body', {}, 'Open Settings → Properties and assign a cost_tag so transactions can be auto-tagged. The report needs that tag to aggregate costs.'))}
       </div>
@@ -192,8 +194,8 @@ function _propCostRender(properties) {
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr>
             <th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">${escapeHtml(t('reports.propcost.col.bucket', {}, 'Bucket'))}</th>
-            <th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">${escapeHtml(t('reports.propcost.col.amount', {}, 'Amount'))}</th>
-            <th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">%</th>
+            <th class="td-amount">${escapeHtml(t('reports.propcost.col.amount', {}, 'Amount'))}</th>
+            <th class="td-amount">%</th>
           </tr></thead>
           <tbody>${bucketRows || `<tr><td colspan="3" style="padding:12px;color:var(--muted);">${escapeHtml(t('reports.propcost.no_data', {}, 'No data for this period.'))}</td></tr>`}</tbody>
         </table>
@@ -203,9 +205,9 @@ function _propCostRender(properties) {
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead><tr>
             <th style="text-align:left;padding:6px 0;border-bottom:1px solid var(--border);">${escapeHtml(t('reports.propcost.col.category', {}, 'Category'))}</th>
-            <th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">${escapeHtml(t('reports.propcost.col.bucket_short', {}, 'Bucket'))}</th>
-            <th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">${escapeHtml(t('reports.propcost.col.amount', {}, 'Amount'))}</th>
-            <th style="text-align:right;padding:6px 0;border-bottom:1px solid var(--border);">${escapeHtml(t('reports.propcost.col.count', {}, '#'))}</th>
+            <th class="td-amount">${escapeHtml(t('reports.propcost.col.bucket_short', {}, 'Bucket'))}</th>
+            <th class="td-amount">${escapeHtml(t('reports.propcost.col.amount', {}, 'Amount'))}</th>
+            <th class="td-amount">${escapeHtml(t('reports.propcost.col.count', {}, '#'))}</th>
           </tr></thead>
           <tbody>${catRows || `<tr><td colspan="4" style="padding:12px;color:var(--muted);">${escapeHtml(t('reports.propcost.no_data', {}, 'No data for this period.'))}</td></tr>`}</tbody>
         </table>
@@ -253,31 +255,34 @@ function _propCostDrawChart(data, sym, fmt) {
     .filter((b) => months.some((m) => (m[b.id] || 0) > 0))
     .map((b) => ({
       label: b.getLabel(),
-      data: months.map((m) => {
-        let v = m[b.id] || 0;
-        if (typeof toDisplayCurrency === 'function') v = toDisplayCurrency(v);
-        return v;
-      }),
+      data: months.map((m) => toDisplay(m[b.id] || 0, 'TZS')),
       backgroundColor: b.color,
       stack: 'cost',
     }));
+  // Chart data is pre-converted via toDisplay() above — tooltip and
+  // axis must only FORMAT, or the value would be converted twice.
+  const fmtAxis = (v) => Math.round(v || 0).toLocaleString(getLocaleTag());
+  // DR-M1: register in reportCharts too, so destroyReportCharts() kills
+  // the chart when the user leaves via Back (the _propCostState handle
+  // only covers same-report re-renders).
   _propCostState.chart = new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets },
     options: {
-      responsive: true, maintainAspectRatio: false,
+      ...CHART_BASE,
       plugins: {
         legend: { position: 'top', labels: { boxWidth: 12 } },
         tooltip: {
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${fmt(ctx.parsed.y)} ${sym}`,
+            label: (ctx) => `${ctx.dataset.label}: ${fmtAxis(ctx.parsed.y)} ${sym}`,
           },
         },
       },
       scales: {
         x: { stacked: true, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
-        y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => fmt(v) } },
+        y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => fmtAxis(v) } },
       },
     },
   });
+  reportCharts.push(_propCostState.chart);
 }

@@ -75,41 +75,38 @@ function renderBusinessReimbursementsReport(entityId) {
     return acc && acc.type === 'pass_through';
   });
   const years = getAvailableYears();
-  const savedYear = out.getAttribute('data-kf-year') || years[years.length - 1] || '2026';
-  const savedMode = out.getAttribute('data-kf-mode') || 'monthly';
+
+  // reportId 'kf' keeps the legacy data-kf-mode / data-kf-year persistence
+  // attributes and the kf-mode / kf-year select IDs intact.
+  const tb = reportToolbar(out, 'kf', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="kf-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="kf-year">${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
-      </div>
+      ${tb.html}
       <div id="kf-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('kf-mode');
-  const yearEl = document.getElementById('kf-year');
-
   function update() {
-    out.setAttribute('data-kf-mode', modeEl.value);
-    out.setAttribute('data-kf-year', yearEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
 
-    const year = yearEl.value;
+    const year = tb.get('year');
 
     // Expenses on the entity's pass-through accounts (the actual spending).
     const bizExpenses = state.tx.filter(tx => (tx.type === 'expense' || tx.type === 'transfer') && businessAccounts.includes(tx.account));
     // Reimbursements (income on the same accounts).
     const bizReimb = state.tx.filter(tx => tx.type === 'income' && businessAccounts.includes(tx.account));
 
-    if (modeEl.value === 'monthly') {
+    if (tb.get('mode') === 'monthly') {
       const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
         .map((en, i) => t(`common.months.short.${i + 1}`, {}, en));
       const otherLabel = t('reports.shared.other', {}, '(other)');
@@ -191,7 +188,7 @@ function renderBusinessReimbursementsReport(entityId) {
           </tr></thead><tbody>
             ${months.filter(m => m.exp > 0 || m.reimb > 0).map(m => {
               const hasGap = Math.abs(m.net) > 1;
-              return `<tr style="${hasGap ? 'background:var(--warning-bg, rgba(245,158,11,0.08));' : ''}">
+              return `<tr style="${hasGap ? 'background:var(--warn-bg);' : ''}">
               <td>${m.label}</td>
               <td class="amt expense">${formatCurrency(m.exp, 'TZS')}</td>
               <td class="amt income">${formatCurrency(m.reimb, 'TZS')}</td>
@@ -205,7 +202,7 @@ function renderBusinessReimbursementsReport(entityId) {
         </div>
         <div class="report-section">
           <div style="display:flex;align-items:center;margin-bottom:12px;">
-            <div class="report-section-title" style="margin:0;">${t('reports.kf.section.tx_detail', {}, 'Transaction Detail')}</div>
+            <div class="report-section-title m-0">${t('reports.kf.section.tx_detail', {}, 'Transaction Detail')}</div>
             <button data-action="exportBusinessAccounting" data-arg1="${escapeHtml(entityId)}" data-arg2="${escapeHtml(year)}" style="margin-left:auto;padding:6px 14px;">${t('reports.kf.export_btn', {}, 'Export for Accounting')}</button>
           </div>
           <table class="tx-table" id="kf-tx-detail"><thead><tr>
@@ -238,14 +235,14 @@ function renderBusinessReimbursementsReport(entityId) {
           data: {
             labels: names,
             datasets: [
-              { label: t('common.label.expenses', {}, 'Expenses'), data: months.map(m => m.exp), backgroundColor: '#e8453c', borderWidth: 0, borderRadius: 3 },
-              { label: t('reports.kf.dataset.reimbursed', {}, 'Reimbursed'), data: months.map(m => m.reimb), backgroundColor: '#10b981', borderWidth: 0, borderRadius: 3 },
+              { label: t('common.label.expenses', {}, 'Expenses'), data: months.map(m => m.exp), backgroundColor: cssVar('--negative'), borderWidth: 0, borderRadius: 3 },
+              { label: t('reports.kf.dataset.reimbursed', {}, 'Reimbursed'), data: months.map(m => m.reimb), backgroundColor: cssVar('--positive'), borderWidth: 0, borderRadius: 3 },
             ],
           },
-          options: { responsive: true, maintainAspectRatio: false,
+          options: { ...CHART_BASE,
             plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 14, font: { size: 11 } } },
               tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, 'TZS') + ' TZS' } } },
-            scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } } } },
+            scales: { x: { grid: { display: false } }, y: { ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } } } },
         });
         reportCharts.push(chart);
       }
@@ -253,16 +250,16 @@ function renderBusinessReimbursementsReport(entityId) {
       // Category chart
       const cCtx = document.getElementById('kf-cat-chart');
       if (cCtx && topCats.length > 0) {
-        const palette = ['#1e40af', '#e8453c', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
+        const palette = chartPalette();
         const chart = new Chart(cCtx, {
           type: 'bar',
           data: {
             labels: topCats.map(([c]) => c.length > 22 ? c.slice(0, 21) + '…' : c),
             datasets: [{ data: topCats.map(([, v]) => v), backgroundColor: palette.slice(0, topCats.length), borderWidth: 0, borderRadius: 3 }],
           },
-          options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          options: { indexAxis: 'y', ...CHART_BASE,
             plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, 'TZS') + ' TZS' } } },
-            scales: { x: { ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } }, y: { grid: { display: false }, ticks: { font: { size: 11 }, autoSkip: false } } } },
+            scales: { x: { ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } }, y: { grid: { display: false }, ticks: { font: { size: 11 }, autoSkip: false } } } },
         });
         reportCharts.push(chart);
       }
@@ -298,7 +295,7 @@ function renderBusinessReimbursementsReport(entityId) {
           const txTableHead = `<th>${t('common.label.date', {}, 'Date')}</th><th>${t('common.col.account', {}, 'Account')}</th><th>${t('common.col.payee', {}, 'Payee')}</th><th>${t('common.col.category', {}, 'Category')}</th><th class="amt">${t('common.col.amount', {}, 'Amount')}</th><th>${t('common.label.note', {}, 'Note')}</th>`;
           const detail = document.getElementById('kf-drill-detail');
           detail.innerHTML = `
-            <div class="report-section" style="margin-top:16px;">
+            <div class="report-section mt-16">
               <div class="report-section-title">${t('reports.kf.unmatched_title', { month: monthLabel(ym) }, `Unmatched TX — ${monthLabel(ym)}`)}</div>
               ${unmatchedExp.length ? `<div style="margin-bottom:8px;font-weight:500;color:var(--negative);">${t('reports.kf.unmatched.exp_without', { n: unmatchedExp.length }, `Expenses without Reimbursement (${unmatchedExp.length})`)}</div>
               <table class="tx-table"><thead><tr>${txTableHead}</tr></thead><tbody>
@@ -366,22 +363,20 @@ function renderBusinessReimbursementsReport(entityId) {
           data: {
             labels: yearData.map(d => d.year),
             datasets: [
-              { label: t('common.label.expenses', {}, 'Expenses'), data: yearData.map(d => d.exp), backgroundColor: '#e8453c', borderWidth: 0, borderRadius: 4 },
-              { label: t('reports.kf.dataset.reimbursed', {}, 'Reimbursed'), data: yearData.map(d => d.reimb), backgroundColor: '#10b981', borderWidth: 0, borderRadius: 4 },
+              { label: t('common.label.expenses', {}, 'Expenses'), data: yearData.map(d => d.exp), backgroundColor: cssVar('--negative'), borderWidth: 0, borderRadius: 4 },
+              { label: t('reports.kf.dataset.reimbursed', {}, 'Reimbursed'), data: yearData.map(d => d.reimb), backgroundColor: cssVar('--positive'), borderWidth: 0, borderRadius: 4 },
             ],
           },
-          options: { responsive: true, maintainAspectRatio: false,
+          options: { ...CHART_BASE,
             plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 14, font: { size: 12 } } },
               tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, 'TZS') + ' TZS' } } },
-            scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } } } },
+            scales: { x: { grid: { display: false } }, y: { ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } } } },
         });
         reportCharts.push(chart);
       }
     }
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 

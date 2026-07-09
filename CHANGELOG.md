@@ -18,6 +18,109 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.8.0-rc.1] — 2026-07-09
+
+Correctness- and quality-focused release: a full multi-agent code review of the
+upstream codebase (116 findings, 0 critical) fully worked off, a much larger
+test net, and a series of deduplication refactors that give the dashboard one
+modal lifecycle, one report scaffolding and one CRUD envelope.
+
+### Security
+
+- **Stored XSS in reconciliation reports fixed.** The markdown renderer for
+  bank-statement reconciliation reports injected raw strings into `innerHTML`;
+  all output paths are escaped now — statement content (payee names, notes)
+  can no longer smuggle markup into the dashboard.
+- **Auth config is fail-closed.** An existing but corrupt/unreadable
+  `config/auth.json` (or an unknown mode) used to silently disable Basic-Auth;
+  the server now degrades to a locked mode instead (401 for every non-exempt
+  request, with an actionable server-side log line). Config writes are atomic
+  (temp + fsync + replace), so a crash mid-write can no longer truncate the
+  file. Only a *missing* file still means "auth off".
+
+### Fixed
+
+- **Receipt splits × pass-through accounts: silent balance drift.** Split
+  bookings on pass-through accounts carry ONE group counter-entry, but edit
+  and delete flows operated strictly per-row — a tag edit on a split member
+  minted a second counter, an amount edit overwrote the group total, member
+  deletes left the counter wrong. Counter sync and delete are group-aware now
+  (re-total, re-anchor, duplicate healing), and the integrity cron verifies
+  pass-through balances stay at exactly zero with exactly one counter per group.
+- **Double-submit guard on booking dialogs.** Utility, fuel and reconciliation
+  booking modals had no submit lock — on a slow connection an impatient second
+  click booked twice (including the pass-through counter-entry). A shared
+  `withSubmitLock()` helper now covers every booking dialog.
+- **Amount parsing: thousands-comma vs. decimal-comma.** `135,686`
+  (bank-SMS style 3-digit grouping) was parsed as `135` in the PWA and
+  `28,5` as `285` in the backend importers — silent 10×/1000× booking errors.
+  Dashboard, PWA and backend now share one canonical parser with a 3-digit
+  grouping heuristic, EU decimal-comma support and garbage rejection.
+- **Stale receipt attachments.** Files staged in Add TX survived leaving the
+  form and silently attached themselves to the next, unrelated booking.
+- **Report correctness sweep.** Currency switcher wired into all report
+  toolbars consistently; income-sources EUR column no longer mixes current and
+  historical FX rates; custody accounts excluded from the Bills report;
+  yearly/quarterly frequencies respected in the cash-flow forecast; shared
+  expense lists no longer print converted amounts with the original currency
+  label.
+- **Frontend robustness.** The Add-TX context cache is invalidated on every
+  account/category/tag CRUD (stale dropdowns after settings changes); summary
+  tiles no longer sum mixed currencies; account rename is ordered after field
+  updates (a failed rename no longer strands both); payee group renames run
+  as one locked server-side operation instead of N racing single updates.
+- **Fuel importer is idempotent.** Re-running the Excel import no longer
+  offers duplicate transactions for rows that were already imported.
+- **Category required for expense/income bookings** (server- and
+  client-enforced), split-line form state resets cleanly on re-entry, and
+  custody categories are selectable under both Income and Expense.
+
+### Added
+
+- **Test suite: 92 → 215.** New coverage for the money paths (manual booking
+  lines, scheduled run-due, debt pay/topup cascades, bank-statement matching),
+  an HTTP integration harness that boots the real server on an ephemeral port,
+  and 42 pinned round-trip tests for the CRUD API endpoints (exact error
+  texts, id-echo keys, duplicate handling).
+- **Schema drift gate.** `scripts/schema_check.py` diffs `docs/schema.md`
+  against the code constants and live CSV headers in CI — the first run caught
+  three real drifts, including a fresh-install seed writing outdated headers.
+- **FAQ in four languages.** The English FAQ is complete again (202 sections),
+  Spanish and French caught up from 188 to 202 sections, and the FAQ structure
+  lint now validates all three translations against the German reference in CI.
+
+### Changed
+
+- **One modal lifecycle.** A central `openModal()` factory now owns
+  overlay/Escape/backdrop/submit-lock/focus handling for every dialog in the
+  dashboard (17 legacy modals migrated) — closing any dialog by any path
+  (Esc, ✕, click-out, Cancel, programmatic) reliably detaches its handlers.
+  This closes a whole class of escape-handler leaks and removes a duplicated
+  close button that could appear in dialog headers.
+- **One report scaffolding.** Report toolbars are declared, not hand-wired:
+  a `reportToolbar()` factory renders selects, persists selections and wires
+  updates (30 of 32 toolbars migrated); shared helpers replace ~20 identical
+  currency-list derivations, ~70 chart option blocks and ~60 currency tick
+  formatters.
+- **One CRUD envelope.** The seven canonical API entity families
+  (payees/tags/scheduled/quick-expenses/ATM-fees/budgets/goals) are generated
+  from a declarative table instead of seven hand-written copies, and the API
+  route table is built once instead of on every request. Endpoints with
+  genuinely special flows keep their hand-written handlers.
+- **Shared side-log plumbing.** `scripts/linked_log.py` centralises the
+  fuel/utility log helpers (durable append, atomic rewrite, sequential-ID
+  scan) and the pass-through reimbursement lookup that fuel and utilities
+  previously duplicated verbatim.
+- **Performance.** The pass-through audit's batch matcher enumerates
+  combinations instead of scanning all bitmasks (~1000× faster on large
+  months); net-worth-trend and FX-exposure reports compute month-end balances
+  in a single pass instead of ~720 full scans; the PWA boots cache-first and
+  refreshes all sources in parallel in the background.
+- **Design.** Light theme lifted to WCAG-AA contrast for amounts/badges,
+  a theme-aware 12-tone chart palette replaces scattered hex literals, the
+  type scale is tokenised (11 steps), and sub-400px mobile navigation
+  remnants were removed.
+
 ## [1.7.2-rc.1] — 2026-06-12
 
 Security- and integrity-focused release following a full multi-agent code review

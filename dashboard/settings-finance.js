@@ -12,7 +12,7 @@
 function renderCurrencyTab() {
   const container = document.getElementById('settings-tab-content');
   const saved = localStorage.getItem('lp-default-currency') || 'TZS';
-  const currencies = ['TZS', 'EUR', 'USD', 'PLN'];
+  const currencies = knownCurrencies(); // DP-M7
   container.innerHTML = `
     <div class="section">
       <div class="section-title">${t('settings.currency.title', {}, 'Default Display Currency')}</div>
@@ -69,7 +69,7 @@ function renderFxRatesTab() {
       <div id="fx-status" class="mt-12"></div>
     </div>
 
-    <div class="section" style="margin-top:24px;">
+    <div class="section mt-24">
       <div class="section-title">${t('settings.fxbackfill.title', {}, 'Backfill historical rates')}</div>
       <p class="hint-md mb-16" style="line-height:1.5;">
         ${t('settings.fxbackfill.hint', {}, 'Fill gaps in <code>data/fx_rates_history.csv</code> from Bank of Tanzania (EUR/USD) and Frankfurter (PLN/TRY via EUR cross-rate). Existing rows are never overwritten. Leave both fields empty to fetch only new dates since the last entry.')}
@@ -279,8 +279,8 @@ async function renderBudgetsTab() {
   if (!enabled) {
     container.innerHTML = `
       <div style="text-align:center;padding:40px 0;">
-        <h3 style="margin-bottom:8px;">${t('settings.budgets.disabled_title', {}, 'Budget Tracking')}</h3>
-        <p class="c-mut fs-12" style="margin-bottom:16px;">${t('settings.budgets.disabled_desc_html', {}, 'Track monthly spending limits per category.<br>Disabled by default — enable to start using it.')}</p>
+        <h3 class="mb-8">${t('settings.budgets.disabled_title', {}, 'Budget Tracking')}</h3>
+        <p class="c-mut fs-12 mb-16">${t('settings.budgets.disabled_desc_html', {}, 'Track monthly spending limits per category.<br>Disabled by default — enable to start using it.')}</p>
         <button id="budgets-enable-btn" style="padding:8px 24px;background:var(--accent);color:var(--bg);font-size:13px;">${t('settings.budgets.enable', {}, 'Enable Budgets')}</button>
       </div>
     `;
@@ -310,7 +310,7 @@ async function renderBudgetsTab() {
 
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-      <h3 style="margin:0;">${t('settings.budgets.title', {}, 'Budgets')}</h3>
+      <h3 class="m-0">${t('settings.budgets.title', {}, 'Budgets')}</h3>
       <div style="display:flex;gap:8px;">
         <button id="budget-add-btn" style="padding:6px 16px;">${t('settings.budgets.add', {}, '+ Add Budget')}</button>
         <button id="budgets-disable-btn" style="padding:6px 12px;font-size:11px;color:var(--muted);">${t('settings.budgets.disable', {}, 'Disable')}</button>
@@ -377,43 +377,37 @@ async function renderBudgetsTab() {
 
 function showBudgetModal(budget, catOptions) {
   const isEdit = !!budget;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  const currencies = knownCurrencies(); // DP-M7
 
-  const currencies = ['TZS', 'EUR', 'USD', 'PLN'];
-
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:400px;">
-      <h3>${isEdit ? t('settings.budgets.modal.title_edit', {}, 'Edit <span class="accent">Budget</span>') : t('settings.budgets.modal.title_add', {}, 'Add <span class="accent">Budget</span>')}</h3>
+  const { overlay } = openModal({
+    title: isEdit ? t('settings.budgets.modal.title_edit', {}, 'Edit <span class="accent">Budget</span>') : t('settings.budgets.modal.title_add', {}, 'Add <span class="accent">Budget</span>'),
+    maxWidth: '400px',
+    bodyHtml: `
       <div style="display:grid;gap:12px;margin-top:16px;">
         <div>
           <label class="fs-12">${t('settings.budgets.modal.label_category', {}, 'Category (prefix match)')}</label>
-          <input type="text" id="budget-category" list="budget-cat-list" value="${escapeHtml(budget?.category || '')}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          <input type="text" id="budget-category" list="budget-cat-list" value="${escapeHtml(budget?.category || '')}" class="input-std">
           <datalist id="budget-cat-list">${catOptions.map(c => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="grid-2col">
           <div>
             <label class="fs-12">${t('settings.budgets.modal.label_monthly_limit', {}, 'Monthly Limit')}</label>
-            <input type="text" inputmode="numeric" id="budget-amount" value="${budget?.amount || ''}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="text" inputmode="numeric" id="budget-amount" value="${budget?.amount || ''}" class="input-std">
           </div>
           <div>
             <label class="fs-12">${t('common.col.currency', {}, 'Currency')}</label>
-            <select id="budget-currency" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <select id="budget-currency" class="input-std">
               ${currencies.map(c => `<option value="${c}" ${budget?.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
             </select>
           </div>
         </div>
       </div>
       <div id="budget-modal-status"></div>
-      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
-        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
+      <div class="form-actions">
+        <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
         <button id="budget-save-btn" style="background:var(--accent);color:var(--bg);">${t('common.actions.save', {}, 'Save')}</button>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
+      </div>`,
+  });
 
   overlay.querySelector('#budget-save-btn').addEventListener('click', async () => {
     const category = overlay.querySelector('#budget-category').value.trim();
@@ -443,15 +437,13 @@ function showBudgetModal(budget, catOptions) {
       const budgetsRes = await fetch('/api/budgets/list', { method: 'POST' });
       state.budgets = (await budgetsRes.json()).budgets || [];
 
-      overlay.remove();
+      overlay._close();
       renderBudgetsTab();
     } catch (e) {
       statusEl.innerHTML = `<div class="atx-status error">${t('common.save_failed', { msg: escapeHtml(e.message) }, `Save failed: ${escapeHtml(e.message)}`)}</div>`;
     }
   });
 
-  const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
-  document.addEventListener('keydown', handler);
 }
 
 // ─── Settings: Savings Goals ────────────────────────────────────────────
@@ -475,7 +467,7 @@ async function renderGoalsTab() {
 
   container.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-      <h3 style="margin:0;">${t('settings.goals.title', {}, 'Savings Goals')}</h3>
+      <h3 class="m-0">${t('settings.goals.title', {}, 'Savings Goals')}</h3>
       <button id="goal-add-btn" style="padding:6px 16px;">${t('settings.goals.add', {}, '+ Add Goal')}</button>
     </div>
     <div id="goals-status"></div>
@@ -486,7 +478,7 @@ async function renderGoalsTab() {
         ${goals.map(g => {
           const bal = state.balances[g.account] || 0;
           const pct = g.target > 0 ? Math.min((bal / g.target) * 100, 100) : 0;
-          const color = pct >= 75 ? 'var(--positive)' : pct >= 25 ? 'var(--warn, #f59e0b)' : 'var(--negative)';
+          const color = pct >= 75 ? 'var(--positive)' : pct >= 25 ? 'var(--warn)' : 'var(--negative)';
           return `<tr>
             <td><strong>${escapeHtml(g.name)}</strong></td>
             <td>${escapeHtml(g.account)}</td>
@@ -544,52 +536,47 @@ async function renderGoalsTab() {
 
 function showGoalModal(goal, accounts, currencies) {
   const isEdit = !!goal;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:420px;">
-      <h3>${isEdit ? t('settings.goals.modal.title_edit', {}, 'Edit <span class="accent">Goal</span>') : t('settings.goals.modal.title_add', {}, 'Add <span class="accent">Goal</span>')}</h3>
+  const { overlay } = openModal({
+    title: isEdit ? t('settings.goals.modal.title_edit', {}, 'Edit <span class="accent">Goal</span>') : t('settings.goals.modal.title_add', {}, 'Add <span class="accent">Goal</span>'),
+    maxWidth: '420px',
+    bodyHtml: `
       <div style="display:grid;gap:12px;margin-top:16px;">
         <div>
           <label class="fs-12">${t('common.col.name', {}, 'Name')}</label>
-          <input type="text" id="goal-name" value="${escapeHtml(goal?.name || '')}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          <input type="text" id="goal-name" value="${escapeHtml(goal?.name || '')}" class="input-std">
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="grid-2col">
           <div>
             <label class="fs-12">${t('common.col.account', {}, 'Account')}</label>
-            <select id="goal-account" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <select id="goal-account" class="input-std">
               ${accounts.map(a => `<option value="${escapeHtml(a.alias)}" ${goal?.account === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} (${escapeHtml(a.currency)})</option>`).join('')}
             </select>
           </div>
           <div>
             <label class="fs-12">${t('common.col.currency', {}, 'Currency')}</label>
-            <select id="goal-currency" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <select id="goal-currency" class="input-std">
               ${currencies.map(c => `<option value="${c}" ${goal?.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
             </select>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="grid-2col">
           <div>
             <label class="fs-12">${t('settings.goals.modal.label_target_amount', {}, 'Target Amount')}</label>
-            <input type="text" inputmode="numeric" id="goal-target" value="${goal?.target || ''}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="text" inputmode="numeric" id="goal-target" value="${goal?.target || ''}" class="input-std">
           </div>
           <div>
             <label class="fs-12">${t('common.label.deadline_optional', {}, 'Deadline (optional)')}</label>
-            <input type="date" id="goal-deadline" value="${goal?.deadline || ''}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="date" id="goal-deadline" value="${goal?.deadline || ''}" class="input-std">
           </div>
         </div>
       </div>
       <div id="goal-modal-status"></div>
-      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
-        <button onclick="this.closest('.modal-overlay').remove()">${t('common.actions.cancel', {}, 'Cancel')}</button>
+      <div class="form-actions">
+        <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
         <button id="goal-save-btn" style="background:var(--accent);color:var(--bg);">${t('common.actions.save', {}, 'Save')}</button>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
+      </div>`,
+  });
 
   // Auto-sync currency when account changes
   overlay.querySelector('#goal-account').addEventListener('change', (e) => {
@@ -628,15 +615,13 @@ function showGoalModal(goal, accounts, currencies) {
       const goalsRes = await fetch('/api/goals/list', { method: 'POST' });
       state.savingsGoals = (await goalsRes.json()).goals || [];
 
-      overlay.remove();
+      overlay._close();
       renderGoalsTab();
     } catch (e) {
       statusEl.innerHTML = `<div class="atx-status error">${t('common.save_failed', { msg: escapeHtml(e.message) }, `Save failed: ${escapeHtml(e.message)}`)}</div>`;
     }
   });
 
-  const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
-  document.addEventListener('keydown', handler);
 }
 
 // ─── Settings: Backup & Export ──────────────────────────────────────────

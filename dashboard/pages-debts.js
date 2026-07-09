@@ -19,13 +19,10 @@ async function showDebtModal(editId) {
     } catch (e) { accOptions = ''; }
   }
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('pages.debt.modal.title_edit', {}, 'Edit') : t('pages.debt.modal.title_add', {}, 'Add')} <span class="accent">${t('pages.debt.modal.title_noun', {}, 'Debt')}</span></h3>
+  openModal({
+    title: `${isEdit ? t('pages.debt.modal.title_edit', {}, 'Edit') : t('pages.debt.modal.title_add', {}, 'Add')} <span class="accent">${t('pages.debt.modal.title_noun', {}, 'Debt')}</span>`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('reports.debtOverview.col.person', {}, 'Person')}</label>
           <input type="text" id="dm-person" value="${escapeHtml(item?.person_name || '')}" placeholder="${escapeHtml(t('pages.debt.modal.person_placeholder', {}, 'John Doe'))}">
@@ -43,10 +40,7 @@ async function showDebtModal(editId) {
         </div>
         <div class="atx-field fx05"><label>Currency</label>
           <select id="dm-currency">
-            <option value="TZS" ${item?.currency === 'TZS' ? 'selected' : ''}>TZS</option>
-            <option value="EUR" ${item?.currency === 'EUR' ? 'selected' : ''}>EUR</option>
-            <option value="USD" ${item?.currency === 'USD' ? 'selected' : ''}>USD</option>
-            <option value="PLN" ${item?.currency === 'PLN' ? 'selected' : ''}>PLN</option>
+            ${knownCurrencies().map(c => `<option value="${c}" ${item?.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -73,16 +67,11 @@ async function showDebtModal(editId) {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveDebt" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('pages.debt.btn.save_edit', {}, 'Save') : t('pages.debt.btn.save_new', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 // Sentinel-input wrapper used by the topup-or-new dialog. Sets a hidden
@@ -99,17 +88,25 @@ function confirmCreateNewDebt() {
 async function saveDebt(editId) {
   const accEl = document.getElementById('dm-account');
   const skipEl = document.getElementById('dm-skip-tx');
+  // DP-M8: run the amount through the shared k/m-suffix parser (same as
+  // submitPayment) instead of shipping the raw string — '150k' must mean
+  // 150,000 here just like in Add TX, Fuel and Budgets.
+  const amount = parseAmountInput(document.getElementById('dm-amount').value);
   const data = {
     person_name: document.getElementById('dm-person').value.trim(),
     type: document.getElementById('dm-type').value,
-    amount: document.getElementById('dm-amount').value.trim(),
+    amount: String(amount),
     currency: document.getElementById('dm-currency').value,
     note: document.getElementById('dm-note').value.trim(),
     account: accEl ? accEl.value : '',
     skip_tx: skipEl ? skipEl.checked : false,
   };
-  if (!data.person_name || !data.amount) {
+  if (!data.person_name) {
     document.getElementById('dm-status').innerHTML = `<div class="atx-status error">${t('pages.debt.err.person_amount_required', {}, 'Person and amount required')}</div>`;
+    return;
+  }
+  if (isNaN(amount) || amount <= 0) {
+    document.getElementById('dm-status').innerHTML = `<div class="atx-status error">${t('pages.debt.err.amount_invalid', {}, 'Enter a valid amount')}</div>`;
     return;
   }
   const statusEl = document.getElementById('dm-status');
@@ -127,7 +124,7 @@ async function saveDebt(editId) {
         <div class="atx-status warning" style="display:flex;flex-direction:column;gap:8px;">
           <span>${escapeHtml(existing.person_name)} has an open debt (${formatCurrency(existing.amount, existing.currency)} ${existing.currency}). Top up or create new?</span>
           <div style="display:flex;gap:8px;">
-            <button class="btn-save" data-action="topUpExistingDebt" data-arg1="${existing.id}" data-arg2="${parseFloat(data.amount)}" data-arg3="${escapeHtml(data.note)}">Top up +${formatCurrency(parseFloat(data.amount), data.currency)}</button>
+            <button class="btn-save" data-action="topUpExistingDebt" data-arg1="${existing.id}" data-arg2="${amount}" data-arg3="${escapeHtml(data.note)}">Top up +${formatCurrency(amount, data.currency)}</button>
             <button data-action="confirmCreateNewDebt">${t('pages.debt.btn.create_new', {}, 'Create new')}</button>
           </div>
         </div>`;
@@ -188,13 +185,13 @@ async function showPayDebtModal(debtId) {
 
   const dirLabel = debt.type === 'owed_by_me' ? 'Pay from account' : 'Receive into account';
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>Pay <span class="accent">${escapeHtml(debt.person_name)}</span></h3>
+  // focusFirst off — focus belongs on the amount field, not the account
+  // select that happens to come first in the DOM.
+  const { overlay } = openModal({
+    title: `Pay <span class="accent">${escapeHtml(debt.person_name)}</span>`,
+    maxWidth: '620px',
+    focusFirst: false,
+    bodyHtml: `
       <div style="margin-bottom:16px;font-size:12px;color:var(--muted);">
         Open: <strong class="c-text">${formatCurrency(debt.amount, debt.currency)} ${debt.currency}</strong>
         of ${formatCurrency(debt.original_amount, debt.currency)} ${debt.currency}
@@ -231,16 +228,12 @@ async function showPayDebtModal(debtId) {
           <button data-action="payDebtFull" data-arg1="${escapeHtml(debtId)}" class="hint-sm">Pay full amount</button>
         </div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="submitPayment" data-arg1="${escapeHtml(debtId)}">Record Payment</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
+  overlay.querySelector('#pay-amount').focus();
 }
 
 function updatePayConversion(debtId) {
@@ -326,15 +319,12 @@ async function showDebtHistory(debtId) {
     payments = data.payments || [];
   } catch (e) { console.warn('[debts:silent-catch]', e); }
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
   const totalPaid = payments.reduce((s, p) => s + (parseFloat(p.converted_amount) || 0), 0);
 
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3><span class="accent">${escapeHtml(debt.person_name)}</span> — Payment History</h3>
+  openModal({
+    title: `<span class="accent">${escapeHtml(debt.person_name)}</span> — Payment History`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="hint-md mb-16">
         Original: ${formatCurrency(debt.original_amount, debt.currency)} ${debt.currency} ·
         Paid: ${formatCurrency(totalPaid, debt.currency)} ${debt.currency} ·
@@ -353,13 +343,8 @@ async function showDebtHistory(debtId) {
       }
       <div class="modal-footer mt-16">
         <div class="btn-left"></div>
-        <div class="btn-right"><button data-action="closeModal">Close</button></div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+        <div class="btn-right"><button data-modal-cancel>Close</button></div>
+      </div>`,
+  });
 }
 

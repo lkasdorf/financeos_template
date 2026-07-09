@@ -51,14 +51,14 @@ function renderSavingsGoals() {
     const cur = g.currency || (acc ? acc.currency : 'TZS');
     const target = g.target || 0;
     const pct = target > 0 ? Math.min((bal / target) * 100, 100) : 0;
-    const color = pct >= 75 ? 'var(--positive)' : pct >= 25 ? 'var(--warn, #f59e0b)' : 'var(--negative)';
-    const deadlineInfo = g.deadline ? `<span class="c-mut" style="font-size:10px;"> · ${t('dashboard.savings.by_deadline', { date: g.deadline }, `by ${g.deadline}`)}</span>` : '';
+    const color = pct >= 75 ? 'var(--positive)' : pct >= 25 ? 'var(--warn)' : 'var(--negative)';
+    const deadlineInfo = g.deadline ? `<span class="c-mut fs-10"> · ${t('dashboard.savings.by_deadline', { date: g.deadline }, `by ${g.deadline}`)}</span>` : '';
 
     return `
       <div class="goal-item">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
           <span style="font-weight:600;font-size:12px;">${escapeHtml(g.name)}</span>
-          <span style="font-size:11px;">${formatCurrency(bal, cur)} / ${formatCurrency(target, cur)} <span class="c-mut">${cur}</span>${deadlineInfo}</span>
+          <span class="fs-11">${formatCurrency(bal, cur)} / ${formatCurrency(target, cur)} <span class="c-mut">${cur}</span>${deadlineInfo}</span>
         </div>
         <div class="goal-bar-bg">
           <div class="goal-bar-fill" style="width:${pct.toFixed(1)}%;background:${color};"></div>
@@ -96,7 +96,7 @@ function renderBudgetTracker() {
     const target = convertTo(b.amount, b.currency, cur);
     const rawPct = target > 0 ? (spent / target) * 100 : 0;
     const pct = Math.min(rawPct, 100);
-    const color = rawPct > 85 ? 'var(--negative)' : rawPct > 60 ? 'var(--warn, #f59e0b)' : 'var(--positive)';
+    const color = rawPct > 85 ? 'var(--negative)' : rawPct > 60 ? 'var(--warn)' : 'var(--positive)';
     const overBudget = spent > target;
     return { ...b, spent, target, pct, rawPct, color, overBudget };
   }).sort((a, b) => b.rawPct - a.rawPct);
@@ -131,18 +131,18 @@ function renderBudgetTracker() {
   return `
     <section class="section">
       <div class="section-title">${t('dashboard.budget.title', { month: monthLabel }, `Budget Tracker — ${monthLabel}`)} <a href="#settings" data-action="presetSettingsTab" data-arg1="budgets" style="font-size:10px;font-weight:400;margin-left:8px;">${t('dashboard.budget.manage_link', {}, 'manage &rarr;')}</a></div>
-      <div style="margin-bottom:12px;">
+      <div class="mb-12">
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
-          <span style="font-weight:600;">${t('dashboard.budget.overall', {}, 'Overall')}</span>
-          <span>${formatCurrency(totalSpent, cur)} / ${formatCurrency(totalBudget, cur)} ${cur} <strong style="color:${totalRawPct > 85 ? 'var(--negative)' : totalRawPct > 60 ? 'var(--warn, #f59e0b)' : 'var(--positive)'}">${totalRawPct.toFixed(0)}%</strong></span>
+          <span class="fw-600">${t('dashboard.budget.overall', {}, 'Overall')}</span>
+          <span>${formatCurrency(totalSpent, cur)} / ${formatCurrency(totalBudget, cur)} ${cur} <strong style="color:${totalRawPct > 85 ? 'var(--negative)' : totalRawPct > 60 ? 'var(--warn)' : 'var(--positive)'}">${totalRawPct.toFixed(0)}%</strong></span>
         </div>
         ${bulletChart(totalRawPct)}
       </div>
       ${items.map(i => `
         <div class="budget-item">
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-            <span style="font-size:12px;">${escapeHtml(i.category)}</span>
-            <span style="font-size:11px;">${formatCurrency(i.spent, cur)} / ${formatCurrency(i.target, cur)} ${cur} <strong style="color:${i.color}">${i.rawPct.toFixed(0)}%</strong>${i.overBudget ? ` <span style="color:var(--negative);font-size:10px;">${t('dashboard.budget.over_label', {}, 'over!')}</span>` : ''}</span>
+            <span class="fs-12">${escapeHtml(i.category)}</span>
+            <span class="fs-11">${formatCurrency(i.spent, cur)} / ${formatCurrency(i.target, cur)} ${cur} <strong style="color:${i.color}">${i.rawPct.toFixed(0)}%</strong>${i.overBudget ? ` <span style="color:var(--negative);font-size:10px;">${t('dashboard.budget.over_label', {}, 'over!')}</span>` : ''}</span>
           </div>
           ${bulletChart(i.rawPct)}
         </div>

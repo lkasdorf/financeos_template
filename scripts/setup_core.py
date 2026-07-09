@@ -24,13 +24,14 @@ from typing import Any
 
 # Schema version for ``data/.setup_state.json`` — bump when fields change.
 SETUP_STATE_SCHEMA_VERSION = 1
-WIZARD_VERSION = "1.7.2-rc.1"
+WIZARD_VERSION = "1.8.0-rc.1"
 
 # CSV headers — must match data/*.csv exactly. Single source of truth lives
 # in docs/schema.md; these constants mirror it.
 ACCOUNTS_HEADER = [
     "alias", "name", "currency", "type", "owner", "status",
-    "pass_through_payee", "initial_balance", "initial_balance_date", "notes",
+    "pass_through_payee", "initial_balance", "initial_balance_date",
+    "include_in_net_worth", "notes",
 ]
 CATEGORIES_HEADER = ["path", "type", "active", "note", "pnl", "essential"]
 TAGS_HEADER = ["tag", "description", "active"]
@@ -38,7 +39,7 @@ TRANSACTIONS_HEADER = [
     "import_id", "date", "account", "type", "amount", "currency", "payee",
     "category", "note", "raw_note", "transfer_to_account",
     "transfer_to_amount", "receipt_group", "receipt_url", "tags",
-    "third_party_id",
+    "third_party_id", "counter_entry_id",
 ]
 
 
@@ -166,20 +167,51 @@ def _write_csv(path: Path, header: list[str], rows: list[dict[str, str]]) -> Non
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
-def check_not_initialized(data_dir: Path) -> None:
-    """Refuse to run if ``data/.setup_state.json`` already marks the repo as initialized."""
-    state_file = data_dir / ".setup_state.json"
-    if not state_file.exists():
+def check_not_initialized(data_dir: Path, force: bool = False) -> None:
+    """Refuse to run when the target already looks like a live install.
+
+    DC-H2 (CODE_REVIEW_2026-07-08): the hardened second guard (real
+    transaction rows in transactions.csv) used to live only in serve.py's
+    web path — the CLI (``python scripts/setup.py --empty``) would
+    overwrite a live repo's accounts/categories/transactions with the
+    seed, without backup, because a live install does not necessarily
+    carry ``.setup_state.json``. Both guards live here now, so CLI and
+    web inherit the same protection. ``force=True`` (CLI ``--force``)
+    skips both — explicit operator intent.
+
+    A corrupt ``.setup_state.json`` also refuses now (it used to be
+    treated as fresh): the file existing at all means setup ran before.
+    """
+    if force:
         return
-    try:
-        state = json.loads(state_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return  # corrupted / unreadable → treat as fresh and let setup overwrite
-    if state.get("initialized") is True:
-        raise SetupError(
-            f"FinanceOS is already initialized (see {state_file}). "
-            "Refusing to overwrite. Remove the file to re-run setup."
-        )
+    state_file = data_dir / ".setup_state.json"
+    if state_file.exists():
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise SetupError(
+                f"{state_file} exists but is unreadable or corrupt. A previous "
+                "setup ran here — refusing to overwrite. Inspect/remove the "
+                "file (or pass --force) to re-run setup."
+            )
+        if state.get("initialized") is True:
+            raise SetupError(
+                f"FinanceOS is already initialized (see {state_file}). "
+                "Refusing to overwrite. Remove the file to re-run setup."
+            )
+    tx_file = data_dir / "transactions.csv"
+    if tx_file.exists():
+        try:
+            with open(tx_file, newline="", encoding="utf-8") as f:
+                next(f, None)  # header
+                has_rows = any(line.strip() for line in f)
+        except OSError:
+            has_rows = False
+        if has_rows:
+            raise SetupError(
+                f"{tx_file} contains transaction rows — this looks like a live "
+                "install. Refusing to overwrite (pass --force to override)."
+            )
 
 
 def write_branding(config_dir: Path, display_name: str, accent_color: str = "#1e40af") -> Path:
@@ -669,6 +701,7 @@ def run_setup(
     *,
     root: Path | None = None,
     staging: dict[str, Any] | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Run the end-to-end setup. Returns a summary dict for the caller to print.
 
@@ -690,7 +723,7 @@ def run_setup(
     config_dir = root / "config"
     data_dir = root / "data"
 
-    check_not_initialized(data_dir)
+    check_not_initialized(data_dir, force=force)
 
     # Accept either {brand: "name", accent_color: "#hex"} (CLI shape) or
     # {brand: {display_name, accent_color}} (web wizard shape). The web

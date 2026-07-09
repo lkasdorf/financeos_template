@@ -816,6 +816,131 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── POST Router ──────────────────────────────────────────────────────
 
+    # OPT-12: the API route table used to be rebuilt as a dict of
+    # bound methods on EVERY POST request. Hoisted to a class-level
+    # name table; do_POST resolves the bound method via getattr().
+    API_ROUTES = {
+        "/api/tx/context": "handle_tx_context",
+        "/api/tx/manual": "handle_tx_manual",
+        "/api/tx/confirm": "handle_tx_confirm",
+        "/api/tx/update": "handle_tx_update",
+        "/api/tx/delete": "handle_tx_delete",
+        "/api/tx/batch-delete": "handle_tx_batch_delete",
+        "/api/tx/batch-tag": "handle_tx_batch_tag",
+        "/api/tx/batch-update": "handle_tx_batch_update",
+        "/api/tx/batch-link-subscription": "handle_tx_batch_link_subscription",
+        "/api/tx/batch-unlink-subscription": "handle_tx_batch_unlink_subscription",
+        "/api/payees/list": "handle_payees_list",
+        "/api/payees/add": "handle_payees_add",
+        "/api/payees/update": "handle_payees_update",
+        "/api/payees/delete": "handle_payees_delete",
+        "/api/payees/regroup": "handle_payees_regroup",
+        "/api/categories/list": "handle_categories_list",
+        "/api/categories/add": "handle_categories_add",
+        "/api/categories/update": "handle_categories_update",
+        "/api/tags/list": "handle_tags_list",
+        "/api/tags/add": "handle_tags_add",
+        "/api/tags/update": "handle_tags_update",
+        "/api/tags/delete": "handle_tags_delete",
+        "/api/scheduled/list": "handle_scheduled_list",
+        "/api/scheduled/add": "handle_scheduled_add",
+        "/api/scheduled/update": "handle_scheduled_update",
+        "/api/scheduled/delete": "handle_scheduled_delete",
+        "/api/scheduled/preview-due": "handle_scheduled_preview_due",
+        "/api/scheduled/run-due": "handle_scheduled_run_due",
+        "/api/debts/list": "handle_debts_list",
+        "/api/debts/add": "handle_debts_add",
+        "/api/debts/update": "handle_debts_update",
+        "/api/debts/delete": "handle_debts_delete",
+        "/api/debts/topup": "handle_debts_topup",
+        "/api/debts/pay": "handle_debts_pay",
+        "/api/debts/payments": "handle_debts_payments",
+        "/api/quickexp/list": "handle_quickexp_list",
+        "/api/quickexp/add": "handle_quickexp_add",
+        "/api/quickexp/update": "handle_quickexp_update",
+        "/api/quickexp/delete": "handle_quickexp_delete",
+        "/api/atm-fees/list": "handle_atm_fees_list",
+        "/api/atm-fees/add": "handle_atm_fees_add",
+        "/api/atm-fees/update": "handle_atm_fees_update",
+        "/api/atm-fees/delete": "handle_atm_fees_delete",
+        "/api/custom-reports/list": "handle_custom_reports_list",
+        "/api/custom-reports/add": "handle_custom_reports_add",
+        "/api/custom-reports/update": "handle_custom_reports_update",
+        "/api/custom-reports/delete": "handle_custom_reports_delete",
+        "/api/custom-reports/duplicate": "handle_custom_reports_duplicate",
+        "/api/budgets/list": "handle_budgets_list",
+        "/api/budgets/add": "handle_budgets_add",
+        "/api/budgets/update": "handle_budgets_update",
+        "/api/budgets/delete": "handle_budgets_delete",
+        "/api/goals/list": "handle_goals_list",
+        "/api/goals/add": "handle_goals_add",
+        "/api/goals/update": "handle_goals_update",
+        "/api/goals/delete": "handle_goals_delete",
+        "/api/accounts/add": "handle_accounts_add",
+        "/api/accounts/update": "handle_accounts_update",
+        "/api/accounts/rename": "handle_accounts_rename",
+        "/api/backup/create": "handle_backup_create",
+        "/api/backup/list": "handle_backup_list",
+        "/api/backup/export": "handle_backup_export",
+        "/api/recon/files": "handle_recon_files",
+        "/api/recon/suggestions": "handle_recon_suggestions",
+        "/api/recon/adapters": "handle_recon_adapters",
+        "/api/vehicles/list": "handle_vehicles_list",
+        "/api/vehicles/add": "handle_vehicles_add",
+        "/api/vehicles/update": "handle_vehicles_update",
+        "/api/vehicles/delete": "handle_vehicles_delete",
+        "/api/fuel/list": "handle_fuel_list",
+        "/api/fuel/add": "handle_fuel_add",
+        "/api/fuel/update": "handle_fuel_update",
+        "/api/fuel/delete": "handle_fuel_delete",
+        "/api/fuel/recon/dismiss": "handle_fuel_recon_dismiss",
+        "/api/fuel/recon/undismiss": "handle_fuel_recon_undismiss",
+        "/api/fuel/export": "handle_fuel_export",
+        "/api/properties/list": "handle_properties_list",
+        "/api/properties/details": "handle_properties_details",
+        "/api/properties/page": "handle_properties_page",
+        "/api/properties/cost_overview": "handle_properties_cost_overview",
+        "/api/properties/excel": "handle_properties_excel",
+        "/api/properties/alerts": "handle_properties_alerts",
+        "/api/properties/add": "handle_properties_add",
+        "/api/properties/update": "handle_properties_update",
+        "/api/properties/delete": "handle_properties_delete",
+        "/api/properties/luku/add": "handle_luku_add",
+        "/api/properties/luku/update": "handle_luku_update",
+        "/api/properties/luku/delete": "handle_luku_delete",
+        "/api/properties/water/add": "handle_water_add",
+        "/api/properties/water/update": "handle_water_update",
+        "/api/properties/water/delete": "handle_water_delete",
+        "/api/subscriptions/list": "handle_subscriptions_list",
+        "/api/subscriptions/details": "handle_subscriptions_details",
+        "/api/subscriptions/active_for_picker": "handle_subscriptions_picker",
+        "/api/subscriptions/log_for_tx": "handle_subscriptions_log_for_tx",
+        "/api/subscriptions/log_for_subscription": "handle_subscriptions_log_for_subscription",
+        "/api/subscriptions/drift_alerts": "handle_subscriptions_drift_alerts",
+        "/api/subscriptions/add": "handle_subscriptions_add",
+        "/api/subscriptions/update": "handle_subscriptions_update",
+        "/api/subscriptions/delete": "handle_subscriptions_delete",
+        "/api/setup/status": "handle_setup_status",
+        "/api/setup/mmex-upload": "handle_setup_mmex_upload",
+        "/api/setup/finalize": "handle_setup_finalize",
+        "/api/reports-config/get": "handle_reports_config_get",
+        "/api/reports-config/save": "handle_reports_config_save",
+        "/api/auto-tags/get": "handle_auto_tags_get",
+        "/api/auto-tags/save": "handle_auto_tags_save",
+        "/api/auto-tags/backfill-prefix": "handle_auto_tags_backfill_prefix",
+        "/api/fx/backfill": "handle_fx_backfill",
+        "/api/fx/backfill/status": "handle_fx_backfill_status",
+        "/api/branding/get": "handle_branding_get",
+        "/api/branding/save": "handle_branding_save",
+        "/api/health": "handle_health",
+        "/api/metals/spot": "handle_metals_spot",
+        # v1.6.0 receipt attachments (Photos + PDFs on transactions).
+        "/api/receipts/upload": "handle_receipts_upload",
+        "/api/receipts/delete": "handle_receipts_delete",
+        "/api/receipts/stats": "handle_receipts_stats",
+        "/api/receipts/export": "handle_receipts_export",
+    }
+
     def do_POST(self):
         """Route POST requests to the appropriate API handler method."""
         # Block F: Basic-Auth gate (see do_GET for details).
@@ -875,133 +1000,14 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 "role": "standby",
             })
             return
-        routes = {
-            "/api/tx/context": self.handle_tx_context,
-            "/api/tx/manual": self.handle_tx_manual,
-            "/api/tx/confirm": self.handle_tx_confirm,
-            "/api/tx/update": self.handle_tx_update,
-            "/api/tx/delete": self.handle_tx_delete,
-            "/api/tx/batch-delete": self.handle_tx_batch_delete,
-            "/api/tx/batch-tag": self.handle_tx_batch_tag,
-            "/api/tx/batch-update": self.handle_tx_batch_update,
-            "/api/tx/batch-link-subscription": self.handle_tx_batch_link_subscription,
-            "/api/tx/batch-unlink-subscription": self.handle_tx_batch_unlink_subscription,
-            "/api/payees/list": self.handle_payees_list,
-            "/api/payees/add": self.handle_payees_add,
-            "/api/payees/update": self.handle_payees_update,
-            "/api/payees/delete": self.handle_payees_delete,
-            "/api/categories/list": self.handle_categories_list,
-            "/api/categories/add": self.handle_categories_add,
-            "/api/categories/update": self.handle_categories_update,
-            "/api/tags/list": self.handle_tags_list,
-            "/api/tags/add": self.handle_tags_add,
-            "/api/tags/update": self.handle_tags_update,
-            "/api/tags/delete": self.handle_tags_delete,
-            "/api/scheduled/list": self.handle_scheduled_list,
-            "/api/scheduled/add": self.handle_scheduled_add,
-            "/api/scheduled/update": self.handle_scheduled_update,
-            "/api/scheduled/delete": self.handle_scheduled_delete,
-            "/api/scheduled/preview-due": self.handle_scheduled_preview_due,
-            "/api/scheduled/run-due": self.handle_scheduled_run_due,
-            "/api/debts/list": self.handle_debts_list,
-            "/api/debts/add": self.handle_debts_add,
-            "/api/debts/update": self.handle_debts_update,
-            "/api/debts/delete": self.handle_debts_delete,
-            "/api/debts/topup": self.handle_debts_topup,
-            "/api/debts/pay": self.handle_debts_pay,
-            "/api/debts/payments": self.handle_debts_payments,
-            "/api/quickexp/list": self.handle_quickexp_list,
-            "/api/quickexp/add": self.handle_quickexp_add,
-            "/api/quickexp/update": self.handle_quickexp_update,
-            "/api/quickexp/delete": self.handle_quickexp_delete,
-            "/api/atm-fees/list": self.handle_atm_fees_list,
-            "/api/atm-fees/add": self.handle_atm_fees_add,
-            "/api/atm-fees/update": self.handle_atm_fees_update,
-            "/api/atm-fees/delete": self.handle_atm_fees_delete,
-            "/api/custom-reports/list": self.handle_custom_reports_list,
-            "/api/custom-reports/add": self.handle_custom_reports_add,
-            "/api/custom-reports/update": self.handle_custom_reports_update,
-            "/api/custom-reports/delete": self.handle_custom_reports_delete,
-            "/api/custom-reports/duplicate": self.handle_custom_reports_duplicate,
-            "/api/budgets/list": self.handle_budgets_list,
-            "/api/budgets/add": self.handle_budgets_add,
-            "/api/budgets/update": self.handle_budgets_update,
-            "/api/budgets/delete": self.handle_budgets_delete,
-            "/api/goals/list": self.handle_goals_list,
-            "/api/goals/add": self.handle_goals_add,
-            "/api/goals/update": self.handle_goals_update,
-            "/api/goals/delete": self.handle_goals_delete,
-            "/api/accounts/add": self.handle_accounts_add,
-            "/api/accounts/update": self.handle_accounts_update,
-            "/api/accounts/rename": self.handle_accounts_rename,
-            "/api/backup/create": self.handle_backup_create,
-            "/api/backup/list": self.handle_backup_list,
-            "/api/backup/export": self.handle_backup_export,
-            "/api/recon/files": self.handle_recon_files,
-            "/api/recon/suggestions": self.handle_recon_suggestions,
-            "/api/recon/adapters": self.handle_recon_adapters,
-            "/api/vehicles/list": self.handle_vehicles_list,
-            "/api/vehicles/add": self.handle_vehicles_add,
-            "/api/vehicles/update": self.handle_vehicles_update,
-            "/api/vehicles/delete": self.handle_vehicles_delete,
-            "/api/fuel/list": self.handle_fuel_list,
-            "/api/fuel/add": self.handle_fuel_add,
-            "/api/fuel/update": self.handle_fuel_update,
-            "/api/fuel/delete": self.handle_fuel_delete,
-            "/api/fuel/recon/dismiss": self.handle_fuel_recon_dismiss,
-            "/api/fuel/recon/undismiss": self.handle_fuel_recon_undismiss,
-            "/api/fuel/export": self.handle_fuel_export,
-            "/api/properties/list": self.handle_properties_list,
-            "/api/properties/details": self.handle_properties_details,
-            "/api/properties/page": self.handle_properties_page,
-            "/api/properties/cost_overview": self.handle_properties_cost_overview,
-            "/api/properties/excel": self.handle_properties_excel,
-            "/api/properties/alerts": self.handle_properties_alerts,
-            "/api/properties/add": self.handle_properties_add,
-            "/api/properties/update": self.handle_properties_update,
-            "/api/properties/delete": self.handle_properties_delete,
-            "/api/properties/luku/add": self.handle_luku_add,
-            "/api/properties/luku/update": self.handle_luku_update,
-            "/api/properties/luku/delete": self.handle_luku_delete,
-            "/api/properties/water/add": self.handle_water_add,
-            "/api/properties/water/update": self.handle_water_update,
-            "/api/properties/water/delete": self.handle_water_delete,
-            "/api/subscriptions/list": self.handle_subscriptions_list,
-            "/api/subscriptions/details": self.handle_subscriptions_details,
-            "/api/subscriptions/active_for_picker": self.handle_subscriptions_picker,
-            "/api/subscriptions/log_for_tx": self.handle_subscriptions_log_for_tx,
-            "/api/subscriptions/log_for_subscription": self.handle_subscriptions_log_for_subscription,
-            "/api/subscriptions/drift_alerts": self.handle_subscriptions_drift_alerts,
-            "/api/subscriptions/add": self.handle_subscriptions_add,
-            "/api/subscriptions/update": self.handle_subscriptions_update,
-            "/api/subscriptions/delete": self.handle_subscriptions_delete,
-            "/api/setup/status": self.handle_setup_status,
-            "/api/setup/mmex-upload": self.handle_setup_mmex_upload,
-            "/api/setup/finalize": self.handle_setup_finalize,
-            "/api/reports-config/get": self.handle_reports_config_get,
-            "/api/reports-config/save": self.handle_reports_config_save,
-            "/api/auto-tags/get": self.handle_auto_tags_get,
-            "/api/auto-tags/save": self.handle_auto_tags_save,
-            "/api/auto-tags/backfill-prefix": self.handle_auto_tags_backfill_prefix,
-            "/api/fx/backfill": self.handle_fx_backfill,
-            "/api/fx/backfill/status": self.handle_fx_backfill_status,
-            "/api/branding/get": self.handle_branding_get,
-            "/api/branding/save": self.handle_branding_save,
-            "/api/health": self.handle_health,
-            "/api/metals/spot": self.handle_metals_spot,
-            # v1.6.0 receipt attachments (Photos + PDFs on transactions).
-            "/api/receipts/upload": self.handle_receipts_upload,
-            "/api/receipts/delete": self.handle_receipts_delete,
-            "/api/receipts/stats": self.handle_receipts_stats,
-            "/api/receipts/export": self.handle_receipts_export,
-        }
         # Feature-flag gate: refuse API calls for disabled features.
         gate = FEATURE_GATED_ROUTES.get(self.path)
         if gate and not is_enabled(gate):
             self._respond_json(404, {"error": f"feature '{gate}' disabled"})
             return
 
-        handler = routes.get(self.path)
+        handler_name = self.API_ROUTES.get(self.path)
+        handler = getattr(self, handler_name) if handler_name else None
         if handler:
             try:
                 handler()
@@ -1274,46 +1280,31 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API: Payees ──────────────────────────────────────────────────
 
-    def handle_payees_list(self):
-        """Return all payees from payees.json."""
-        self._respond_json(200, {"payees": tx_engine.load_payees()})
+    # handle_payees_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
-    def handle_payees_add(self):
-        """Add a new payee to payees.json with auto-generated slug ID."""
-        body = self._read_json_body()
-        if not body.get("payee"):
-            self._respond_json(400, {"error": "payee name is required"})
-            return
-        pid = tx_engine.add_payee(body)
-        tx_engine.git_commit(f"Payee add: {body['payee']}", ["data/payees.json"])
-        self._respond_json(200, {"success": True, "id": pid})
+    def handle_payees_regroup(self):
+        """Move every payee of a group to another group in one write.
 
-    def handle_payees_update(self):
-        """Update an existing payee's fields by its slug ID."""
+        DP-M1: replaces the client firing N parallel /api/payees/update
+        requests (unlocked full-file rewrites raced → lost updates on
+        group rename/delete). new_group='' ungroups.
+        """
         body = self._read_json_body()
-        pid = body.get("id", "")
-        updated = body.get("updated", {})
-        if not pid:
-            self._respond_json(400, {"error": "id is required"})
+        old_group = body.get("old_group", "")
+        new_group = body.get("new_group", "")
+        if not old_group:
+            self._respond_json(400, {"error": "old_group is required"})
             return
-        if not tx_engine.update_payee(pid, updated):
-            self._respond_json(404, {"error": f"Payee '{pid}' not found"})
-            return
-        tx_engine.git_commit(f"Payee edit: {pid}", ["data/payees.json"])
-        self._respond_json(200, {"success": True})
-
-    def handle_payees_delete(self):
-        """Remove a payee from payees.json by its slug ID."""
-        body = self._read_json_body()
-        pid = body.get("id", "")
-        if not pid:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        if not tx_engine.delete_payee(pid):
-            self._respond_json(404, {"error": f"Payee '{pid}' not found"})
-            return
-        tx_engine.git_commit(f"Payee delete: {pid}", ["data/payees.json"])
-        self._respond_json(200, {"success": True})
+        changed = tx_engine.regroup_payees(old_group, new_group)
+        if changed:
+            tx_engine.git_commit(
+                f"Payee regroup: '{old_group}' -> '{new_group or '(none)'}'"
+                f" ({changed} payees)",
+                ["data/payees.json"],
+            )
+        self._respond_json(200, {"success": True, "changed": changed})
 
     # ── API: Custom Reports ──────────────────────────────────────────
 
@@ -1389,113 +1380,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API: Budgets ─────────────────────────────────────────────────
 
-    def handle_budgets_list(self):
-        """Return all budgets."""
-        self._respond_json(200, {"budgets": tx_engine.load_budgets()})
-
-    def handle_budgets_add(self):
-        """Add a new budget rule."""
-        body = self._read_json_body()
-        if not body.get("category"):
-            self._respond_json(400, {"error": "category is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_budget(body, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        bid = tx_engine.add_budget(body)
-        tx_engine.git_commit(f"Budget add: {body['category']}", ["data/budgets.json"])
-        self._respond_json(200, {"success": True, "id": bid})
-
-    def handle_budgets_update(self):
-        """Update an existing budget."""
-        body = self._read_json_body()
-        bid = body.get("id", "")
-        updated = body.get("updated", {})
-        if not bid:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_budget(updated, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        if not tx_engine.update_budget(bid, updated):
-            self._respond_json(404, {"error": f"Budget '{bid}' not found"})
-            return
-        tx_engine.git_commit(f"Budget edit: {bid}", ["data/budgets.json"])
-        self._respond_json(200, {"success": True})
-
-    def handle_budgets_delete(self):
-        """Delete a budget."""
-        body = self._read_json_body()
-        bid = body.get("id", "")
-        if not bid:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        if not tx_engine.delete_budget(bid):
-            self._respond_json(404, {"error": f"Budget '{bid}' not found"})
-            return
-        tx_engine.git_commit(f"Budget delete: {bid}", ["data/budgets.json"])
-        self._respond_json(200, {"success": True})
+    # handle_budgets_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
     # ── API: Savings Goals ───────────────────────────────────────────
 
-    def handle_goals_list(self):
-        """Return all savings goals."""
-        self._respond_json(200, {"goals": tx_engine.load_savings_goals()})
-
-    def handle_goals_add(self):
-        """Add a new savings goal."""
-        body = self._read_json_body()
-        if not body.get("name"):
-            self._respond_json(400, {"error": "name is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_savings_goal(body, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        gid = tx_engine.add_savings_goal(body)
-        tx_engine.git_commit(f"Goal add: {body['name']}", ["data/savings_goals.json"])
-        self._respond_json(200, {"success": True, "id": gid})
-
-    def handle_goals_update(self):
-        """Update an existing savings goal."""
-        body = self._read_json_body()
-        gid = body.get("id", "")
-        updated = body.get("updated", {})
-        if not gid:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_savings_goal(updated, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        if not tx_engine.update_savings_goal(gid, updated):
-            self._respond_json(404, {"error": f"Goal '{gid}' not found"})
-            return
-        tx_engine.git_commit(f"Goal edit: {gid}", ["data/savings_goals.json"])
-        self._respond_json(200, {"success": True})
-
-    def handle_goals_delete(self):
-        """Delete a savings goal."""
-        body = self._read_json_body()
-        gid = body.get("id", "")
-        if not gid:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        if not tx_engine.delete_savings_goal(gid):
-            self._respond_json(404, {"error": f"Goal '{gid}' not found"})
-            return
-        tx_engine.git_commit(f"Goal delete: {gid}", ["data/savings_goals.json"])
-        self._respond_json(200, {"success": True})
+    # handle_goals_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
     # ── API: Categories ──────────────────────────────────────────────
 
@@ -1530,97 +1423,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API: Tags ────────────────────────────────────────────────────
 
-    def handle_tags_list(self):
-        self._respond_json(200, {"tags": tx_engine.load_tags()})
-
-    def handle_tags_add(self):
-        body = self._read_json_body()
-        if not body.get("tag"):
-            self._respond_json(400, {"error": "tag name is required"})
-            return
-        if not tx_engine.add_tag(body):
-            self._respond_json(400, {"error": f"Tag '{body['tag']}' already exists"})
-            return
-        tx_engine.git_commit(f"Tag add: {body['tag']}", ["data/tags.csv"])
-        self._respond_json(200, {"success": True})
-
-    def handle_tags_update(self):
-        body = self._read_json_body()
-        tag = body.get("tag", "")
-        updated = body.get("updated", {})
-        if not tag:
-            self._respond_json(400, {"error": "tag name is required"})
-            return
-        if not tx_engine.update_tag(tag, updated):
-            self._respond_json(404, {"error": f"Tag '{tag}' not found"})
-            return
-        tx_engine.git_commit(f"Tag edit: {tag}", ["data/tags.csv"])
-        self._respond_json(200, {"success": True})
-
-    def handle_tags_delete(self):
-        body = self._read_json_body()
-        tag = body.get("tag", "")
-        if not tag:
-            self._respond_json(400, {"error": "tag name is required"})
-            return
-        if not tx_engine.delete_tag(tag):
-            self._respond_json(404, {"error": f"Tag '{tag}' not found"})
-            return
-        tx_engine.git_commit(f"Tag delete: {tag}", ["data/tags.csv"])
-        self._respond_json(200, {"success": True})
+    # handle_tags_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
     # ── API: Scheduled Transactions ──────────────────────────────────
 
-    def handle_scheduled_list(self):
-        """Return all scheduled transaction templates (active and inactive)."""
-        self._respond_json(200, {"scheduled": tx_engine.load_scheduled()})
-
-    def handle_scheduled_add(self):
-        """Create a new scheduled transaction template with auto-generated sched_id."""
-        body = self._read_json_body()
-        if not body.get("name") or not body.get("account") or not body.get("amount"):
-            self._respond_json(400, {"error": "name, account, and amount are required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_scheduled(body, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        sched_id = tx_engine.add_scheduled(body)
-        tx_engine.git_commit(f"Scheduled add: {body['name']}", ["data/scheduled.csv"])
-        self._respond_json(200, {"success": True, "sched_id": sched_id})
-
-    def handle_scheduled_update(self):
-        body = self._read_json_body()
-        sched_id = body.get("sched_id", "")
-        updated = body.get("updated", {})
-        if not sched_id:
-            self._respond_json(400, {"error": "sched_id is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_scheduled(updated, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        if not tx_engine.update_scheduled(sched_id, updated):
-            self._respond_json(404, {"error": f"Scheduled '{sched_id}' not found"})
-            return
-        tx_engine.git_commit(f"Scheduled edit: {sched_id}", ["data/scheduled.csv"])
-        self._respond_json(200, {"success": True})
-
-    def handle_scheduled_delete(self):
-        body = self._read_json_body()
-        sched_id = body.get("sched_id", "")
-        if not sched_id:
-            self._respond_json(400, {"error": "sched_id is required"})
-            return
-        if not tx_engine.delete_scheduled(sched_id):
-            self._respond_json(404, {"error": f"Scheduled '{sched_id}' not found"})
-            return
-        tx_engine.git_commit(f"Scheduled delete: {sched_id}", ["data/scheduled.csv"])
-        self._respond_json(200, {"success": True})
+    # handle_scheduled_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
     def handle_scheduled_preview_due(self):
         """Return what would be booked if SCHED ran today, without writing.
@@ -1803,108 +1614,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API: /api/quickexp ────────────────────────────────────────────
 
-    def handle_quickexp_list(self):
-        self._respond_json(200, {"quick_expenses": tx_engine.load_quick_expenses()})
-
-    def handle_quickexp_add(self):
-        body = self._read_json_body()
-        if not body.get("name") or not body.get("account"):
-            self._respond_json(400, {"error": "name and account are required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_quick_expense(body, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        qe_id = tx_engine.add_quick_expense(body)
-        tx_engine.git_commit(f"Quick Expense add: {body['name']}", ["data/quick_expenses.csv"])
-        self._respond_json(200, {"success": True, "id": qe_id})
-
-    def handle_quickexp_update(self):
-        body = self._read_json_body()
-        qe_id = body.get("id", "")
-        updated = body.get("updated", {})
-        if not qe_id:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_quick_expense(updated, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        if not tx_engine.update_quick_expense(qe_id, updated):
-            self._respond_json(404, {"error": f"Quick Expense '{qe_id}' not found"})
-            return
-        tx_engine.git_commit(f"Quick Expense edit: {qe_id}", ["data/quick_expenses.csv"])
-        self._respond_json(200, {"success": True})
-
-    def handle_quickexp_delete(self):
-        body = self._read_json_body()
-        qe_id = body.get("id", "")
-        if not qe_id:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        if not tx_engine.delete_quick_expense(qe_id):
-            self._respond_json(404, {"error": f"Quick Expense '{qe_id}' not found"})
-            return
-        tx_engine.git_commit(f"Quick Expense delete: {qe_id}", ["data/quick_expenses.csv"])
-        self._respond_json(200, {"success": True})
+    # handle_quickexp_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
     # ── API: /api/atm-fees ────────────────────────────────────────────
 
-    def handle_atm_fees_list(self):
-        self._respond_json(200, {"atm_fees": tx_engine.load_atm_fees()})
-
-    def handle_atm_fees_add(self):
-        body = self._read_json_body()
-        if not body.get("bank") or not body.get("amount"):
-            self._respond_json(400, {"error": "bank and amount are required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_atm_fee(body, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        fee_id = tx_engine.add_atm_fee(body)
-        tx_engine.git_commit(
-            f"ATM fee add: {body['bank']} {body['amount']}",
-            ["data/atm_fees.csv"],
-        )
-        self._respond_json(200, {"success": True, "id": fee_id})
-
-    def handle_atm_fees_update(self):
-        body = self._read_json_body()
-        fee_id = body.get("id", "")
-        updated = body.get("updated", {})
-        if not fee_id:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        accounts = tx_engine.load_accounts()
-        categories = tx_engine.load_categories()
-        errors = tx_engine.validate_atm_fee(updated, accounts, categories)
-        if errors:
-            self._respond_json(400, {"errors": errors})
-            return
-        if not tx_engine.update_atm_fee(fee_id, updated):
-            self._respond_json(404, {"error": f"ATM fee '{fee_id}' not found"})
-            return
-        tx_engine.git_commit(f"ATM fee edit: {fee_id}", ["data/atm_fees.csv"])
-        self._respond_json(200, {"success": True})
-
-    def handle_atm_fees_delete(self):
-        body = self._read_json_body()
-        fee_id = body.get("id", "")
-        if not fee_id:
-            self._respond_json(400, {"error": "id is required"})
-            return
-        if not tx_engine.delete_atm_fee(fee_id):
-            self._respond_json(404, {"error": f"ATM fee '{fee_id}' not found"})
-            return
-        tx_engine.git_commit(f"ATM fee delete: {fee_id}", ["data/atm_fees.csv"])
-        self._respond_json(200, {"success": True})
+    # handle_atm_fees_list/add/update/delete are generated from
+    # _CRUD_ENTITIES via _install_crud_handlers() below the class
+    # (OPT-12, CODE_REVIEW_2026-06-12).
 
     # ── API: /api/accounts/update ──────────────────────────────────────
 
@@ -4444,6 +4162,30 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # host badge) can tell a fenced standby from a live primary.
         info["role"] = host_role.get_role()
 
+        # OF-M6 (CODE_REVIEW_2026-07-08): machine-readable sync state so
+        # computeAlerts() can flag a wedged cron_commit on the next
+        # dashboard open — the only other detector is the WEEKLY
+        # integrity heartbeat check. Read live (three tiny files), not
+        # from the 30s cache: staleness here defeats the purpose.
+        data_dir = tx_engine.DATA_DIR
+        try:
+            fail_path = data_dir / ".cron_commit_fail_count"
+            info["push_fail_count"] = int(fail_path.read_text().strip()) if fail_path.exists() else 0
+        except (OSError, ValueError):
+            info["push_fail_count"] = 0
+        try:
+            stuck_path = data_dir / ".sync_stuck.json"
+            info["sync_stuck"] = json.loads(stuck_path.read_text(encoding="utf-8")) if stuck_path.exists() else None
+        except (OSError, ValueError):
+            info["sync_stuck"] = {"reason": "unreadable data/.sync_stuck.json", "since": ""}
+        try:
+            hb_path = data_dir / ".last_successful_push"
+            if hb_path.exists():
+                hb_age = datetime.now() - datetime.fromisoformat(hb_path.read_text().strip())
+                info["last_push_age_hours"] = round(hb_age.total_seconds() / 3600, 1)
+        except (OSError, ValueError):
+            pass
+
         self._respond_json(200, info)
 
     # ── API: /api/tx/update ───────────────────────────────────────────
@@ -4474,6 +4216,18 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if "category" in updated and updated["category"] and updated["category"] not in categories:
             self._respond_json(400, {"error": f"Unknown category: '{updated['category']}'"})
             return
+        # Category is mandatory for expense/income — block an edit that would
+        # clear it (or switch a transfer to expense/income without one). Mirror
+        # of the Add-TX guard in tx_engine.validate_line. Only enforced when the
+        # edit actually touches category/type, so unrelated field edits on any
+        # legacy uncategorized row aren't retroactively blocked.
+        if "category" in updated or "type" in updated:
+            existing_row = tx_engine.load_transaction_by_id(import_id) or {}
+            eff_type = updated.get("type", existing_row.get("type", ""))
+            eff_category = updated.get("category", existing_row.get("category", ""))
+            if eff_type in ("expense", "income") and not eff_category:
+                self._respond_json(400, {"error": "Category is required"})
+                return
 
         # subscription_id is not a TX column; pop it out of `updated`
         # and handle the link mutation separately so update_transaction
@@ -4936,6 +4690,177 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
 
 # ── Server Utilities ────────────────────────────────────────────────────────
+
+
+# ── CRUD handler factory (OPT-12, CODE_REVIEW_2026-06-12) ───────────────────
+# Seven entities repeated the same 15-line list/add/update/delete envelope
+# (body parse → required-field check → validator → mutator → 404 mapping →
+# git commit → success echo); every tweak to the envelope had to be applied
+# per entity. The handlers below are generated from this table instead.
+# Entities whose flow genuinely deviates keep their hand-written handlers:
+# accounts (in-handler lock + rename cascade + 409), debts (in-handler
+# backups, topup/pay flows), custom-reports (ValueError channel, entry
+# echo), the vehicles/properties/subscriptions family (module ValueError →
+# 400 / 409 reference guards / flat update body) and the fuel/luku/water
+# cascade endpoints.
+#
+# Spec fields (defaults in _make_crud_handlers):
+#   route       — handler-name segment: handle_<route>_list/add/update/delete
+#   list_key    — JSON key of the list response
+#   label       — human label used in 404 texts and git messages
+#   loader/adder/updater/deleter — tx_engine function names (resolved at
+#                 call time so tests can monkeypatch them)
+#   required    — required add-body fields; required_msg — exact 400 text
+#   validator   — tx_engine validator name (accounts+categories context),
+#                 or None (payees, tags)
+#   id_field    — body key carrying the id (default "id")
+#   id_missing_msg — exact 400 text when the id is absent
+#   id_echo_key — key echoing the new id in the add response; None = no echo
+#   add_returns_bool — adder returns False on duplicate → 400 "already
+#                 exists" (tags) instead of echoing an id
+#   files       — git_commit path list
+
+_CRUD_ENTITIES = [
+    dict(route="payees", list_key="payees", label="Payee",
+         loader="load_payees", adder="add_payee",
+         updater="update_payee", deleter="delete_payee",
+         required=("payee",), required_msg="payee name is required",
+         validator=None, add_msg="Payee add: {payee}",
+         files=["data/payees.json"]),
+    dict(route="tags", list_key="tags", label="Tag",
+         loader="load_tags", adder="add_tag",
+         updater="update_tag", deleter="delete_tag",
+         required=("tag",), required_msg="tag name is required",
+         validator=None, add_msg="Tag add: {tag}",
+         id_field="tag", id_missing_msg="tag name is required",
+         id_echo_key=None, add_returns_bool=True,
+         files=["data/tags.csv"]),
+    dict(route="scheduled", list_key="scheduled", label="Scheduled",
+         loader="load_scheduled", adder="add_scheduled",
+         updater="update_scheduled", deleter="delete_scheduled",
+         required=("name", "account", "amount"),
+         required_msg="name, account, and amount are required",
+         validator="validate_scheduled", add_msg="Scheduled add: {name}",
+         id_field="sched_id", id_missing_msg="sched_id is required",
+         id_echo_key="sched_id",
+         files=["data/scheduled.csv"]),
+    dict(route="quickexp", list_key="quick_expenses", label="Quick Expense",
+         loader="load_quick_expenses", adder="add_quick_expense",
+         updater="update_quick_expense", deleter="delete_quick_expense",
+         required=("name", "account"),
+         required_msg="name and account are required",
+         validator="validate_quick_expense", add_msg="Quick Expense add: {name}",
+         files=["data/quick_expenses.csv"]),
+    dict(route="atm_fees", list_key="atm_fees", label="ATM fee",
+         loader="load_atm_fees", adder="add_atm_fee",
+         updater="update_atm_fee", deleter="delete_atm_fee",
+         required=("bank", "amount"),
+         required_msg="bank and amount are required",
+         validator="validate_atm_fee", add_msg="ATM fee add: {bank} {amount}",
+         files=["data/atm_fees.csv"]),
+    dict(route="budgets", list_key="budgets", label="Budget",
+         loader="load_budgets", adder="add_budget",
+         updater="update_budget", deleter="delete_budget",
+         required=("category",), required_msg="category is required",
+         validator="validate_budget", add_msg="Budget add: {category}",
+         files=["data/budgets.json"]),
+    dict(route="goals", list_key="goals", label="Goal",
+         loader="load_savings_goals", adder="add_savings_goal",
+         updater="update_savings_goal", deleter="delete_savings_goal",
+         required=("name",), required_msg="name is required",
+         validator="validate_savings_goal", add_msg="Goal add: {name}",
+         files=["data/savings_goals.json"]),
+]
+
+
+def _make_crud_handlers(spec):
+    """Build the four handler functions for one _CRUD_ENTITIES spec."""
+    label = spec["label"]
+    list_key = spec["list_key"]
+    required = spec["required"]
+    required_msg = spec["required_msg"]
+    validator_name = spec.get("validator")
+    id_field = spec.get("id_field", "id")
+    id_missing_msg = spec.get("id_missing_msg", "id is required")
+    id_echo_key = spec.get("id_echo_key", "id")
+    add_returns_bool = spec.get("add_returns_bool", False)
+    files = spec["files"]
+    git_verb = {"add": spec["add_msg"]}
+
+    def _validation_errors(payload):
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        return getattr(tx_engine, validator_name)(payload, accounts, categories)
+
+    def handle_list(self):
+        self._respond_json(200, {list_key: getattr(tx_engine, spec["loader"])()})
+
+    def handle_add(self):
+        body = self._read_json_body()
+        if any(not body.get(f) for f in required):
+            self._respond_json(400, {"error": required_msg})
+            return
+        if validator_name:
+            errors = _validation_errors(body)
+            if errors:
+                self._respond_json(400, {"errors": errors})
+                return
+        result = getattr(tx_engine, spec["adder"])(body)
+        if add_returns_bool and not result:
+            self._respond_json(
+                400, {"error": f"{label} '{body[id_field]}' already exists"})
+            return
+        tx_engine.git_commit(git_verb["add"].format_map(body), files)
+        payload = {"success": True}
+        if id_echo_key:
+            payload[id_echo_key] = result
+        self._respond_json(200, payload)
+
+    def handle_update(self):
+        body = self._read_json_body()
+        entity_id = body.get(id_field, "")
+        updated = body.get("updated", {})
+        if not entity_id:
+            self._respond_json(400, {"error": id_missing_msg})
+            return
+        if validator_name:
+            errors = _validation_errors(updated)
+            if errors:
+                self._respond_json(400, {"errors": errors})
+                return
+        if not getattr(tx_engine, spec["updater"])(entity_id, updated):
+            self._respond_json(404, {"error": f"{label} '{entity_id}' not found"})
+            return
+        tx_engine.git_commit(f"{label} edit: {entity_id}", files)
+        self._respond_json(200, {"success": True})
+
+    def handle_delete(self):
+        body = self._read_json_body()
+        entity_id = body.get(id_field, "")
+        if not entity_id:
+            self._respond_json(400, {"error": id_missing_msg})
+            return
+        if not getattr(tx_engine, spec["deleter"])(entity_id):
+            self._respond_json(404, {"error": f"{label} '{entity_id}' not found"})
+            return
+        tx_engine.git_commit(f"{label} delete: {entity_id}", files)
+        self._respond_json(200, {"success": True})
+
+    return handle_list, handle_add, handle_update, handle_delete
+
+
+def _install_crud_handlers(cls):
+    """Attach the generated CRUD handler methods to the handler class."""
+    for spec in _CRUD_ENTITIES:
+        route = spec["route"]
+        for verb, fn in zip(("list", "add", "update", "delete"),
+                            _make_crud_handlers(spec)):
+            fn.__name__ = f"handle_{route}_{verb}"
+            fn.__doc__ = f"{spec['label']} {verb} (generated, see _CRUD_ENTITIES)."
+            setattr(cls, fn.__name__, fn)
+
+
+_install_crud_handlers(FinanceOSHandler)
 
 
 def is_port_in_use(port: int) -> bool:

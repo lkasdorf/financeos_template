@@ -20,6 +20,137 @@ function getAvailableYears() {
   return [...years].sort();
 }
 
+// ─── Report Scaffolding Factories (DR-M4) ────────────────────────────────
+// The ~12 report modules used to copy the same scaffolding per report:
+// a hand-built toolbar with data-attribute persistence + per-select
+// 'change' wiring (32 blocks / 66 listener lines), the currency list
+// derivation (20 word-identical sites), the standard Chart.js options
+// pair (~69 sites) and the currency y-axis tick formatter (~60 sites).
+// Single point of fix for all four lives here.
+
+// Distinct currencies across active self-owned accounts — the option list
+// every report currency switcher renders.
+function reportCurrencies() {
+  return [...new Set(state.accounts
+    .filter(a => a.owner === 'self' && a.status === 'active')
+    .map(a => a.currency))];
+}
+
+// Standard Chart.js sizing options — spread as `...CHART_BASE` at the top
+// of every chart's `options` object.
+const CHART_BASE = { responsive: true, maintainAspectRatio: false };
+
+// Standard currency axis ticks: `ticks: currencyTicks(currency)`.
+function currencyTicks(currency) {
+  return { callback: v => formatCurrency(v, currency) };
+}
+
+// Declarative toolbar factory.
+//
+// fields: [{ key, label, options, def, id? }]
+//   key     — persistence suffix; the value is saved as
+//             data-<reportId>-<key> on `out` (survives re-renders)
+//   label   — already-translated label text
+//   options — array of { v, l } (value/label) or plain strings
+//   def     — fallback value when nothing is persisted yet
+//   id      — DOM id override (defaults to <reportId>-<key>)
+//
+// Returns { html, wire, get, el }:
+//   html         — toolbar markup to embed in the report template
+//   wire(update) — call AFTER out.innerHTML is set: binds the selects,
+//                  persists all values + re-runs update() on every
+//                  change, then runs update() once for the initial render
+//   get(key)     — current value of a field (valid after wire())
+//   el(key)      — the underlying <select>, e.g. for visibility toggles
+function reportToolbar(out, reportId, fields, { extraHtml = '' } = {}) {
+  const saved = {};
+  for (const f of fields) {
+    saved[f.key] = out.getAttribute(`data-${reportId}-${f.key}`) ?? f.def;
+  }
+  const idOf = f => f.id || `${reportId}-${f.key}`;
+  const fieldHtml = fields.map(f => `
+        <label>${f.label}</label>
+        <select id="${idOf(f)}">
+          ${f.options.map(o => {
+            const v = (o && typeof o === 'object') ? o.v : o;
+            const l = (o && typeof o === 'object') ? o.l : o;
+            return `<option value="${escapeHtml(String(v))}" ${String(v) === String(saved[f.key]) ? 'selected' : ''}>${l}</option>`;
+          }).join('')}
+        </select>`).join('');
+  const els = {};
+  function wire(update) {
+    for (const f of fields) els[f.key] = document.getElementById(idOf(f));
+    const persist = () => {
+      for (const f of fields) out.setAttribute(`data-${reportId}-${f.key}`, els[f.key].value);
+    };
+    for (const f of fields) {
+      els[f.key].addEventListener('change', () => { persist(); update(); });
+    }
+    persist();
+    update();
+  }
+  return {
+    html: `
+      <div class="report-toolbar">${fieldHtml}
+        ${extraHtml}
+      </div>`,
+    wire,
+    get: k => els[k].value,
+    el: k => els[k],
+  };
+}
+
+
+// ─── Month-End Balance Sweep (DR-M3) ─────────────────────────────────────
+// Single-pass month-end balances for a set of accounts. The Net-Worth-
+// Trend and FX-Exposure reports used to re-scan the FULL state.tx array
+// once per month × account (~720 full scans per render / currency
+// switch); one date-sorted sweep with running balances is
+// O(TX + months × accounts).
+//
+// monthKeys must be ascending 'YYYY-MM' strings. Returns one snapshot
+// object per month key, mapping alias → NATIVE end-of-month balance
+// (callers convert). Accounts whose initial_balance_date lies after the
+// month's end carry no entry in that snapshot — same skip semantics as
+// the old per-month loops.
+function computeMonthlyBalances(accounts, monthKeys) {
+  const balances = {};
+  const ibDates = {};
+  for (const a of accounts) {
+    balances[a.alias] = a.initial_balance || 0;
+    ibDates[a.alias] = a.initial_balance_date || '2000-01-01';
+  }
+  const txs = state.tx
+    .filter(t => t.date && (balances[t.account] !== undefined ||
+      (t.type === 'transfer' && balances[t.transfer_to_account] !== undefined)))
+    .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+
+  const snapshots = [];
+  let i = 0;
+  for (const mk of monthKeys) {
+    const endOfMonth = mk + '-31';
+    while (i < txs.length && txs[i].date <= endOfMonth) {
+      const t = txs[i];
+      if (balances[t.account] !== undefined && t.date >= ibDates[t.account]) {
+        if (t.type === 'income') balances[t.account] += t.amount;
+        else if (t.type === 'expense') balances[t.account] -= t.amount;
+        else if (t.type === 'transfer') balances[t.account] -= t.amount;
+      }
+      if (t.type === 'transfer' && balances[t.transfer_to_account] !== undefined
+          && t.date >= ibDates[t.transfer_to_account]) {
+        balances[t.transfer_to_account] += t.transfer_to_amount > 0 ? t.transfer_to_amount : t.amount;
+      }
+      i++;
+    }
+    const snap = {};
+    for (const a of accounts) {
+      if (endOfMonth < ibDates[a.alias]) continue;
+      snap[a.alias] = balances[a.alias];
+    }
+    snapshots.push(snap);
+  }
+  return snapshots;
+}
 
 // ─── Generic Expense Report (reusable for tag-based and category-based) ──
 
@@ -27,49 +158,43 @@ function renderExpenseReport(opts) {
   // opts: { filterId, filterLabel, filterFn, colorMain }
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
 
-  const savedMode = out.getAttribute(`data-${opts.filterId}-mode`) || 'monthly';
-  const savedYear = out.getAttribute(`data-${opts.filterId}-year`) || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute(`data-${opts.filterId}-cur`) || 'TZS';
+  // DR-M4 reference migration: toolbar rendering/persistence/wiring live
+  // in reportToolbar(); this function keeps only its own update() logic.
+  const tb = reportToolbar(out, opts.filterId, [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('common.col.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="re-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="re-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-        <label>${t('common.col.currency', {}, 'Currency')}</label>
-        <select id="re-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="re-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('re-mode');
-  const yearEl = document.getElementById('re-year');
-  const curEl = document.getElementById('re-currency');
-
   function update() {
-    out.setAttribute(`data-${opts.filterId}-mode`, modeEl.value);
-    out.setAttribute(`data-${opts.filterId}-year`, yearEl.value);
-    out.setAttribute(`data-${opts.filterId}-cur`, curEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
 
-    const currency = curEl.value;
+    const currency = tb.get('cur');
     const custodyAliases = getCustodyAliases();
     const nonPnl = getNonPnlCategories();
     const filtered = state.tx.filter(tx => opts.filterFn(tx) && isOperationalTx(tx, custodyAliases, nonPnl)).map(tx => ({
-      ...tx, amount: convertTo(tx.amount, tx.currency, currency)
+      ...tx,
+      // DR-H1 (CODE_REVIEW_2026-07-08): keep the native amount alongside
+      // the converted one — the TX lists used to format the CONVERTED
+      // value with the ORIGINAL currency label ('45,000 TZS' in the EUR
+      // view rendered as '14 TZS'). Mirrors getIncomeTransactions().
+      originalAmount: tx.amount,
+      amount: convertTo(tx.amount, tx.currency, currency)
     }));
 
     // rc.16 — when this report has no matches AT ALL across the entire TX
@@ -85,17 +210,14 @@ function renderExpenseReport(opts) {
       }
     }
 
-    if (modeEl.value === 'monthly') {
-      renderExpenseMonthly(filtered, yearEl.value, currency, opts);
+    if (tb.get('mode') === 'monthly') {
+      renderExpenseMonthly(filtered, tb.get('year'), currency, opts);
     } else {
       renderExpenseYearly(filtered, currency, opts);
     }
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // Renders an actionable empty state when a category-driven report has zero
@@ -155,11 +277,11 @@ function renderReportEmptyState(opts) {
       <p style="margin:0 0 16px;line-height:1.55;">
         ${escapeHtml(t('reports.empty.intro', { label: opts.filterLabel || reportId }, `This report (“${opts.filterLabel || reportId}”) filters expenses by category, but none of your transactions match the categories it is currently configured to look for. The category names in your data are different from the defaults.`))}
       </p>
-      <div style="margin-bottom:16px;">
+      <div class="mb-16">
         <div style="font-weight:600;margin-bottom:6px;font-size:13px;">${escapeHtml(t('reports.empty.configured', {}, 'Currently configured for'))}:</div>
         <div style="line-height:2;">${configuredHtml}</div>
       </div>
-      <div style="margin-bottom:20px;">
+      <div class="mb-20">
         <div style="font-weight:600;margin-bottom:6px;font-size:13px;">${escapeHtml(t('reports.empty.your_cats', {}, 'Your expense categories'))}:</div>
         <div style="line-height:2;">${userHtml}</div>
       </div>
@@ -276,7 +398,7 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
 
   const barCtx = document.getElementById('re-bar-chart');
   if (barCtx) {
-    const stackPalette = ['#1e40af', '#e8453c', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
+    const stackPalette = chartPalette();
     let barDatasets;
     let barLegend = { display: false };
     let barStacked = false;
@@ -314,11 +436,11 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
       type: 'bar',
       data: { labels: names, datasets: barDatasets },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: { legend: barLegend, tooltip: { callbacks: { label: ctx => (ctx.dataset.label ? ctx.dataset.label + ': ' : '') + formatCurrency(ctx.raw, currency) + ' ' + currency } } },
         scales: {
           x: { stacked: barStacked, grid: { color: cssVar('--chart-grid') } },
-          y: { stacked: barStacked, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { stacked: barStacked, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -334,10 +456,10 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
         datasets: [{ data: topPayees.map(([, v]) => v), backgroundColor: opts.colorMain, borderWidth: 0 }],
       },
       options: {
-        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y', ...CHART_BASE,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, currency) + ' ' + currency } } },
         scales: {
-          x: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          x: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           y: { grid: { display: false } },
         },
       },
@@ -365,7 +487,7 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
       catRows += `<tr style="background:var(--surface-2);font-weight:600;">
         <td colspan="4">${escapeHtml(cat)}</td>
         <td class="amt expense">${formatCurrency(data.total, currency)}</td>
-        <td style="color:var(--muted);font-size:11px;">${pct}%</td>
+        <td class="label-sm">${pct}%</td>
       </tr>`;
       const sorted = data.items.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
       for (const tx of sorted) {
@@ -387,7 +509,7 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
           <thead><tr><th>${t('common.label.date', {}, 'Date')}</th><th>${t('common.col.payee', {}, 'Payee')}</th><th>${t('common.label.note', {}, 'Note')}</th><th>${t('common.col.account', {}, 'Account')}</th><th class="amt">${t('common.col.amount', {}, 'Amount')}</th><th></th></tr></thead>
           <tbody>
             ${catRows}
-            <tr style="font-weight:700;border-top:2px solid var(--border);">
+            <tr class="row-total">
               <td colspan="4">${t('reports.shared.total_label', {}, 'Total')}</td>
               <td class="amt expense">${formatCurrency(catTotal, currency)}</td>
               <td></td>
@@ -410,8 +532,8 @@ function renderExpenseMonthly(filtered, year, currency, opts) {
         <td>${escapeHtml(tx.payee || '')}</td>
         <td class="cat">${escapeHtml(tx.category || '')}${tags ? '<br>' + tags : ''}</td>
         <td>${escapeHtml(tx.note || '')}</td>
-        <td class="amt expense">${formatCurrency(tx.amount, tx.currency)}</td>
-        <td class="hint-sm">${tx.currency}</td>
+        <td class="amt expense">${formatCurrency(tx.amount, currency)} <span class="hint-sm">${escapeHtml(currency)}</span></td>
+        <td class="hint-sm">${tx.currency !== currency ? `${formatCurrency(tx.originalAmount, tx.currency)} ${escapeHtml(tx.currency)}` : ''}</td>
       </tr>`;
     }).join('');
     const txHtml = `
@@ -474,11 +596,11 @@ function renderExpenseYearly(filtered, currency, opts) {
         datasets: [{ data: data.map(d => d.total), backgroundColor: opts.colorMain, borderWidth: 0 }],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, currency) + ' ' + currency } } },
         scales: {
           x: { grid: { color: cssVar('--chart-grid') } },
-          y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -496,8 +618,8 @@ function renderExpenseYearly(filtered, currency, opts) {
         <td>${escapeHtml(tx.payee || '')}</td>
         <td class="cat">${escapeHtml(tx.category || '')}${tags ? '<br>' + tags : ''}</td>
         <td>${escapeHtml(tx.note || '')}</td>
-        <td class="amt expense">${formatCurrency(tx.amount, tx.currency)}</td>
-        <td class="hint-sm">${tx.currency}</td>
+        <td class="amt expense">${formatCurrency(tx.amount, currency)} <span class="hint-sm">${escapeHtml(currency)}</span></td>
+        <td class="hint-sm">${tx.currency !== currency ? `${formatCurrency(tx.originalAmount, tx.currency)} ${escapeHtml(tx.currency)}` : ''}</td>
       </tr>`;
     }).join('');
     const txHtml = `

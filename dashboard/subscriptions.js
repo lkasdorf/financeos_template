@@ -25,7 +25,9 @@ const _SUBSCRIPTION_GROUPS_DEFAULT = [
   'Hosting', 'Productivity', 'Wordpress',
 ];
 
-const _SUBSCRIPTION_CURRENCIES = ['TZS', 'EUR', 'USD', 'PLN', 'GBP', 'CHF'];
+// DP-M7: currency list now comes from the shared knownCurrencies()
+// helper at render time (module-level snapshot would miss accounts
+// loaded after boot).
 const _BILLING_PRESETS = [
   { months: 1,  labelKey: 'page.subscriptions.cycle.monthly',    fallback: 'Monthly' },
   { months: 3,  labelKey: 'page.subscriptions.cycle.quarterly',  fallback: 'Quarterly' },
@@ -148,7 +150,7 @@ async function renderSubscriptionsPage() {
   if (!root) return;
 
   if (!_subscriptionsLoaded) {
-    root.innerHTML = `<div class="report-section" style="text-align:center;color:var(--text-dim);">${t('common.loading', {}, 'Loading…')}</div>`;
+    root.innerHTML = `<div class="report-section t-center c-mut">${t('common.loading', {}, 'Loading…')}</div>`;
     try {
       await loadSubscriptionsList();
     } catch (err) {
@@ -181,14 +183,14 @@ async function renderSubscriptionsPage() {
 function _renderTotals(totals) {
   if (!totals.length) {
     return `<div class="report-section" style="margin-bottom:14px;">
-      <div style="color:var(--text-dim);font-size:13px;">${escapeHtml(t('page.subscriptions.totals.empty', {}, 'No active subscriptions yet — add one to start tracking monthly cost.'))}</div>
+      <div style="color:var(--muted);font-size:13px;">${escapeHtml(t('page.subscriptions.totals.empty', {}, 'No active subscriptions yet — add one to start tracking monthly cost.'))}</div>
     </div>`;
   }
   const chips = totals.map(tot => `
     <div class="kpi-card" style="min-width:180px;">
       <div class="kpi-label">${escapeHtml(t('page.subscriptions.totals.monthly_in', { currency: tot.currency }, `Monthly in ${tot.currency}`))}</div>
       <div class="kpi-value">${escapeHtml(_fmtAmount(tot.total_monthly, tot.currency))}</div>
-      <div class="kpi-sub" style="color:var(--text-dim);font-size:11px;">${escapeHtml(t('page.subscriptions.totals.yearly_eq', { value: _fmtAmount(tot.total_yearly, tot.currency) }, `${_fmtAmount(tot.total_yearly, tot.currency)} / year`))}</div>
+      <div class="kpi-sub label-sm">${escapeHtml(t('page.subscriptions.totals.yearly_eq', { value: _fmtAmount(tot.total_yearly, tot.currency) }, `${_fmtAmount(tot.total_yearly, tot.currency)} / year`))}</div>
     </div>
   `).join('');
   return `<div class="kpi-grid" style="margin-bottom:14px;display:flex;flex-wrap:wrap;gap:12px;">${chips}</div>`;
@@ -221,11 +223,11 @@ function _renderList(rows) {
       return `
         <div class="report-section" style="text-align:center;padding:36px 16px;">
           <div style="font-size:15px;font-weight:600;margin-bottom:6px;">${escapeHtml(t('page.subscriptions.empty.title', {}, 'No subscriptions yet'))}</div>
-          <div style="color:var(--text-dim);font-size:13px;max-width:480px;margin:0 auto;">${escapeHtml(t('page.subscriptions.empty.body', {}, 'Click "Add subscription" to track Netflix, ChatGPT, hosting, domains, or any recurring service.'))}</div>
+          <div style="color:var(--muted);font-size:13px;max-width:480px;margin:0 auto;">${escapeHtml(t('page.subscriptions.empty.body', {}, 'Click "Add subscription" to track Netflix, ChatGPT, hosting, domains, or any recurring service.'))}</div>
         </div>
       `;
     }
-    return `<div class="report-section" style="text-align:center;color:var(--text-dim);padding:24px;">${escapeHtml(t('page.subscriptions.filter.empty', {}, 'No subscriptions match this filter.'))}</div>`;
+    return `<div class="report-section" style="text-align:center;color:var(--muted);padding:24px;">${escapeHtml(t('page.subscriptions.filter.empty', {}, 'No subscriptions match this filter.'))}</div>`;
   }
 
   // Group by `group`, then render group-headed sections. Within a group,
@@ -244,8 +246,8 @@ function _renderList(rows) {
     .map(([group, items]) => `
       <div class="report-section" style="margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--border);padding-bottom:6px;margin-bottom:10px;">
-          <h3 style="margin:0;font-size:14px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-dim);">${escapeHtml(group)}</h3>
-          <span style="color:var(--text-dim);font-size:11px;">${escapeHtml(t('page.subscriptions.group.count', { n: items.length }, `${items.length} entries`))}</span>
+          <h3 style="margin:0;font-size:14px;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);">${escapeHtml(group)}</h3>
+          <span class="label-sm">${escapeHtml(t('page.subscriptions.group.count', { n: items.length }, `${items.length} entries`))}</span>
         </div>
         <div class="sub-group-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
           ${items.map(_renderSubscriptionCard).join('')}
@@ -259,13 +261,13 @@ function _renderList(rows) {
 function _renderSubscriptionCard(sub) {
   const monthly = Number(sub.amount_monthly) || 0;
   const sameAsCharge = Math.abs(monthly - (Number(sub.amount) || 0)) < 0.005;
-  const monthlyLine = sameAsCharge ? '' : `<div style="color:var(--text-dim);font-size:11px;">≈ ${escapeHtml(_fmtAmount(monthly, sub.currency))} ${escapeHtml(t('page.subscriptions.card.per_month', {}, '/ month'))}</div>`;
+  const monthlyLine = sameAsCharge ? '' : `<div class="label-sm">≈ ${escapeHtml(_fmtAmount(monthly, sub.currency))} ${escapeHtml(t('page.subscriptions.card.per_month', {}, '/ month'))}</div>`;
 
   const renewalLine = sub.next_renewal
-    ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(t('page.subscriptions.card.renews_on', { date: sub.next_renewal }, `Renews ${sub.next_renewal}`))}</div>`
+    ? `<div class="label-sm">${escapeHtml(t('page.subscriptions.card.renews_on', { date: sub.next_renewal }, `Renews ${sub.next_renewal}`))}</div>`
     : '';
   const accountLine = sub.account
-    ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(t('page.subscriptions.card.via', { account: sub.account }, `via ${sub.account}`))}</div>`
+    ? `<div class="label-sm">${escapeHtml(t('page.subscriptions.card.via', { account: sub.account }, `via ${sub.account}`))}</div>`
     : '';
   // M-F1 (Sprint 18) — refuse javascript:/data:/vbscript: URLs in the
   // subscription card. escapeHtml protects against breaking out of the
@@ -282,17 +284,17 @@ function _renderSubscriptionCard(sub) {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
         <div style="flex:1;min-width:0;">
           <div style="font-weight:600;font-size:13px;line-height:1.2;">${escapeHtml(sub.name || sub.subscription_id)}</div>
-          ${sub.provider ? `<div style="font-size:11px;color:var(--text-dim);">${escapeHtml(sub.provider)}</div>` : ''}
+          ${sub.provider ? `<div class="label-sm">${escapeHtml(sub.provider)}</div>` : ''}
         </div>
         ${_statusBadge(sub)}
       </div>
       <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:flex-end;gap:8px;">
         <div>
           <div style="font-size:14px;font-weight:600;">${escapeHtml(_fmtAmount(sub.amount, sub.currency))}</div>
-          <div style="font-size:11px;color:var(--text-dim);">${escapeHtml(_cycleLabel(sub.billing_months))}</div>
+          <div class="label-sm">${escapeHtml(_cycleLabel(sub.billing_months))}</div>
           ${monthlyLine}
         </div>
-        <div style="text-align:right;">
+        <div class="t-right">
           ${renewalLine}
           ${accountLine}
           ${urlLine}
@@ -309,7 +311,7 @@ function _renderSubscriptionCard(sub) {
 }
 
 async function _loadSubscriptionHistory(subId, panel) {
-  panel.innerHTML = `<div style="color:var(--muted);">${escapeHtml(t('page.subscriptions.history.loading', {}, 'Loading…'))}</div>`;
+  panel.innerHTML = `<div class="c-mut">${escapeHtml(t('page.subscriptions.history.loading', {}, 'Loading…'))}</div>`;
   try {
     const res = await fetch('/api/subscriptions/log_for_subscription', {
       method: 'POST',
@@ -319,7 +321,7 @@ async function _loadSubscriptionHistory(subId, panel) {
     const data = await res.json();
     const log = data.log || [];
     if (!log.length) {
-      panel.innerHTML = `<div style="color:var(--muted);">${escapeHtml(t('page.subscriptions.history.empty', {}, 'No charges linked yet. Link a TX to this subscription via the Add-TX or Edit-TX picker.'))}</div>`;
+      panel.innerHTML = `<div class="c-mut">${escapeHtml(t('page.subscriptions.history.empty', {}, 'No charges linked yet. Link a TX to this subscription via the Add-TX or Edit-TX picker.'))}</div>`;
       return;
     }
     // Trend marker: percent vs previous (most recent first, so prev is index+1).
@@ -450,7 +452,7 @@ async function openSubscriptionModal(existing = null) {
     return `<option value="${escapeHtml(a.alias)}"${sel}>${escapeHtml(a.alias)} — ${escapeHtml(a.name || '')}</option>`;
   }).join('');
 
-  const currencyOptions = _SUBSCRIPTION_CURRENCIES
+  const currencyOptions = knownCurrencies() // DP-M7
     .map(c => `<option value="${c}"${s && s.currency === c ? ' selected' : ''}>${c}</option>`).join('');
 
   const cycleOptions = _BILLING_PRESETS
@@ -465,12 +467,10 @@ async function openSubscriptionModal(existing = null) {
     ..._subscriptionsList.map(r => (r.group || '').trim()).filter(Boolean),
   ])).sort().map(g => `<option value="${escapeHtml(g)}"></option>`).join('');
 
+  // DP-M6: close any stale overlay via its own handle so its Escape
+  // listener is detached with it (a bare .remove() would strand it).
   const existingOverlay = document.querySelector('.modal-overlay');
-  if (existingOverlay) existingOverlay.remove();
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+  if (existingOverlay) (existingOverlay._close || existingOverlay.remove).call(existingOverlay);
 
   const titleVerb = editing
     ? t('page.subscriptions.modal.title_edit', {}, 'Edit')
@@ -481,9 +481,10 @@ async function openSubscriptionModal(existing = null) {
 
   const todayIso = new Date().toISOString().slice(0, 10);
 
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:680px;">
-      <h3>${escapeHtml(titleVerb)} <span class="accent">${escapeHtml(t('page.subscriptions.modal.title_noun', {}, 'Subscription'))}</span></h3>
+  openModal({
+    title: `${escapeHtml(titleVerb)} <span class="accent">${escapeHtml(t('page.subscriptions.modal.title_noun', {}, 'Subscription'))}</span>`,
+    maxWidth: '680px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx2"><label>${escapeHtml(t('page.subscriptions.modal.name', {}, 'Name'))}</label>
           <input type="text" id="sm-name" placeholder="${escapeHtml(t('page.subscriptions.modal.name_ph', {}, 'e.g. Netflix, ChatGPT, web hosting'))}" value="${escapeHtml(s ? s.name || '' : '')}" required>
@@ -544,20 +545,12 @@ async function openSubscriptionModal(existing = null) {
         </div>
       </div>
       <div class="modal-actions" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px;">
-        <button id="sm-cancel" style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">${escapeHtml(t('common.actions.cancel', {}, 'Cancel'))}</button>
+        <button id="sm-cancel" data-modal-cancel style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">${escapeHtml(t('common.actions.cancel', {}, 'Cancel'))}</button>
         <button id="sm-save" style="padding:8px 14px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">${escapeHtml(saveLabel)}</button>
-      </div>
-    </div>
-  `;
+      </div>`,
+  });
 
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
-
-  document.getElementById('sm-cancel').addEventListener('click', closeModal);
   document.getElementById('sm-save').addEventListener('click', () => _saveSubscriptionFromModal(editing ? s.subscription_id : null));
-
-  setTimeout(() => document.getElementById('sm-name')?.focus(), 50);
 }
 
 async function _saveSubscriptionFromModal(editingId) {
@@ -587,25 +580,29 @@ async function _saveSubscriptionFromModal(editingId) {
   const url = editingId ? '/api/subscriptions/update' : '/api/subscriptions/add';
   if (editingId) payload.subscription_id = editingId;
 
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      uiAlert(t('page.subscriptions.err.save', { msg: data.error || resp.status }, `Save failed: ${data.error || resp.status}`));
+  // withSubmitLock (DP-H1, CODE_REVIEW_2026-07-08): a double-click on
+  // Save minted two subscriptions with fresh IDs.
+  await withSubmitLock(document.getElementById('sm-save'), async () => {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        uiAlert(t('page.subscriptions.err.save', { msg: data.error || resp.status }, `Save failed: ${data.error || resp.status}`));
+        return;
+      }
+    } catch (err) {
+      uiAlert(t('page.subscriptions.err.save', { msg: err.message }, `Save failed: ${err.message}`));
       return;
     }
-  } catch (err) {
-    uiAlert(t('page.subscriptions.err.save', { msg: err.message }, `Save failed: ${err.message}`));
-    return;
-  }
 
-  closeModal();
-  _subscriptionsLoaded = false;
-  await renderSubscriptionsPage();
+    closeModal();
+    _subscriptionsLoaded = false;
+    await renderSubscriptionsPage();
+  });
 }
 
 async function _confirmDeleteSubscription(sub) {

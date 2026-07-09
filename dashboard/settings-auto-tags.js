@@ -57,7 +57,7 @@ function _renderAutoTagsForm() {
       <div style="display:flex;gap:10px;align-items:center;margin-top:22px;border-top:1px solid var(--border);padding-top:16px;">
         <button class="btn btn-primary" id="autotags-save">${escapeHtml(t('settings.autotags.save', {}, 'Save all changes'))}</button>
         <button class="btn" id="autotags-revert">${escapeHtml(t('settings.autotags.revert', {}, 'Revert'))}</button>
-        <span id="autotags-status" class="c-mut" style="font-size:12px;"></span>
+        <span id="autotags-status" class="c-mut fs-12"></span>
       </div>
     </div>
   `;
@@ -128,15 +128,15 @@ function _renderAutoTagMapSection({ key, title, hint, keyLabel, valLabel, keyPla
     <tr data-autotag-row="${escapeHtml(key)}" data-row-key="${escapeHtml(k)}">
       <td><input type="text" data-autotag-input data-autotag-section="${escapeHtml(key)}" data-autotag-field="key" data-autotag-orig-key="${escapeHtml(k)}" value="${escapeHtml(k)}" placeholder="${escapeHtml(keyPlaceholder)}" style="width:100%;padding:4px 6px;"></td>
       <td><input type="text" data-autotag-input data-autotag-section="${escapeHtml(key)}" data-autotag-field="value" data-autotag-orig-key="${escapeHtml(k)}" value="${escapeHtml(v)}" placeholder="${escapeHtml(valPlaceholder)}" style="width:100%;padding:4px 6px;"></td>
-      <td style="white-space:nowrap;"><button type="button" class="btn-icon" data-autotag-remove data-autotag-section="${escapeHtml(key)}" data-autotag-row-key="${escapeHtml(k)}" title="${escapeHtml(t('settings.autotags.remove', {}, 'Remove'))}">✕</button></td>
+      <td class="nowrap"><button type="button" class="btn-icon" data-autotag-remove data-autotag-section="${escapeHtml(key)}" data-autotag-row-key="${escapeHtml(k)}" title="${escapeHtml(t('settings.autotags.remove', {}, 'Remove'))}">✕</button></td>
     </tr>
   `).join('');
   const empty = entries.length ? '' : `<tr><td colspan="3" class="muted" style="padding:8px;">${escapeHtml(t('settings.autotags.empty_section', {}, 'No rules defined yet.'))}</td></tr>`;
   const backfillRow = showBackfill ? `
     <div style="display:flex;gap:8px;align-items:center;margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
       <button class="btn" id="autotags-backfill-btn" type="button">${escapeHtml(t('settings.autotags.backfill_btn', {}, 'Backfill matching TX'))}</button>
-      <span class="c-mut" style="font-size:12px;">${escapeHtml(t('settings.autotags.backfill_hint', {}, 'Apply current prefix rules retroactively to historical transactions.csv. Dry-run first.'))}</span>
-      <span id="autotags-backfill-status" class="c-mut" style="font-size:12px;"></span>
+      <span class="c-mut fs-12">${escapeHtml(t('settings.autotags.backfill_hint', {}, 'Apply current prefix rules retroactively to historical transactions.csv. Dry-run first.'))}</span>
+      <span id="autotags-backfill-status" class="c-mut fs-12"></span>
     </div>
   ` : '';
   return `
@@ -151,7 +151,7 @@ function _renderAutoTagMapSection({ key, title, hint, keyLabel, valLabel, keyPla
         </tr></thead>
         <tbody>${rows}${empty}</tbody>
       </table>
-      <div style="margin-top:8px;">
+      <div class="mt-8">
         <button class="btn btn-sm" type="button" data-autotag-add data-autotag-section="${escapeHtml(key)}">+ ${escapeHtml(t('settings.autotags.add', {}, 'Add rule'))}</button>
       </div>
       ${backfillRow}
@@ -167,7 +167,7 @@ function _renderAutoTagBridgeSection(data) {
       <tr data-autotag-row="bridge" data-row-key="${escapeHtml(src)}">
         <td><input type="text" data-autotag-input data-autotag-section="bridge" data-autotag-field="key" data-autotag-orig-key="${escapeHtml(src)}" value="${escapeHtml(src)}" placeholder="House_costs" style="width:100%;padding:4px 6px;"></td>
         <td><input type="text" data-autotag-input data-autotag-section="bridge" data-autotag-field="value" data-autotag-orig-key="${escapeHtml(src)}" value="${escapeHtml(targetStr)}" placeholder="Property_HomeABC" style="width:100%;padding:4px 6px;"></td>
-        <td style="white-space:nowrap;"><button type="button" class="btn-icon" data-autotag-remove data-autotag-section="bridge" data-autotag-row-key="${escapeHtml(src)}" title="${escapeHtml(t('settings.autotags.remove', {}, 'Remove'))}">✕</button></td>
+        <td class="nowrap"><button type="button" class="btn-icon" data-autotag-remove data-autotag-section="bridge" data-autotag-row-key="${escapeHtml(src)}" title="${escapeHtml(t('settings.autotags.remove', {}, 'Remove'))}">✕</button></td>
       </tr>
     `;
   }).join('');
@@ -184,7 +184,7 @@ function _renderAutoTagBridgeSection(data) {
         </tr></thead>
         <tbody>${rows}${empty}</tbody>
       </table>
-      <div style="margin-top:8px;">
+      <div class="mt-8">
         <button class="btn btn-sm" type="button" data-autotag-add data-autotag-section="bridge">+ ${escapeHtml(t('settings.autotags.add', {}, 'Add rule'))}</button>
       </div>
     </section>

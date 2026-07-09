@@ -208,7 +208,7 @@ function renderAccountPage() {
 
   headerEl.innerHTML = `
     <div style="display:flex;align-items:center;margin-bottom:12px;">
-      <button class="report-back" data-action="gotoAccountsOverview" style="margin:0;">${t('accp.back', {}, '← Accounts')}</button>
+      <button class="report-back m-0" data-action="gotoAccountsOverview">${t('accp.back', {}, '← Accounts')}</button>
       <div style="margin-left:auto;display:flex;gap:8px;">
         <button data-action="exportAccountTx" data-arg1="${alias}" style="padding:6px 14px;font-size:12px;">${t('accp.export_xlsx', {}, 'Export XLSX')}</button>
         <button class="btn-save" data-action="navigateToAddTxWithAccount" data-arg1="${alias}" style="padding:8px 14px;font-size:12px;">${t('accp.add_tx', {}, '+ Add TX')}</button>
@@ -309,7 +309,7 @@ function renderAccountPage() {
         <td>${label}${note}</td>
         <td class="cat">${catOrType}${tags ? '<br>' + tags : ''}</td>
         <td class="amt ${typeClass}">${formatCurrency(tx.amount, tx.currency)}</td>
-        <td class="amt ${balClass}" style="font-size:12px;">${formatCurrency(rowBal, acc.currency)}</td>
+        <td class="amt ${balClass} fs-12">${formatCurrency(rowBal, acc.currency)}</td>
         <td class="tx-actions"><button class="tx-edit-btn icon-btn" data-import-id="${escapeHtml(tx.import_id)}" title="${editLabel}" aria-label="${editLabel}">✎</button><button class="tx-edit-btn icon-btn" data-duplicate-id="${escapeHtml(tx.import_id)}" title="${duplicateLabel}" aria-label="${duplicateLabel}">⧉</button><button class="tx-edit-btn icon-btn btn-delete-sm" data-delete-id="${escapeHtml(tx.import_id)}" title="${deleteLabel}" aria-label="${deleteLabel}">✕</button></td>
       </tr>
     `;
@@ -347,9 +347,9 @@ function renderAccountPage() {
     </div>` : ''}
     <div class="report-toolbar" style="flex-wrap:wrap;gap:6px 12px;margin-bottom:12px;">
       <label>${t('tx.filter.from', {}, 'From')}</label>
-      <input type="date" id="accp-date-from" value="${accountPage.filterDateFrom}" style="padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <input type="date" id="accp-date-from" value="${accountPage.filterDateFrom}" class="input-compact">
       <label>${t('tx.filter.to', {}, 'To')}</label>
-      <input type="date" id="accp-date-to" value="${accountPage.filterDateTo}" style="padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <input type="date" id="accp-date-to" value="${accountPage.filterDateTo}" class="input-compact">
       <label>${t('tx.filter.payee', {}, 'Payee')}</label>
       <input type="text" id="accp-payee" list="accp-payee-list" value="${escapeHtml(accountPage.filterPayee)}" placeholder="${t('search.placeholder', {}, 'Search...')}" autocomplete="off" style="width:180px;padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
       <datalist id="accp-payee-list">${allPayees.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>

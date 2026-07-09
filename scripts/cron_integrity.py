@@ -239,6 +239,100 @@ def check_duplicate_import_ids(transactions: list[dict]) -> list[str]:
     return issues
 
 
+def check_pass_through_balance(transactions: list[dict], accounts: dict) -> list[str]:
+    """Flag pass-through accounts whose balance is not zero (BL-H1).
+
+    The counter-entry system guarantees balance 0 by construction; any
+    drift means a counter is missing, duplicated, or carries the wrong
+    amount (the silent failure mode of split edits before the group-aware
+    sync fix). Calibrated 2026-07-08: all four pass-through accounts sit
+    at exactly 0.00, so the check can be strict.
+    """
+    issues = []
+    pt_accounts = {alias for alias, info in accounts.items() if info.get("pass_through_payee")}
+    balances: dict[str, float] = {alias: 0.0 for alias in pt_accounts}
+
+    for tx in transactions:
+        try:
+            amount = float(tx.get("amount") or 0)
+        except (ValueError, TypeError):
+            continue
+        account = tx.get("account", "")
+        tx_type = tx.get("type", "")
+        if account in pt_accounts:
+            if tx_type == "income":
+                balances[account] += amount
+            elif tx_type in ("expense", "transfer"):
+                balances[account] -= amount
+        target = tx.get("transfer_to_account", "")
+        if tx_type == "transfer" and target in pt_accounts:
+            try:
+                balances[target] += float(tx.get("transfer_to_amount") or tx.get("amount") or 0)
+            except (ValueError, TypeError):
+                pass
+
+    for alias in sorted(balances):
+        if abs(balances[alias]) > 0.01:
+            issues.append(
+                f"Pass-through account '{alias}' balance is {balances[alias]:.2f} "
+                f"(must be 0.00 — counter-entry drift)"
+            )
+    return issues
+
+
+def check_split_group_counters(transactions: list[dict], accounts: dict) -> list[str]:
+    """Validate group counters of receipt splits on pass-through accounts (BL-H1).
+
+    Splits on a pass-through account share ONE income counter for the
+    group total. Checked per group: exactly one counter, counter amount
+    equals the sum of the group's expense members, and the FK points at a
+    live member. Groups WITHOUT any FK counter are skipped — legacy
+    migration-era splits were reimbursed sammelausgleich-style (separate
+    income rows, no FK) and are covered by the orphan + balance checks.
+    """
+    issues = []
+    pt_accounts = {alias for alias, info in accounts.items() if info.get("pass_through_payee")}
+
+    groups: dict[tuple[str, str], dict] = {}
+    for tx in transactions:
+        account = tx.get("account", "")
+        rg = (tx.get("receipt_group") or "").strip()
+        if account not in pt_accounts or not rg:
+            continue
+        g = groups.setdefault((account, rg), {"expense_sum": 0.0, "member_ids": set(), "counters": []})
+        if (tx.get("counter_entry_id") or "").strip():
+            g["counters"].append(tx)
+        elif tx.get("type") == "expense":
+            try:
+                g["expense_sum"] += float(tx.get("amount") or 0)
+            except (ValueError, TypeError):
+                pass
+            g["member_ids"].add(tx.get("import_id", ""))
+
+    for (account, rg), g in sorted(groups.items()):
+        counters = g["counters"]
+        if not counters:
+            continue  # legacy sammelausgleich group — see docstring
+        if len(counters) > 1:
+            ids = ", ".join(c.get("import_id", "?") for c in counters)
+            issues.append(f"Split group '{rg}' on '{account}' has {len(counters)} counters ({ids}) — expected exactly 1")
+            continue
+        counter = counters[0]
+        try:
+            counter_amount = float(counter.get("amount") or 0)
+        except (ValueError, TypeError):
+            counter_amount = 0.0
+        if abs(counter_amount - g["expense_sum"]) > 0.01:
+            issues.append(
+                f"Split group '{rg}' on '{account}': counter amount {counter_amount:.2f} "
+                f"!= member total {g['expense_sum']:.2f}"
+            )
+        fk = (counter.get("counter_entry_id") or "").strip()
+        if fk not in g["member_ids"]:
+            issues.append(f"Split group '{rg}' on '{account}': counter FK '{fk}' points at no live group member")
+    return issues
+
+
 def check_overdue_scheduled() -> list[str]:
     """Flag scheduled entries where next_run is more than 7 days in the past.
 
@@ -334,6 +428,8 @@ def main() -> int:
     # ── Execute all checks ──────────────────────────────────────────────
     checks = [
         ("Orphaned pass-through entries", check_orphaned_pass_through(transactions, accounts)),
+        ("Pass-through balance drift", check_pass_through_balance(transactions, accounts)),
+        ("Split group counters", check_split_group_counters(transactions, accounts)),
         ("Unknown categories", check_unknown_categories(transactions, categories)),
         ("Unknown accounts", check_unknown_accounts(transactions, accounts)),
         ("Duplicate import_ids", check_duplicate_import_ids(transactions)),

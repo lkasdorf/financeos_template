@@ -1,5 +1,5 @@
-alias,name,currency,type,owner,status,pass_through_payee,initial_balance,initial_balance_date,notes
-cash,Cash Wallet,USD,cash,self,active,,0,,Daily cash on hand
-checking,Checking Account,USD,bank,self,active,,0,,Primary bank account
-savings,Savings Account,USD,savings,self,active,,0,,Long-term savings
-credit,Credit Card,USD,credit,self,active,,0,,Default credit card
+alias,name,currency,type,owner,status,pass_through_payee,initial_balance,initial_balance_date,include_in_net_worth,notes
+cash,Cash Wallet,USD,cash,self,active,,0,,,Daily cash on hand
+checking,Checking Account,USD,bank,self,active,,0,,,Primary bank account
+savings,Savings Account,USD,savings,self,active,,0,,,Long-term savings
+credit,Credit Card,USD,credit,self,active,,0,,,Default credit card

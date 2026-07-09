@@ -11,17 +11,12 @@ async function renderPayeesPage() {
   const content = document.getElementById('settings-tab-content') || document.getElementById('payees-content');
   const meta = document.getElementById('payees-meta');
   if (!content) return;
-  content.innerHTML = `<div class="loading">${escapeHtml(t('settings.payees.loading', {}, 'Loading payees...'))}</div>`;
-
-  let payees = [];
-  try {
-    const res = await fetch('/api/payees/list', { method: 'POST' });
-    const data = await res.json();
-    payees = data.payees || [];
-  } catch (e) {
-    content.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.payees.load_failed', {}, 'Failed to load payees'))}</div>`;
-    return;
-  }
+  const payees = await loadCrudTabItems(content, {
+    endpoint: '/api/payees/list', key: 'payees',
+    loadingText: t('settings.payees.loading', {}, 'Loading payees...'),
+    errorText: t('settings.payees.load_failed', {}, 'Failed to load payees'),
+  });
+  if (payees === null) return;
 
   if (meta) meta.textContent = t('settings.payees.count', { n: payees.length }, `${payees.length} payees registered`);
 
@@ -108,28 +103,19 @@ async function addPayeeGroup() {
   });
 }
 
-// Re-group payees in parallel via Promise.allSettled. Sequential awaits
-// would mean N round-trips for N matching payees and a partial-failure
-// in the middle would leave the group half-renamed. Promise.allSettled
-// fires them concurrently and reports the count that failed so the user
-// at least knows to retry.
-async function _bulkRegroup(filterFn, newGroup, errKey, errFallback) {
-  const res = await fetch('/api/payees/list', { method: 'POST' });
+// DP-M1: group rename/delete goes through ONE server-side bulk endpoint
+// (single load-modify-save + one git commit). The previous client-side
+// fan-out (N parallel /api/payees/update) raced on the unlocked
+// full-file rewrite — lost updates on every multi-payee group.
+async function _bulkRegroup(oldGroup, newGroup) {
+  const res = await fetch('/api/payees/regroup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ old_group: oldGroup, new_group: newGroup }),
+  });
   const data = await res.json();
-  const toUpdate = (data.payees || []).filter(filterFn);
-  const ops = toUpdate.map(p =>
-    fetch('/api/payees/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: p.id, updated: { ...p, group: newGroup } }),
-    })
-  );
-  const results = await Promise.allSettled(ops);
-  const failed = results.filter(r => r.status === 'rejected'
-    || (r.value && !r.value.ok)).length;
-  if (failed > 0) {
-    uiAlert(t(errKey, { failed, total: toUpdate.length }, errFallback(failed, toUpdate.length)));
-  }
+  if (data.error) throw new Error(data.error);
+  invalidateTxContext(); // DP-M3
   renderPayeesPage();
 }
 
@@ -138,12 +124,7 @@ async function renamePayeeGroup(oldName) {
   const newName = await uiPrompt(t('payees.prompt_rename_group', { name: oldName }, `Rename group "${oldName}" to:`), oldName);
   if (!newName || newName.trim() === oldName) return;
   try {
-    await _bulkRegroup(
-      p => p.group === oldName,
-      newName.trim(),
-      'payees.err_rename_partial',
-      (f, total) => `Rename failed for ${f} of ${total} payees`
-    );
+    await _bulkRegroup(oldName, newName.trim());
   } catch (e) {
     uiAlert(t('payees.err_rename', { msg: e.message }, `Rename failed: ${e.message}`));
   }
@@ -154,12 +135,7 @@ async function deletePayeeGroup(groupName) {
   const otherLabel = t('payees.group_other', {}, 'Other');
   if (!(await uiConfirm(t('payees.confirm_delete_group', { name: groupName, other: otherLabel }, `Delete group "${groupName}"? All ${groupName} payees will be moved to "${otherLabel}".`), { type: 'destructive' }))) return;
   try {
-    await _bulkRegroup(
-      p => p.group === groupName,
-      '',
-      'payees.err_delete_partial',
-      (f, total) => `Delete failed for ${f} of ${total} payees`
-    );
+    await _bulkRegroup(groupName, '');
   } catch (e) {
     uiAlert(t('payees.err_delete', { msg: e.message }, `Delete failed: ${e.message}`));
   }
@@ -182,10 +158,6 @@ async function showPayeeTxOverlay(payeeName) {
     .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
     .slice(0, limit);
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
   const shownLabel = txs.length < limit
     ? String(txs.length)
     : t('payees.overlay.last_n', { n: limit }, `Last ${limit}`);
@@ -193,9 +165,10 @@ async function showPayeeTxOverlay(payeeName) {
     ? t('payees.overlay.hint_aliases_suffix', {}, ' (incl. aliases)')
     : '';
 
-  overlay.innerHTML = `
-    <div class="modal" style="width:640px;">
-      <h3>${t('payees.overlay.title', { name: escapeHtml(payeeName) }, `<span class="accent">${escapeHtml(payeeName)}</span> — Recent Transactions`)}</h3>
+  openModal({
+    title: t('payees.overlay.title', { name: escapeHtml(payeeName) }, `<span class="accent">${escapeHtml(payeeName)}</span> — Recent Transactions`),
+    maxWidth: '640px',
+    bodyHtml: `
       <div class="hint-md mb-16">${t('payees.overlay.hint', { shown: escapeHtml(shownLabel), total: allMatching.length }, `${shownLabel} of ${allMatching.length} transactions`)}${aliasSuffix}</div>
       ${txs.length === 0 ? `<div class="empty-state compact"><div class="empty-state-icon">&#x1F50D;</div><div class="empty-state-desc">${t('payees.overlay.empty', {}, 'No transactions found.')}</div></div>` : `
       <table class="tx-table mb-0">
@@ -216,14 +189,9 @@ async function showPayeeTxOverlay(payeeName) {
       </table>`}
       <div class="modal-footer">
         <div class="btn-left"></div>
-        <div class="btn-right"><button data-action="closeModal">${t('common.actions.close', {}, 'Close')}</button></div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+        <div class="btn-right"><button data-modal-cancel>${t('common.actions.close', {}, 'Close')}</button></div>
+      </div>`,
+  });
 }
 
 async function showPayeeModal(editId) {
@@ -252,13 +220,10 @@ async function showPayeeModal(editId) {
     `<option value="${escapeHtml(g)}" ${g === currentGroup ? 'selected' : ''}>${escapeHtml(g)}</option>`
   ).join('');
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('settings.payees.modal.title_edit', {}, 'Edit <span class="accent">Payee</span>') : t('settings.payees.modal.title_add', {}, 'Add <span class="accent">Payee</span>')}</h3>
+  openModal({
+    title: isEdit ? t('settings.payees.modal.title_edit', {}, 'Edit <span class="accent">Payee</span>') : t('settings.payees.modal.title_add', {}, 'Add <span class="accent">Payee</span>'),
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field"><label>${t('settings.payees.modal.label_payee_name', {}, 'Payee Name')}</label>
           <input type="text" id="pm-payee" value="${escapeHtml(payee?.payee || '')}">
@@ -301,16 +266,11 @@ async function showPayeeModal(editId) {
           ${isEdit ? `<button class="btn-delete" data-action="deletePayee" data-arg1="${escapeHtml(editId)}">${t('common.actions.delete', {}, 'Delete')}</button>` : ''}
         </div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="savePayee" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 async function savePayee(editId) {
@@ -337,6 +297,7 @@ async function savePayee(editId) {
     const result = await res.json();
     if (result.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(result.error)}</div>`; return; }
     closeModal();
+    invalidateTxContext(); // DP-M3: payee edits must reach the pickers
     renderPayeesPage();
   } catch (e) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(e.message)}</div>`; }
 }
@@ -346,6 +307,7 @@ async function deletePayee(id) {
   try {
     await fetch('/api/payees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
     closeModal();
+    invalidateTxContext(); // DP-M3
     renderPayeesPage();
   } catch (e) { console.warn('[payees:silent-catch]', e); }
 }

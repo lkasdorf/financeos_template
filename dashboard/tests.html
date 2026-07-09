@@ -89,6 +89,15 @@ test('parseAmountInput: US decimal dot + thousands', () => {
   approx(parseAmountInput('1,234.56'), 1234.56, 1e-9);
 });
 
+test('parseAmountInput: comma as thousands grouping (bank-SMS style, PW-H1)', () => {
+  eq(parseAmountInput('135,686'), 135686);
+  eq(parseAmountInput('1,234,567'), 1234567);
+});
+
+test('parseAmountInput: garbage after digits is rejected, not truncated', () => {
+  assert(Number.isNaN(parseAmountInput('12x5')), '12x5');
+});
+
 test('parseAmountInput: space as thousands sep (fr-FR)', () => {
   approx(parseAmountInput('1 234,56'), 1234.56, 1e-9);
 });
@@ -155,7 +164,7 @@ test('computeBalances: transfer with explicit transfer_to_amount (FX)', () => {
 });
 
 test('isInNetWorth: explicit flag wins', () => {
-  assert(isInNetWorth({ include_in_net_worth: 'true', owner: 'beate' }), 'beate true');
+  assert(isInNetWorth({ include_in_net_worth: 'true', owner: 'partner' }), 'custody owner true');
   assert(!isInNetWorth({ include_in_net_worth: 'false', owner: 'self', status: 'active' }), 'self false');
 });
 
@@ -220,7 +229,7 @@ test('isInNetWorth: legacy fallback when flag missing', () => {
   // archived excluded
   assert(!isInNetWorth({ owner: 'self', status: 'archived', type: 'cash' }), 'archived');
   // custody excluded
-  assert(!isInNetWorth({ owner: 'beate', status: 'active', type: 'cash' }), 'custody');
+  assert(!isInNetWorth({ owner: 'partner', status: 'active', type: 'cash' }), 'custody');
 });
 
 // ─── Runner ────────────────────────────────────────────────────────────

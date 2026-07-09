@@ -80,10 +80,10 @@ function _renderVehicleLifecycleBadge(startDate, endDate) {
   if (!end && !start) return '';
   const baseStyle = 'display:inline-block;font-size:10px;font-weight:500;padding:1px 6px;border-radius:8px;margin-left:6px;vertical-align:middle;';
   if (end && end <= today) {
-    return ` <span style="${baseStyle}background:rgba(148,163,184,0.18);color:var(--muted);">${escapeHtml(t('lifecycle.ended', { date: end.slice(0, 7) }, `ended ${end.slice(0, 7)}`))}</span>`;
+    return ` <span style="${baseStyle}background:color-mix(in srgb, var(--muted) 18%, transparent);color:var(--muted);">${escapeHtml(t('lifecycle.ended', { date: end.slice(0, 7) }, `ended ${end.slice(0, 7)}`))}</span>`;
   }
   if (end && end > today) {
-    return ` <span style="${baseStyle}background:rgba(245,158,11,0.18);color:#b45309;">${escapeHtml(t('lifecycle.until', { date: end.slice(0, 7) }, `until ${end.slice(0, 7)}`))}</span>`;
+    return ` <span style="${baseStyle}background:color-mix(in srgb, var(--warn) 18%, transparent);color:var(--warn);">${escapeHtml(t('lifecycle.until', { date: end.slice(0, 7) }, `until ${end.slice(0, 7)}`))}</span>`;
   }
   return '';
 }
@@ -105,12 +105,12 @@ function heatmapColor(value, values, reversed = true) {
   if (valid.length === 0) return 'transparent';
   const min = Math.min(...valid);
   const max = Math.max(...valid);
-  if (max === min) return 'rgba(15,173,113,0.18)';
+  if (max === min) return chartTint(cssVar('--positive'), 0.18);
   let pct = (value - min) / (max - min);
   if (reversed) pct = 1 - pct;
-  if (pct >= 0.66) return 'rgba(15,173,113,0.18)';   // green
-  if (pct >= 0.33) return 'rgba(232,147,12,0.18)';   // yellow / warn
-  return 'rgba(232,69,60,0.18)';                     // red / negative
+  if (pct >= 0.66) return chartTint(cssVar('--positive'), 0.18);
+  if (pct >= 0.33) return chartTint(cssVar('--warn'), 0.18);
+  return chartTint(cssVar('--negative'), 0.18);
 }
 
 // Convert a TZS-native fuel amount into the active dashboard currency.
@@ -129,7 +129,7 @@ async function renderVehiclesPage() {
   vehiclesCharts = [];
 
   if (!fuelLogLoaded) {
-    content.innerHTML = `<div class="report-section" style="text-align:center;color:var(--text-dim);">${t('common.loading', {}, 'Loading…')}</div>`;
+    content.innerHTML = `<div class="report-section t-center c-mut">${t('common.loading', {}, 'Loading…')}</div>`;
     await loadVehiclesData();
   }
 
@@ -242,7 +242,7 @@ function renderVehicleControls(vehicle) {
       <div style="display:flex;gap:8px;">
         ${exportBtn}
         <button id="vh-add-vehicle-btn" style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_vehicle_button', {}, 'Add Vehicle')}</button>
-        <button id="vh-add-btn" style="padding:8px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">+ ${t('page.vehicles.add_button', {}, 'Add Fuel Entry')}</button>
+        <button id="vh-add-btn" class="btn-accent">+ ${t('page.vehicles.add_button', {}, 'Add Fuel Entry')}</button>
       </div>
     </div>
   `;
@@ -266,7 +266,7 @@ function renderReconciliationBanner() {
         <div>
           <strong>${r.unlinked_fuel_txs.length}</strong>
           ${t('page.vehicles.recon.unlinked', {}, 'fuel TX(s) without log entry')}
-          <span style="color:var(--text-dim);font-size:11px;margin-left:8px;">
+          <span style="color:var(--muted);font-size:11px;margin-left:8px;">
             ${t('page.vehicles.recon.unlinked_hint', {}, 'newest:')} ${escapeHtml(newest.date)} · ${escapeHtml(newest.payee || '')} · ${escapeHtml(newest.account || '')}
           </span>
         </div>
@@ -281,7 +281,7 @@ function renderReconciliationBanner() {
         <div>
           <strong>${r.orphaned_log_entries.length}</strong>
           ${t('page.vehicles.recon.orphans', {}, 'orphaned log entr(y/ies)')}
-          <span style="color:var(--text-dim);font-size:11px;margin-left:8px;">
+          <span style="color:var(--muted);font-size:11px;margin-left:8px;">
             ${t('page.vehicles.recon.orphan_hint', {}, 'newest:')} ${escapeHtml(newest.fuel_id)} · ${escapeHtml(newest.date)}
           </span>
         </div>
@@ -305,12 +305,12 @@ function renderReconciliationBanner() {
     // not unresolved issues. The button is the only way back to undo a
     // dismissal from the UI (CLI fallback was the only path before).
     lines.push(`
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;padding:6px 0;border-top:1px dashed var(--border);margin-top:4px;color:var(--text-dim);font-size:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;padding:6px 0;border-top:1px dashed var(--border);margin-top:4px;color:var(--muted);font-size:12px;">
         <div>
           <strong>${dismissedCount}</strong>
           ${t('page.vehicles.recon.dismissed', {}, 'dismissed entr(y/ies) — hidden from the unlinked list')}
         </div>
-        <button class="vh-recon-show" data-kind="dismissed" style="padding:4px 10px;font-size:11px;background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">${t('page.vehicles.recon.dismissed_view', {}, 'View / restore')}</button>
+        <button class="vh-recon-show" data-kind="dismissed" style="padding:4px 10px;font-size:11px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">${t('page.vehicles.recon.dismissed_view', {}, 'View / restore')}</button>
       </div>
     `);
   }
@@ -326,7 +326,7 @@ function renderReconciliationBanner() {
     : `⚠ ${t('page.vehicles.recon.title', {}, 'Reconciliation findings')}`;
   return `
     <div class="report-section" style="${wrapperStyle}">
-      <div style="font-weight:600;margin-bottom:4px;">${headerLabel}</div>
+      <div class="fw-600 mb-4">${headerLabel}</div>
       ${lines.join('')}
     </div>
   `;
@@ -387,7 +387,7 @@ function renderVehicleKpis(entries) {
         </div>
         <div class="income-cell">
           <div class="ic-label">${t('page.vehicles.kpi.avg_consume', {}, 'Ø Consumption')}</div>
-          <div class="ic-value" style="color:var(--accent);">${avgConsume.toFixed(2)}<span class="ic-cur">L/100km</span></div>
+          <div class="ic-value c-acc">${avgConsume.toFixed(2)}<span class="ic-cur">L/100km</span></div>
           <div class="ic-count">${t('page.vehicles.kpi.consume_sub', { n: fullEntries.length }, `${fullEntries.length} full-tank fills`)}</div>
         </div>
         <div class="income-cell">
@@ -430,7 +430,7 @@ function renderVehicleCharts() {
 
 function renderVehicleTable(entries) {
   if (entries.length === 0) {
-    return `<div class="report-section" style="text-align:center;color:var(--text-dim);">${t('page.vehicles.empty_table', {}, 'No fuel entries in this period.')}</div>`;
+    return `<div class="report-section t-center c-mut">${t('page.vehicles.empty_table', {}, 'No fuel entries in this period.')}</div>`;
   }
   const consumes = entries.map(e => e.consume_l_100km);
   const pricesPerKm = entries.map(e => e.price_per_km);
@@ -450,7 +450,7 @@ function renderVehicleTable(entries) {
     const totalCostDisp = formatCurrency(toDisplayTzs(parseFloat(e.total_cost) || 0), cur);
     const txLink = e.tx_import_id
       ? `<a class="vh-tx-link" data-tx-id="${escapeHtml(e.tx_import_id)}" title="${escapeHtml(e.tx_import_id)} — click to open">${escapeHtml(e.tx_import_id.slice(0, 8))}…</a>`
-      : `<span style="color:var(--text-dim);">—</span>`;
+      : `<span class="c-mut">—</span>`;
     // Heat-map cells get extra inline padding so the colored band has
     // visual breathing room and does not bleed into the neighboring text.
     const cBgStyle = e.consume_l_100km != null ? `background:${cBg};font-weight:600;` : '';
@@ -487,7 +487,7 @@ function renderVehicleTable(entries) {
       .vh-fuel-table thead th {
         text-align:left; padding:10px 14px; font-weight:600;
         background:var(--surface); border-bottom:2px solid var(--border);
-        color:var(--text-dim); text-transform:uppercase; font-size:10.5px;
+        color:var(--muted); text-transform:uppercase; font-size:10.5px;
         letter-spacing:0.04em; white-space:nowrap;
       }
       .vh-fuel-table thead th.num { text-align:right; }
@@ -501,16 +501,16 @@ function renderVehicleTable(entries) {
       .vh-fuel-table .vh-cell-num { text-align:right; font-variant-numeric:tabular-nums; }
       .vh-fuel-table .vh-cell-text { text-align:left; }
       .vh-fuel-table .vh-cell-mid { text-align:center; }
-      .vh-fuel-table .vh-cell-date { text-align:left; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+      .vh-fuel-table .vh-cell-date { text-align:left; color:var(--muted); font-variant-numeric:tabular-nums; }
       .vh-fuel-table .vh-cell-heat { font-weight:600; }
       .vh-fuel-table .vh-cell-tx { font-family:monospace; font-size:10.5px; }
       .vh-fuel-table .vh-tx-link { color:var(--accent-dim); cursor:pointer; text-decoration:none; }
       .vh-fuel-table .vh-tx-link:hover { color:var(--accent); text-decoration:underline; }
       .vh-fuel-table .vh-amount { margin-right:5px; }
-      .vh-fuel-table .vh-cur { color:var(--text-dim); font-size:10px; text-transform:uppercase; }
+      .vh-fuel-table .vh-cur { color:var(--muted); font-size:10px; text-transform:uppercase; }
       .vh-fuel-table .vh-del-btn,
       .vh-fuel-table .vh-edit-btn {
-        padding:4px 9px; background:transparent; color:var(--text-dim);
+        padding:4px 9px; background:transparent; color:var(--muted);
         border:1px solid var(--border); border-radius:var(--radius-xs);
         cursor:pointer; font-size:13px; line-height:1; margin-right:4px;
         transition:color .12s, border-color .12s, background .12s;
@@ -519,7 +519,7 @@ function renderVehicleTable(entries) {
         color:var(--accent); border-color:var(--accent); background:var(--accent-glow);
       }
       .vh-fuel-table .vh-del-btn:hover {
-        color:var(--negative); border-color:var(--negative); background:rgba(232,69,60,0.06);
+        color:var(--negative); border-color:var(--negative); background:color-mix(in srgb, var(--negative) 6%, transparent);
       }
     </style>
   `;
@@ -579,7 +579,7 @@ function drawPriceChart(entries) {
       label: `${cur}/L`,
       data,
       borderColor: 'var(--accent)',
-      backgroundColor: 'rgba(30,64,175,0.08)',
+      backgroundColor: cssVar('--accent-glow'),
       tension: 0.3,
       pointRadius: 3,
       fill: true,
@@ -612,7 +612,7 @@ function drawConsumeChart(entries) {
       label: 'L/100km',
       data,
       borderColor: 'var(--warn)',
-      backgroundColor: 'rgba(232,147,12,0.10)',
+      backgroundColor: chartTint(cssVar('--warn'), 0.10),
       tension: 0.3,
       pointRadius: 3,
       fill: true,
@@ -650,7 +650,7 @@ function drawMonthlyChart(entries) {
     data: { labels: months.map(monthLabel), datasets: [{
       label: cur,
       data,
-      backgroundColor: 'rgba(30,64,175,0.7)',
+      backgroundColor: chartTint(cssVar('--accent'), 0.7),
       borderWidth: 0,
     }] },
     options: {
@@ -685,7 +685,7 @@ function drawAnnualChart(allEntries) {
   const years = Object.keys(byYear).sort();
   // A small palette that walks through hue space — readable in both
   // light and dark theme since saturation stays modest.
-  const palette = ['#1e40af', '#0fad71', '#e8930c', '#9333ea', '#dc2626', '#0891b2'];
+  const palette = chartPalette();
   const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     .map((m, i) => (typeof t === 'function') ? t(`common.months.short.${i + 1}`, {}, m) : m);
   const datasets = years.map((yr, i) => ({
@@ -739,7 +739,7 @@ function drawStationsChart(allEntries) {
   const counts = sorted.map(([, v]) => v.count);
   // Same palette as the annual chart so colors stay consistent across
   // the page; first slice always gets the primary accent.
-  const palette = ['#1e40af', '#0fad71', '#e8930c', '#9333ea', '#dc2626', '#0891b2', '#64748b'];
+  const palette = chartPalette();
   const colors = labels.map((_, i) => palette[i % palette.length]);
   const total = data.reduce((s, v) => s + v, 0);
   const chart = new Chart(ctx, {
@@ -885,7 +885,7 @@ function showReconciliationDetails(kind) {
         <td>${escapeHtml(t.account || '')}</td>
         <td>${escapeHtml(t.category || '')}</td>
         <td><a class="vh-tx-link-modal" data-tx-id="${escapeHtml(t.import_id)}" style="color:var(--accent-dim);cursor:pointer;font-family:monospace;font-size:10.5px;">${escapeHtml((t.import_id || '').slice(0, 8))}…</a></td>
-        <td style="text-align:center;"><button class="vh-recon-dismiss" data-tx-id="${escapeHtml(t.import_id)}" title="Mark as not-vehicle-fuel (e.g. lawn mower) — removes from this list permanently" style="padding:3px 8px;font-size:10.5px;background:transparent;color:var(--text-dim);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">Dismiss</button></td>
+        <td class="t-center"><button class="vh-recon-dismiss" data-tx-id="${escapeHtml(t.import_id)}" title="Mark as not-vehicle-fuel (e.g. lawn mower) — removes from this list permanently" style="padding:3px 8px;font-size:10.5px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">Dismiss</button></td>
       </tr>
     `).join('');
   } else if (kind === 'orphans') {
@@ -898,7 +898,7 @@ function showReconciliationDetails(kind) {
         <td>${escapeHtml(o.date)}</td>
         <td class="t-right">${formatCurrency(parseFloat(o.total_cost) || 0, 'TZS')}</td>
         <td>${escapeHtml(o.station || '')}</td>
-        <td style="font-family:monospace;font-size:10.5px;color:var(--text-dim);">${escapeHtml((o.tx_import_id || '').slice(0, 8))}…</td>
+        <td style="font-family:monospace;font-size:10.5px;color:var(--muted);">${escapeHtml((o.tx_import_id || '').slice(0, 8))}…</td>
       </tr>
     `).join('');
   } else if (kind === 'duplicates') {
@@ -933,29 +933,26 @@ function showReconciliationDetails(kind) {
           <td>${escapeHtml(d.account || '')}</td>
           <td>${escapeHtml(d.reason || '')}</td>
           <td><a class="vh-tx-link-modal" data-tx-id="${escapeHtml(d.import_id)}" style="color:var(--accent-dim);cursor:pointer;font-family:monospace;font-size:10.5px;">${escapeHtml((d.import_id || '').slice(0, 8))}…</a></td>
-          <td style="text-align:center;"><button class="vh-recon-undismiss" data-tx-id="${escapeHtml(d.import_id)}" title="Restore this TX into the unlinked list" style="padding:3px 8px;font-size:10.5px;background:transparent;color:var(--accent-dim);border:1px solid var(--accent-dim);border-radius:var(--radius-xs);cursor:pointer;">Restore</button></td>
+          <td class="t-center"><button class="vh-recon-undismiss" data-tx-id="${escapeHtml(d.import_id)}" title="Restore this TX into the unlinked list" style="padding:3px 8px;font-size:10.5px;background:transparent;color:var(--accent-dim);border:1px solid var(--accent-dim);border-radius:var(--radius-xs);cursor:pointer;">Restore</button></td>
         </tr>
       `;
     }).join('');
   }
   if (!rows) return;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-
   const headerCols = kind === 'unlinked'
-    ? '<th>Date</th><th class="t-right">Amount</th><th>Payee</th><th>Account</th><th>Category</th><th>TX</th><th style="text-align:center;">Action</th>'
+    ? '<th>Date</th><th class="t-right">Amount</th><th>Payee</th><th>Account</th><th>Category</th><th>TX</th><th class="t-center">Action</th>'
     : kind === 'orphans'
     ? '<th>fuel_id</th><th>Date</th><th class="t-right">Cost</th><th>Station</th><th>broken TX id</th>'
     : kind === 'dismissed'
-    ? '<th>Dismissed at</th><th>TX date</th><th class="t-right">Amount</th><th>Payee</th><th>Account</th><th>Reason</th><th>TX</th><th style="text-align:center;">Action</th>'
+    ? '<th>Dismissed at</th><th>TX date</th><th class="t-right">Amount</th><th>Payee</th><th>Account</th><th>Reason</th><th>TX</th><th class="t-center">Action</th>'
     : '<th>fuel_id</th><th>Date</th><th>tx_import_id</th>';
 
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:760px;">
-      <h3>${title}</h3>
-      <div style="font-size:12px;color:var(--text-dim);margin:8px 0 16px;">${intro}</div>
+  const { overlay, close } = openModal({
+    title,
+    maxWidth: '760px',
+    bodyHtml: `
+      <div style="font-size:12px;color:var(--muted);margin:8px 0 16px;">${intro}</div>
       <div style="max-height:50vh;overflow-y:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
           <thead><tr style="border-bottom:2px solid var(--border);">${headerCols.replace(/<th/g, '<th style="text-align:left;padding:6px 10px;"').replace(/<th class="t-right"/g, '<th style="text-align:right;padding:6px 10px;"')}</tr></thead>
@@ -963,11 +960,9 @@ function showReconciliationDetails(kind) {
         </table>
       </div>
       <div style="margin-top:16px;display:flex;justify-content:flex-end;">
-        <button onclick="this.closest('.modal-overlay').remove()" style="padding:7px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;">${t('common.actions.close', {}, 'Close')}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
+        <button data-modal-cancel style="padding:7px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;">${t('common.actions.close', {}, 'Close')}</button>
+      </div>`,
+  });
   // Wire TX-detail links inside the modal so users can jump straight
   // into the standard edit flow for an unlinked fuel TX.
   overlay.querySelectorAll('.vh-tx-link-modal').forEach(link => {
@@ -975,7 +970,7 @@ function showReconciliationDetails(kind) {
       const txId = link.dataset.txId;
       const tx = (state.tx || []).find(t => t.import_id === txId);
       if (tx && typeof openEditModal === 'function') {
-        overlay.remove();
+        close();
         openEditModal(tx);
       }
     });
@@ -1000,7 +995,7 @@ function showReconciliationDetails(kind) {
         }
         // Reload findings + close modal so the banner reflects the
         // restored entry showing up in the unlinked list again.
-        overlay.remove();
+        close();
         fuelLogLoaded = false;
         await loadVehiclesData();
         renderVehiclesPage();
@@ -1032,7 +1027,7 @@ function showReconciliationDetails(kind) {
           return;
         }
         // Reload findings + close modal so the warning banner refreshes
-        overlay.remove();
+        close();
         fuelLogLoaded = false;
         await loadVehiclesData();
         renderVehiclesPage();
@@ -1075,10 +1070,6 @@ function openFuelModal(existing = null) {
 
   const accountOpts = accounts.map(a => `<option value="${escapeHtml(a.alias)}" ${a.alias === preAccount ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)}</option>`).join('');
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-
   const titleHtml = isEdit
     ? t('page.vehicles.modal.title_edit', {}, 'Edit Fuel <span class="accent">Entry</span>')
     : t('page.vehicles.modal.title', {}, 'Add Fuel <span class="accent">Entry</span>');
@@ -1086,39 +1077,40 @@ function openFuelModal(existing = null) {
     ? `${escapeHtml(vehicle.name)} · ${escapeHtml(existing.fuel_id)}`
     : escapeHtml(vehicle.name);
 
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:480px;">
-      <h3>${titleHtml}</h3>
-      <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${subtitle}</div>
+  const { overlay } = openModal({
+    title: titleHtml,
+    maxWidth: '480px',
+    bodyHtml: `
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;">${subtitle}</div>
       <div style="display:grid;gap:12px;margin-top:16px;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="grid-2col">
           <div>
             <label class="fs-12">${t('page.vehicles.modal.date', {}, 'Date')}</label>
-            <input type="date" id="fuel-date" value="${escapeHtml(String(preDate))}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="date" id="fuel-date" value="${escapeHtml(String(preDate))}" class="input-std">
           </div>
           <div>
             <label class="fs-12">${t('page.vehicles.modal.odometer', {}, 'Odometer (km)')}</label>
-            <input type="number" id="fuel-odometer" value="${preOdo}" step="1" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="number" id="fuel-odometer" value="${preOdo}" step="1" class="input-std">
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="grid-2col">
           <div>
             <label class="fs-12">${t('page.vehicles.modal.liters', {}, 'Liters')}</label>
-            <input type="number" id="fuel-liters" placeholder="e.g. 50.00" step="0.01" value="${escapeHtml(String(preLiters))}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="number" id="fuel-liters" placeholder="e.g. 50.00" step="0.01" value="${escapeHtml(String(preLiters))}" class="input-std">
           </div>
           <div>
             <label class="fs-12">${t('page.vehicles.modal.cost', {}, 'Total Cost (TZS)')}</label>
-            <input type="text" inputmode="numeric" id="fuel-cost" placeholder="e.g. 150k or 150000" value="${escapeHtml(String(preCost))}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+            <input type="text" inputmode="numeric" id="fuel-cost" placeholder="e.g. 150k or 150000" value="${escapeHtml(String(preCost))}" class="input-std">
           </div>
         </div>
         <div>
           <label class="fs-12">${t('page.vehicles.modal.station', {}, 'Station')}</label>
-          <input type="text" id="fuel-station" value="${escapeHtml(preStation)}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          <input type="text" id="fuel-station" value="${escapeHtml(preStation)}" class="input-std">
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:end;">
           <div>
             <label class="fs-12">${t('page.vehicles.modal.account', {}, 'Account')}</label>
-            <select id="fuel-account" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">${accountOpts}</select>
+            <select id="fuel-account" class="input-std">${accountOpts}</select>
           </div>
           <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding-bottom:7px;">
             <input type="checkbox" id="fuel-full" ${preFull ? 'checked' : ''}>
@@ -1127,17 +1119,15 @@ function openFuelModal(existing = null) {
         </div>
         <div>
           <label class="fs-12">${t('page.vehicles.modal.remarks', {}, 'Remarks (optional)')}</label>
-          <input type="text" id="fuel-remarks" value="${escapeHtml(preRemarks)}" style="width:100%;padding:7px 12px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+          <input type="text" id="fuel-remarks" value="${escapeHtml(preRemarks)}" class="input-std">
         </div>
       </div>
       <div id="fuel-modal-status" style="margin-top:12px;font-size:12px;"></div>
-      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
-        <button onclick="this.closest('.modal-overlay').remove()" style="padding:7px 16px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">${t('common.actions.cancel', {}, 'Cancel')}</button>
+      <div class="form-actions">
+        <button data-modal-cancel style="padding:7px 16px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-xs);cursor:pointer;">${t('common.actions.cancel', {}, 'Cancel')}</button>
         <button id="fuel-save-btn" style="padding:7px 16px;background:var(--accent);color:var(--bg);border:none;border-radius:var(--radius-xs);cursor:pointer;font-weight:600;">${isEdit ? t('common.actions.save_changes', {}, 'Save changes') : t('common.actions.save', {}, 'Save')}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
+      </div>`,
+  });
   overlay.querySelector('#fuel-save-btn').addEventListener('click', () => saveFuelEntry(overlay, vehicle, existing));
 }
 
@@ -1167,37 +1157,41 @@ async function saveFuelEntry(overlay, vehicle, existing = null) {
   };
   if (isEdit) payload.fuel_id = existing.fuel_id;
 
-  status.innerHTML = `<span style="color:var(--text-dim);">${t('common.saving', {}, 'Saving…')}</span>`;
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const json = await res.json();
-    if (!res.ok || !json.success) {
-      status.innerHTML = `<span class="c-neg">${escapeHtml(json.error || 'Save failed')}</span>`;
-      return;
-    }
-    overlay.remove();
-    fuelLogLoaded = false;
-    await loadVehiclesData();
-    if (typeof loadAllData === 'function') {
-      const reloaded = await loadAllData();
-      if (reloaded) {
-        state.tx = reloaded.tx;
-        state.balances = computeBalances(state.tx, state.accounts);
-        // F-H4 (CODE_REVIEW_2026-06-12): the O(1) lookup indexes kept
-        // pointing at the PRE-mutation tx array — the account page then
-        // showed the old TX list with a fresh balance. Rebuild alongside
-        // every state.tx replacement (mirrors refreshData()).
-        state.txIndex = buildTxIndexes(state.tx);
+  status.innerHTML = `<span class="c-mut">${t('common.saving', {}, 'Saving…')}</span>`;
+  // withSubmitLock (DP-H1, CODE_REVIEW_2026-07-08): /api/fuel/add creates
+  // fuel-log row + TX (+ reimbursement) — double-click booked twice.
+  await withSubmitLock(overlay.querySelector('#fuel-save-btn'), async () => {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        status.innerHTML = `<span class="c-neg">${escapeHtml(json.error || 'Save failed')}</span>`;
+        return;
       }
+      overlay._close();
+      fuelLogLoaded = false;
+      await loadVehiclesData();
+      if (typeof loadAllData === 'function') {
+        const reloaded = await loadAllData();
+        if (reloaded) {
+          state.tx = reloaded.tx;
+          state.balances = computeBalances(state.tx, state.accounts);
+          // F-H4 (CODE_REVIEW_2026-06-12): the O(1) lookup indexes kept
+          // pointing at the PRE-mutation tx array — the account page then
+          // showed the old TX list with a fresh balance. Rebuild alongside
+          // every state.tx replacement (mirrors refreshData()).
+          state.txIndex = buildTxIndexes(state.tx);
+        }
+      }
+      renderVehiclesPage();
+    } catch (e) {
+      status.innerHTML = `<span class="c-neg">${escapeHtml(String(e))}</span>`;
     }
-    renderVehiclesPage();
-  } catch (e) {
-    status.innerHTML = `<span class="c-neg">${escapeHtml(String(e))}</span>`;
-  }
+  });
 }
 
 // ─── Delete ──────────────────────────────────────────────────────────
@@ -1272,17 +1266,15 @@ function openVehicleModal(existingVehicle) {
   // Common currency options — covers the canonical FinanceOS set. Users on
   // exotic currencies can still type into the input (it falls back to a text
   // input when "Other…" is chosen).
-  const currencyOptions = ['TZS', 'EUR', 'USD', 'PLN', 'GBP', 'CHF']
+  const currencyOptions = knownCurrencies() // DP-M7
     .map(c => `<option value="${c}"${v && v.currency === c ? ' selected' : ''}>${c}</option>`).join('');
 
   const todayIso = new Date().toISOString().slice(0, 10);
 
+  // DP-M6: close any stale overlay via its own handle so its Escape
+  // listener is detached with it (a bare .remove() would strand it).
   const existingOverlay = document.querySelector('.modal-overlay');
-  if (existingOverlay) existingOverlay.remove();
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+  if (existingOverlay) (existingOverlay._close || existingOverlay.remove).call(existingOverlay);
 
   const titleVerb = editing
     ? t('page.vehicles.vehicle_modal.title_edit', {}, 'Edit')
@@ -1291,9 +1283,10 @@ function openVehicleModal(existingVehicle) {
     ? t('page.vehicles.vehicle_modal.save_edit', {}, 'Update vehicle')
     : t('page.vehicles.vehicle_modal.save', {}, 'Save vehicle');
 
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:640px;">
-      <h3>${escapeHtml(titleVerb)} <span class="accent">${t('page.vehicles.vehicle_modal.title_noun', {}, 'Vehicle')}</span></h3>
+  const { overlay, close } = openModal({
+    title: `${escapeHtml(titleVerb)} <span class="accent">${t('page.vehicles.vehicle_modal.title_noun', {}, 'Vehicle')}</span>`,
+    maxWidth: '640px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('page.vehicles.vehicle_modal.name', {}, 'Name')}</label>
           <input type="text" id="vm-name" placeholder="${escapeHtml(t('page.vehicles.vehicle_modal.name_placeholder', {}, 'e.g. Family car'))}" value="${escapeHtml(v ? v.name || '' : '')}" required>
@@ -1330,18 +1323,11 @@ function openVehicleModal(existingVehicle) {
         </div>
       </div>
       <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
-        <button id="vm-cancel" class="btn-secondary">${t('common.cancel', {}, 'Cancel')}</button>
+        <button id="vm-cancel" class="btn-secondary" data-modal-cancel>${t('common.cancel', {}, 'Cancel')}</button>
         <button id="vm-save" class="btn-primary">${escapeHtml(saveLabel)}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
+      </div>`,
+  });
 
-  const escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', escHandler);
-  overlay._escHandler = escHandler;
-
-  overlay.querySelector('#vm-cancel').addEventListener('click', () => closeModal());
   overlay.querySelector('#vm-save').addEventListener('click', async () => {
     const payload = {
       name: overlay.querySelector('#vm-name').value.trim(),
@@ -1379,7 +1365,7 @@ function openVehicleModal(existingVehicle) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      closeModal();
+      close();
       const msg = editing
         ? t('page.vehicles.vehicle_modal.success_edit', { name: payload.name }, `Vehicle "${payload.name}" updated.`)
         : t('page.vehicles.vehicle_modal.success', { id: data.vehicle_id }, `Vehicle saved (${data.vehicle_id}).`);

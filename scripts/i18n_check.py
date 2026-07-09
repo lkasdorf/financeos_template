@@ -37,6 +37,17 @@ DE_PATH = LOCALE_DIR / "de.json"
 
 EXCLUDED_DIRS = {"lib"}  # third-party bundled code (chart/papaparse/xlsx)
 
+# Key prefixes emitted by the BACKEND rather than referenced in JS/HTML.
+# scripts/utilities.py ships property-drift alerts with an `i18n_key`
+# field (plus i18n_params) that pages-alerts.js resolves at render time
+# via t(`${a.i18n_key}.title`) — a data-driven key the JS scanner cannot
+# see. Treated like scanned dynamic prefixes for orphan detection.
+SERVER_EMITTED_PREFIXES = (
+    "alerts.luku",
+    "alerts.water",
+    "alerts.utilities",
+)
+
 KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.]*$")
 T_CALL_RE = re.compile(r"(?<![A-Za-z0-9_$])t\s*\(")
 LITERAL_RE = re.compile(r"""(['"`])([A-Za-z][A-Za-z0-9_.]*)\1""")
@@ -207,6 +218,8 @@ def collect() -> dict:
     en_keys = set(en.keys())
     de_keys = set(de.keys())
     code_keys = set(static_uses.keys())
+    for p in SERVER_EMITTED_PREFIXES:
+        dynamic_uses.setdefault(p, []).append("scripts/utilities.py (server-emitted)")
     prefixes = sorted(dynamic_uses.keys(), key=len, reverse=True)
 
     def matches_dynamic(k: str) -> bool:

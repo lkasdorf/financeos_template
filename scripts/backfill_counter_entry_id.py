@@ -3,7 +3,7 @@ pass-through reimbursement pairs in ``data/transactions.csv``.
 
 Background (H-15 from CODE_REVIEW_2026-05-12)
 =============================================
-Pass-through accounts (kft, kfu, ksdu, ...) produce paired
+Pass-through accounts (business transfer accounts) produce paired
 expense+income rows in ``transactions.csv`` so the account balance
 nets to zero. Before this fix, the income leg had no explicit link
 to its expense — :func:`fuel.find_reimbursement_id` and the matching

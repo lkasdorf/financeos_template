@@ -30,37 +30,25 @@ function renderFXExposureReport() {
     monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
 
-  // Build running balances per currency per month-end (same logic as Account Balances report)
+  // Build running balances per currency per month-end (same logic as the
+  // Account Balances report). DR-M3: one shared sweep instead of
+  // months × accounts × state.tx full scans.
   const monthlyByCur = {};
   for (const c of currencies) monthlyByCur[c] = [];
 
-  for (const mk of monthKeys) {
-    const endOfMonth = mk + '-31';
+  const fxSnapshots = computeMonthlyBalances(selfAccounts, monthKeys);
+  monthKeys.forEach((mk, mi) => {
     const curBal = {};
     for (const c of currencies) curBal[c] = 0;
-
     for (const a of selfAccounts) {
-      const ibDate = a.initial_balance_date || '2000-01-01';
-      if (endOfMonth < ibDate) continue;
-      let bal = a.initial_balance || 0;
-      for (const tx of state.tx) {
-        if (!tx.date || tx.date > endOfMonth) continue;
-        if (tx.date < ibDate) continue;
-        if (tx.account === a.alias) {
-          if (tx.type === 'income') bal += tx.amount;
-          else if (tx.type === 'expense') bal -= tx.amount;
-          else if (tx.type === 'transfer') bal -= tx.amount;
-        }
-        if (tx.type === 'transfer' && tx.transfer_to_account === a.alias) {
-          bal += tx.transfer_to_amount > 0 ? tx.transfer_to_amount : tx.amount;
-        }
-      }
+      const bal = fxSnapshots[mi][a.alias];
+      if (bal === undefined) continue;
       curBal[a.currency] += bal;
     }
     for (const c of currencies) monthlyByCur[c].push(convertTo(curBal[c], c, 'TZS'));
-  }
+  });
 
-  const fxPalette = { TZS: '#10b981', EUR: '#3b82f6', USD: '#f59e0b', PLN: '#e8453c' };
+  const fxPalette = { TZS: chartPalette()[10], EUR: chartPalette()[0], USD: chartPalette()[1], PLN: chartPalette()[11] };
 
   out.innerHTML = `
     <div class="report-view">
@@ -134,10 +122,10 @@ function renderFXExposureReport() {
       type: 'doughnut',
       data: {
         labels: rows.map(r => r.currency),
-        datasets: [{ data: rows.map(r => r.inTZS), backgroundColor: rows.map(r => fxPalette[r.currency] || '#6b7280'), borderWidth: 2 }],
+        datasets: [{ data: rows.map(r => r.inTZS), backgroundColor: rows.map(r => fxPalette[r.currency] || cssVar('--muted')), borderWidth: 2 }],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'bottom', labels: { padding: 16, font: { size: 12 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.label}: ${formatCurrency(ctx.raw, 'TZS')} TZS (${(ctx.raw / totalTZS * 100).toFixed(1)}%)` } },
@@ -157,20 +145,20 @@ function renderFXExposureReport() {
         datasets: currencies.map(c => ({
           label: c,
           data: monthlyByCur[c],
-          borderColor: fxPalette[c] || '#6b7280',
-          backgroundColor: (fxPalette[c] || '#6b7280') + '20',
+          borderColor: fxPalette[c] || cssVar('--muted'),
+          backgroundColor: (fxPalette[c] || cssVar('--muted')) + '20',
           fill: true, tension: 0.3, pointRadius: 3,
         })),
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, 'TZS')} TZS` } },
         },
         scales: {
           x: { grid: { color: cssVar('--chart-grid') } },
-          y: { stacked: true, ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+          y: { stacked: true, ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -184,26 +172,23 @@ function renderNetWorthTrendReport() {
   const out = document.getElementById('report-output');
   const selfAccounts = state.accounts.filter(a => a.owner === 'self' && a.status === 'active');
   const currencies = [...new Set(selfAccounts.map(a => a.currency))];
-  const savedCur = out.getAttribute('data-nw-cur') || 'TZS';
+
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar()
+  const tb = reportToolbar(out, 'nw', [
+    { key: 'cur', label: t('reports.nw.toolbar.display_currency', {}, 'Display Currency'),
+      options: currencies, def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.nw.toolbar.display_currency', {}, 'Display Currency')}</label>
-        <select id="nw-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="nw-content"></div>
     </div>
   `;
 
-  const curEl = document.getElementById('nw-currency');
-
   function update() {
-    out.setAttribute('data-nw-cur', curEl.value);
     destroyReportCharts();
-    const dispCur = curEl.value;
+    const dispCur = tb.get('cur');
 
     // Build monthly net worth snapshots from earliest data to now
     const allMonths = new Set();
@@ -212,28 +197,19 @@ function renderNetWorthTrendReport() {
     if (sortedMonths.length === 0) { document.getElementById('nw-content').innerHTML = `<p>${t('reports.nw.empty', {}, 'No data.')}</p>`; return; }
 
     const dataPoints = [];
-    for (const mk of sortedMonths) {
-      const endOfMonth = mk + '-31';
+    // DR-M3: one shared sweep instead of months × accounts × state.tx
+    // full scans (the old nested loops re-read the whole TX array
+    // hundreds of times per render / currency switch).
+    const nwSnapshots = computeMonthlyBalances(selfAccounts, sortedMonths);
+    sortedMonths.forEach((mk, mi) => {
       let totalNW = 0;
       for (const a of selfAccounts) {
-        const ibDate = a.initial_balance_date || '2000-01-01';
-        if (endOfMonth < ibDate) continue;
-        let bal = a.initial_balance || 0;
-        for (const tx of state.tx) {
-          if (!tx.date || tx.date > endOfMonth || tx.date < ibDate) continue;
-          if (tx.account === a.alias) {
-            if (tx.type === 'income') bal += tx.amount;
-            else if (tx.type === 'expense') bal -= tx.amount;
-            else if (tx.type === 'transfer') bal -= tx.amount;
-          }
-          if (tx.type === 'transfer' && tx.transfer_to_account === a.alias) {
-            bal += tx.transfer_to_amount > 0 ? tx.transfer_to_amount : tx.amount;
-          }
-        }
+        const bal = nwSnapshots[mi][a.alias];
+        if (bal === undefined) continue;
         totalNW += convertTo(bal, a.currency, dispCur);
       }
       dataPoints.push({ month: mk, nw: totalNW });
-    }
+    });
 
     const currentNW = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].nw : 0;
     const prevNW = dataPoints.length > 1 ? dataPoints[dataPoints.length - 2].nw : currentNW;
@@ -258,11 +234,11 @@ function renderNetWorthTrendReport() {
           </div>
           <div class="income-cell">
             <div class="ic-label">${t('reports.nw.tile.all_time_high', {}, 'All-time High')}</div>
-            <div class="ic-value" style="color:var(--positive)">${formatCurrency(maxNW, dispCur)}<span class="ic-cur">${dispCur}</span></div>
+            <div class="ic-value c-pos">${formatCurrency(maxNW, dispCur)}<span class="ic-cur">${dispCur}</span></div>
           </div>
           <div class="income-cell">
             <div class="ic-label">${t('reports.nw.tile.all_time_low', {}, 'All-time Low')}</div>
-            <div class="ic-value" style="color:var(--negative)">${formatCurrency(minNW, dispCur)}<span class="ic-cur">${dispCur}</span></div>
+            <div class="ic-value c-neg">${formatCurrency(minNW, dispCur)}<span class="ic-cur">${dispCur}</span></div>
           </div>
         </div>
       </div>
@@ -307,16 +283,16 @@ function renderNetWorthTrendReport() {
           datasets: [{
             label: t('reports.nw.col.net_worth', {}, 'Net Worth'),
             data: dataPoints.map(d => d.nw),
-            borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)',
+            borderColor: cssVar('--positive'), backgroundColor: chartTint(cssVar('--positive'), 0.1),
             fill: true, tension: 0.3, pointRadius: 3,
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, dispCur) + ' ' + dispCur } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') }, ticks: { maxTicksLimit: 18 } },
-            y: { ticks: { callback: v => formatCurrency(v, dispCur) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(dispCur), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -324,35 +300,31 @@ function renderNetWorthTrendReport() {
     }
   }
 
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Cash Runway Report ─────────────────────────────────────────────────
 
 function renderRunwayReport() {
   const out = document.getElementById('report-output');
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
-  const savedCur = out.getAttribute('data-rw-cur') || 'TZS';
+  const currencies = reportCurrencies();
+
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar()
+  const tb = reportToolbar(out, 'rw', [
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: currencies, def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="rw-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="rw-content"></div>
     </div>
   `;
 
-  const curEl = document.getElementById('rw-currency');
-
   function update() {
-    out.setAttribute('data-rw-cur', curEl.value);
     destroyReportCharts();
-    const dispCur = curEl.value;
+    const dispCur = tb.get('cur');
 
     // Current net worth in display currency
     const selfAccounts = state.accounts.filter(a => a.owner === 'self' && a.status === 'active');
@@ -411,7 +383,7 @@ function renderRunwayReport() {
 
     const runwayColor = (months) => {
       if (months === Infinity || months > 24) return 'var(--positive)';
-      if (months > 6) return '#f59e0b';
+      if (months > 6) return 'var(--warn)';
       return 'var(--negative)';
     };
 
@@ -465,8 +437,8 @@ function renderRunwayReport() {
       </div>
       <div class="report-section">
         <details class="c-mut2" style="font-size:12px;line-height:1.5;">
-          <summary style="cursor:pointer;font-weight:600;color:var(--text);">${t('reports.runway.explainer.summary', {}, 'How these runway figures are calculated')}</summary>
-          <div style="margin-top:8px;">
+          <summary class="ptr fw-600 c-text">${t('reports.runway.explainer.summary', {}, 'How these runway figures are calculated')}</summary>
+          <div class="mt-8">
             ${t('reports.runway.explainer.net_worth', { currency: dispCur }, `<strong>Net worth</strong> = sum of your active own accounts (non-custody, non-pass-through), converted to ${dispCur}.`)}<br>
             ${t('reports.runway.explainer.no_income', {}, '<strong>Runway (no income)</strong> = net worth ÷ avg. monthly expenses over last 12 months. All operational expenses counted (custody and non-PnL excluded).')}<br>
             ${t('reports.runway.explainer.essentials', { n: nonEssSize, cat_word: catWord, list: nonEssList, more: nonEssMore }, `<strong>Runway (essentials only, no income)</strong> = net worth ÷ avg. monthly essential expenses. Uses the <code>essential</code> flag from Settings → Categories. Currently ${nonEssSize} ${catWord} flagged non-essential and excluded here: ${nonEssList}${nonEssMore}.`)}<br>
@@ -483,11 +455,11 @@ function renderRunwayReport() {
           <tbody>
             ${monthlyBurn.map(m => `<tr>
               <td>${monthLabel(m.month)}</td>
-              <td class="amt" style="color:var(--positive)">${formatCurrency(m.income, dispCur)}</td>
-              <td class="amt" style="color:var(--negative)">${formatCurrency(m.expenses, dispCur)}</td>
+              <td class="amt c-pos">${formatCurrency(m.income, dispCur)}</td>
+              <td class="amt c-neg">${formatCurrency(m.expenses, dispCur)}</td>
               <td class="amt" style="color:${m.net >= 0 ? 'var(--positive)' : 'var(--negative)'}">${m.net >= 0 ? '+' : ''}${formatCurrency(m.net, dispCur)}</td>
             </tr>`).join('')}
-            <tr style="font-weight:700;border-top:2px solid var(--border);">
+            <tr class="row-total">
               <td>${t('reports.runway.row.average', {}, 'Average')}</td>
               <td class="amt">${formatCurrency(avgIncome, dispCur)}</td>
               <td class="amt">${formatCurrency(avgExpense, dispCur)}</td>
@@ -517,17 +489,17 @@ function renderRunwayReport() {
         data: {
           labels: monthlyBurn.map(m => monthLabel(m.month)),
           datasets: [
-            { label: t('common.label.income', {}, 'Income'), data: monthlyBurn.map(m => m.income), backgroundColor: '#10b981', borderWidth: 0 },
-            { label: t('common.label.expenses', {}, 'Expenses'), data: monthlyBurn.map(m => m.expenses), backgroundColor: '#e8453c', borderWidth: 0 },
+            { label: t('common.label.income', {}, 'Income'), data: monthlyBurn.map(m => m.income), backgroundColor: cssVar('--positive'), borderWidth: 0 },
+            { label: t('common.label.expenses', {}, 'Expenses'), data: monthlyBurn.map(m => m.expenses), backgroundColor: cssVar('--negative'), borderWidth: 0 },
           ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, dispCur)} ${dispCur}` } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, dispCur) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(dispCur), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -545,17 +517,17 @@ function renderRunwayReport() {
           datasets: [{
             label: t('reports.runway.chart.proj_balance', {}, 'Projected Balance'),
             data: allPoints.map(p => p.balance),
-            borderColor: allPoints[allPoints.length - 1].balance >= 0 ? '#10b981' : '#e8453c',
-            backgroundColor: allPoints[allPoints.length - 1].balance >= 0 ? 'rgba(16,185,129,0.1)' : 'rgba(232,69,60,0.1)',
+            borderColor: allPoints[allPoints.length - 1].balance >= 0 ? cssVar('--positive') : cssVar('--negative'),
+            backgroundColor: allPoints[allPoints.length - 1].balance >= 0 ? chartTint(cssVar('--positive'), 0.1) : chartTint(cssVar('--negative'), 0.1),
             fill: true, tension: 0.2, pointRadius: 4,
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, dispCur) + ' ' + dispCur } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, dispCur) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(dispCur), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -563,8 +535,7 @@ function renderRunwayReport() {
     }
   }
 
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 // ─── FX History Report ──────────────────────────────────────────────────
 
@@ -582,52 +553,45 @@ function renderFxHistoryReport() {
     PLN: t('reports.fxh.cur_name.pln', {}, 'Polish Zloty'),
     TRY: t('reports.fxh.cur_name.try', {}, 'Turkish Lira'),
   };
-  const curColors = { EUR: '#3b82f6', USD: '#10b981', PLN: '#f59e0b', TRY: '#ef4444' };
-
-  const savedCur = out.getAttribute('data-fxh-cur') || 'all';
-  const savedRange = out.getAttribute('data-fxh-range') || '12m';
+  const curColors = { EUR: chartPalette()[0], USD: chartPalette()[1], PLN: chartPalette()[11], TRY: chartPalette()[6] };
 
   // Determine available year range
   const firstYear = parseInt(fxHistory[0].date.slice(0, 4));
   const lastYear = parseInt(fxHistory[fxHistory.length - 1].date.slice(0, 4));
   const rangeOptions = [
-    { value: '3m', label: t('reports.fxh.range.3m', {}, 'Last 3 Months') },
-    { value: '6m', label: t('reports.fxh.range.6m', {}, 'Last 6 Months') },
-    { value: '12m', label: t('reports.fxh.range.12m', {}, 'Last 12 Months') },
+    { v: '3m', l: t('reports.fxh.range.3m', {}, 'Last 3 Months') },
+    { v: '6m', l: t('reports.fxh.range.6m', {}, 'Last 6 Months') },
+    { v: '12m', l: t('reports.fxh.range.12m', {}, 'Last 12 Months') },
   ];
-  for (let y = lastYear; y >= firstYear; y--) rangeOptions.push({ value: String(y), label: String(y) });
-  rangeOptions.push({ value: 'all', label: t('reports.fxh.range.all', {}, 'All Time') });
+  for (let y = lastYear; y >= firstYear; y--) rangeOptions.push({ v: String(y), l: String(y) });
+  rangeOptions.push({ v: 'all', l: t('reports.fxh.range.all', {}, 'All Time') });
+
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar()
+  const tb = reportToolbar(out, 'fxh', [
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'), def: 'all',
+      options: [
+        { v: 'all', l: t('reports.fxh.currencies.all', {}, 'All Currencies') },
+        ...currencies.map(c => ({ v: c, l: `${curLabels[c]} (${c})` })),
+      ] },
+    { key: 'range', label: t('reports.fxh.toolbar.period', {}, 'Period'),
+      options: rangeOptions, def: '12m' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="fxh-cur">
-          <option value="all" ${savedCur === 'all' ? 'selected' : ''}>${t('reports.fxh.currencies.all', {}, 'All Currencies')}</option>
-          ${currencies.map(c => `<option value="${c}" ${savedCur === c ? 'selected' : ''}>${curLabels[c]} (${c})</option>`).join('')}
-        </select>
-        <label>${t('reports.fxh.toolbar.period', {}, 'Period')}</label>
-        <select id="fxh-range">
-          ${rangeOptions.map(o => `<option value="${o.value}" ${savedRange === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="fxh-content"></div>
     </div>
   `;
 
-  const curEl = document.getElementById('fxh-cur');
-  const rangeEl = document.getElementById('fxh-range');
-
   function update() {
-    out.setAttribute('data-fxh-cur', curEl.value);
-    out.setAttribute('data-fxh-range', rangeEl.value);
     destroyReportCharts();
 
-    const selectedCurs = curEl.value === 'all' ? currencies : [curEl.value];
+    const selectedCurs = tb.get('cur') === 'all' ? currencies : [tb.get('cur')];
 
     // Filter data by range
     let data = fxHistory;
-    const rangeVal = rangeEl.value;
+    const rangeVal = tb.get('range');
     if (rangeVal === '3m' || rangeVal === '6m' || rangeVal === '12m') {
       const nDays = rangeVal === '3m' ? 90 : rangeVal === '6m' ? 180 : 365;
       const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - nDays);
@@ -723,14 +687,14 @@ function renderFxHistoryReport() {
           })),
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { display: selectedCurs.length > 1, position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.dataset.label}: ${formatCurrency(c.raw, 'TZS')}` } },
           },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -754,12 +718,12 @@ function renderFxHistoryReport() {
               label: t('reports.fxh.dataset.mom', {}, 'MoM Change %'),
               data: changes,
               backgroundColor: changes.map(v => v >= 0 ? '#22c55e80' : '#ef444480'),
-              borderColor: changes.map(v => v >= 0 ? '#22c55e' : '#ef4444'),
+              borderColor: changes.map(v => v >= 0 ? cssVar('--positive') : cssVar('--negative')),
               borderWidth: 1,
             }],
           },
           options: {
-            responsive: true, maintainAspectRatio: false,
+            ...CHART_BASE,
             plugins: {
               legend: { display: false },
               tooltip: { callbacks: { label: c => `${c.raw >= 0 ? '+' : ''}${c.raw.toFixed(2)}%` } },
@@ -775,9 +739,7 @@ function renderFxHistoryReport() {
     }
   }
 
-  curEl.addEventListener('change', update);
-  rangeEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Cash Discrepancy Report ─────────────────────────────────────────────
@@ -860,7 +822,7 @@ function renderCashDiscrepancyReport() {
   const emptyMsg = t('reports.cashdisc.empty', {}, 'No bookings');
   out.innerHTML = `
     <div class="report-view">
-      <div class="month-summary" style="margin-bottom:16px;">
+      <div class="month-summary mb-16">
         <div class="summary-card">
           <div class="label">${t('reports.cashdisc.tile.shortfall', {}, 'Shortfalls')}</div>
           <div class="value negative">−${formatCurrency(toDisp(totalExpense), currency)}<span class="cur">${currency}</span></div>
@@ -878,7 +840,7 @@ function renderCashDiscrepancyReport() {
         </div>
       </div>
 
-      <h4 style="margin-top:16px;">${t('reports.cashdisc.section.yearly', {}, 'Per Year')}</h4>
+      <h4 class="mt-16">${t('reports.cashdisc.section.yearly', {}, 'Per Year')}</h4>
       <div class="table-wrap">
         <table class="tx-table">
           <thead><tr><th>${t('reports.cashdisc.col.year', {}, 'Year')}</th><th>${t('reports.cashdisc.col.count', {}, 'Count')}</th><th>${t('reports.cashdisc.col.shortfall', {}, 'Shortfalls')}</th><th>${t('reports.cashdisc.col.surplus', {}, 'Surpluses')}</th><th>${t('reports.cashdisc.col.net', {}, 'Net')}</th></tr></thead>
@@ -886,7 +848,7 @@ function renderCashDiscrepancyReport() {
         </table>
       </div>
 
-      <h4 style="margin-top:24px;">${t('reports.cashdisc.section.detail', {}, 'Single Bookings')}</h4>
+      <h4 class="mt-24">${t('reports.cashdisc.section.detail', {}, 'Single Bookings')}</h4>
       <div class="table-wrap">
         <table class="tx-table">
           <thead><tr><th>${t('reports.cashdisc.col.date', {}, 'Date')}</th><th>${t('reports.cashdisc.col.account', {}, 'Account')}</th><th>${t('reports.cashdisc.col.type', {}, 'Type')}</th><th>${t('reports.cashdisc.col.category', {}, 'Category')}</th><th>${t('reports.cashdisc.col.note', {}, 'Note')}</th><th>${t('reports.cashdisc.col.amount', {}, 'Amount')}</th></tr></thead>
@@ -916,8 +878,23 @@ const CASHFORECAST_WEEKDAY_MAP = {
   sun: 0, sunday: 0,
 };
 
+// Parse an 'MM-DD' token → [month 1-12, day 1-31], or null when malformed
+// (mirrors cron_sched._parse_md; day capping happens at the call sites).
+function cashforecastParseMd(spec) {
+  const parts = String(spec).split('-');
+  if (parts.length !== 2) return null;
+  const month = parseInt(parts[0], 10);
+  const day = parseInt(parts[1], 10);
+  if (!Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return [month, day];
+}
+
 // Return the next occurrence date strictly AFTER `fromDate` for the given
-// frequency string. Mirrors scripts/cron_sched.py:calculate_next_run logic.
+// frequency string. Mirrors scripts/cron_sched.py:calculate_next_run logic
+// (DR-M7: yearly:/quarterly: were missing here although cron_sched and
+// scheduled.csv support them — quarterly entries lost occurrences in the
+// 90d window and were reported as 'unrecognized').
 function cashforecastAdvance(frequency, fromDate) {
   if (!frequency) return null;
   const f = String(frequency).trim();
@@ -931,6 +908,43 @@ function cashforecastAdvance(frequency, fromDate) {
     if (daysAhead === 0) daysAhead = 7; // Always next occurrence
     d.setDate(d.getDate() + daysAhead);
     return d;
+  }
+
+  if (f.startsWith('yearly:')) {
+    const md = cashforecastParseMd(f.slice(7).trim());
+    if (!md) return null;
+    const [month, day] = md;
+    const from = new Date(fromDate);
+    // Try this calendar year first; if the target has already passed,
+    // roll to next year. Day capped so yearly:02-29 lands on Feb 28
+    // outside leap years.
+    for (const year of [from.getFullYear(), from.getFullYear() + 1]) {
+      const lastDay = new Date(year, month, 0).getDate();
+      const candidate = new Date(year, month - 1, Math.min(day, lastDay));
+      if (candidate > from) return candidate;
+    }
+    return null;
+  }
+
+  if (f.startsWith('quarterly:')) {
+    const md = cashforecastParseMd(f.slice(10).trim());
+    if (!md) return null;
+    const [anchorMonth, day] = md;
+    // MM anchors the set of 4 months sharing the same offset within a
+    // quarter (03 → Mar/Jun/Sep/Dec). Walk chronologically for the first
+    // candidate strictly after fromDate.
+    const months = [0, 1, 2, 3]
+      .map((k) => ((anchorMonth - 1 + 3 * k) % 12) + 1)
+      .sort((a, b) => a - b);
+    const from = new Date(fromDate);
+    for (const year of [from.getFullYear(), from.getFullYear() + 1]) {
+      for (const month of months) {
+        const lastDay = new Date(year, month, 0).getDate();
+        const candidate = new Date(year, month - 1, Math.min(day, lastDay));
+        if (candidate > from) return candidate;
+      }
+    }
+    return null;
   }
 
   if (!f.startsWith('monthly:')) return null;
@@ -1342,10 +1356,10 @@ async function renderCashflowForecastReport() {
     <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;">
       ${specialInfo.map(info => `
         <div style="display:flex;flex-direction:column;gap:4px;">
-          <label style="font-size:11px;color:var(--muted);">${info.label}</label>
+          <label class="label-sm">${info.label}</label>
           <div style="display:flex;align-items:center;gap:8px;">
             <input type="number" min="0" max="50" step="1" class="cf-input" data-key="${info.key}" value="${info.appliedCount}" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);">
-            <span class="c-mut2" style="font-size:11px;">
+            <span class="c-mut2 fs-11">
               × ${formatCurrency(info.medianAmount, cur)} ${cur}
               <br><span style="opacity:0.7;">hist: ${info.count12mo}/12mo · default ${info.defaultCount}</span>
             </span>
@@ -1357,7 +1371,7 @@ async function renderCashflowForecastReport() {
   `;
 
   const invalidFreqRows = invalidFreq.length > 0
-    ? `<div class="report-section"><div class="c-mut2" style="font-size:12px;">Skipped (unrecognized frequency): ${invalidFreq.map(s => escapeHtml(s.sched_id + ' ' + (s.frequency || ''))).join(', ')}</div></div>`
+    ? `<div class="report-section"><div class="c-mut2 fs-12">Skipped (unrecognized frequency): ${invalidFreq.map(s => escapeHtml(s.sched_id + ' ' + (s.frequency || ''))).join(', ')}</div></div>`
     : '';
 
   out.innerHTML = `
@@ -1378,8 +1392,8 @@ async function renderCashflowForecastReport() {
         <div class="report-section-title">Cumulative Net Position (start ${formatCurrency(startingBalance, cur)} ${cur}, +90 days)</div>
         <div class="chart-canvas-box" style="height:360px;"><canvas id="cashforecast-chart"></canvas></div>
         <details class="c-mut2" style="font-size:12px;margin-top:8px;line-height:1.6;">
-          <summary style="cursor:pointer;font-weight:600;color:var(--text);">How this forecast is calculated</summary>
-          <div style="margin-top:8px;">
+          <summary class="ptr fw-600 c-text">How this forecast is calculated</summary>
+          <div class="mt-8">
             <strong>Starting point:</strong> ${formatCurrency(startingBalance, cur)} ${cur} — the sum of your own active non-pass-through accounts right now, converted to ${cur}.<br><br>
             <strong>① Scheduled layer (solid line):</strong> ${active.length} active scheduled templates expanded forward over 90 days — concrete, dated, certain events. Pass-through templates count both legs (expense + auto-reimbursement) so their net cashflow is zero. Income direction is derived from the category's type.<br><br>
             <strong>② Projection layer (dashed line):</strong> adds a statistical baseline on top of the Scheduled layer for categories NOT already covered by a scheduled template. Specifically:
@@ -1405,7 +1419,7 @@ async function renderCashflowForecastReport() {
             return `
               <div class="income-cell">
                 <div class="ic-label">${h} days</div>
-                <div class="ic-value" style="color:var(--muted);">${formatCurrency(pv.total, cur)}<span class="ic-cur">${cur}</span></div>
+                <div class="ic-value c-mut">${formatCurrency(pv.total, cur)}<span class="ic-cur">${cur}</span></div>
                 <div class="ic-count">${pv.count} TX · ${accList || '—'}</div>
               </div>
             `;
@@ -1470,7 +1484,7 @@ async function renderCashflowForecastReport() {
           {
             label: 'Optimistic (P25 expenses)',
             data: cumOptimistic,
-            borderColor: 'rgba(14, 165, 233, 0.25)',
+            borderColor: chartTint(chartPalette()[3], 0.25),
             backgroundColor: 'transparent',
             borderWidth: 1,
             pointRadius: 0,
@@ -1480,8 +1494,8 @@ async function renderCashflowForecastReport() {
           {
             label: 'Pessimistic (P75 expenses)',
             data: cumPessimistic,
-            borderColor: 'rgba(14, 165, 233, 0.25)',
-            backgroundColor: 'rgba(14, 165, 233, 0.12)',
+            borderColor: chartTint(chartPalette()[3], 0.25),
+            backgroundColor: chartTint(chartPalette()[3], 0.12),
             borderWidth: 1,
             pointRadius: 0,
             fill: '-1',
@@ -1490,19 +1504,19 @@ async function renderCashflowForecastReport() {
           {
             label: 'Scheduled only',
             data: cumScheduled,
-            borderColor: '#8b5cf6',
+            borderColor: chartPalette()[2],
             backgroundColor: 'transparent',
             borderWidth: 2,
             fill: false,
             tension: 0.15,
             pointRadius: dailyNet.map(n => n !== 0 ? 4 : 0),
-            pointBackgroundColor: dailyNet.map(n => n > 0 ? '#10b981' : n < 0 ? '#e8453c' : 'transparent'),
+            pointBackgroundColor: dailyNet.map(n => n > 0 ? cssVar('--positive') : n < 0 ? cssVar('--negative') : 'transparent'),
             pointBorderColor: 'transparent',
           },
           {
             label: 'With projection (median)',
             data: cumProjected,
-            borderColor: '#0ea5e9',
+            borderColor: chartPalette()[3],
             backgroundColor: 'transparent',
             borderWidth: 2,
             borderDash: [6, 4],
@@ -1513,8 +1527,7 @@ async function renderCashflowForecastReport() {
         ],
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
+        ...CHART_BASE,
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: {
@@ -1543,9 +1556,9 @@ async function renderCashflowForecastReport() {
             ticks: { maxTicksLimit: 10, autoSkip: true },
           },
           y: {
-            ticks: { callback: v => formatCurrency(v, cur) },
+            ticks: currencyTicks(cur),
             grid: {
-              color: (c) => c.tick.value === 0 ? 'rgba(232, 69, 60, 0.5)' : cssVar('--chart-grid'),
+              color: (c) => c.tick.value === 0 ? chartTint(cssVar('--negative'), 0.5) : cssVar('--chart-grid'),
               lineWidth: (c) => c.tick.value === 0 ? 2 : 1,
             },
           },

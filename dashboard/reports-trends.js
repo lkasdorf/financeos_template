@@ -3,35 +3,25 @@
 function renderSavingsRateReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
 
-  const savedCur = out.getAttribute('data-sr-cur') || 'TZS';
-  const savedYear = out.getAttribute('data-sr-year') || 'all';
+  const tb = reportToolbar(out, 'sr', [
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: [{ v: 'all', l: t('reports.toolbar.all_years', {}, 'All Years') }, ...years], def: 'all' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="sr-currency">${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}</select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="sr-year">
-          <option value="all" ${savedYear === 'all' ? 'selected' : ''}>${t('reports.toolbar.all_years', {}, 'All Years')}</option>
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="sr-content"></div>
     </div>
   `;
 
-  const curEl = document.getElementById('sr-currency');
-  const yearEl = document.getElementById('sr-year');
-
   function update() {
-    out.setAttribute('data-sr-cur', curEl.value);
-    out.setAttribute('data-sr-year', yearEl.value);
     destroyReportCharts();
-    const currency = curEl.value;
-    const yearFilter = yearEl.value;
+    const currency = tb.get('cur');
+    const yearFilter = tb.get('year');
     const yearsToScan = yearFilter === 'all' ? years : [yearFilter];
 
     // Collect all months across selected years
@@ -120,8 +110,8 @@ function renderSavingsRateReport() {
             {
               label: t('reports.savingsRate.dataset.rate', {}, 'Savings Rate %'),
               data: allMonths.map(m => m.rate),
-              borderColor: '#1e40af',
-              backgroundColor: 'rgba(67,97,238,0.1)',
+              borderColor: cssVar('--accent'),
+              backgroundColor: cssVar('--accent-glow'),
               fill: true,
               tension: 0.35,
               pointRadius: 3,
@@ -131,7 +121,7 @@ function renderSavingsRateReport() {
             {
               label: t('reports.savingsRate.dataset.zero_line', {}, '0% Line'),
               data: allMonths.map(() => 0),
-              borderColor: 'rgba(0,0,0,0.15)',
+              borderColor: cssVar('--muted'),
               borderDash: [4, 4],
               borderWidth: 1,
               pointRadius: 0,
@@ -140,7 +130,7 @@ function renderSavingsRateReport() {
           ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ctx.dataset.label === t('reports.savingsRate.dataset.zero_line', {}, '0% Line') ? null : ctx.raw.toFixed(1) + '%' } } },
           scales: { x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 10 } } }, y: { ticks: { callback: v => v + '%' }, grid: { color: cssVar('--chart-grid') } } },
           interaction: { mode: 'index', intersect: false },
@@ -157,24 +147,22 @@ function renderSavingsRateReport() {
         data: {
           labels: allMonths.map(m => m.label),
           datasets: [
-            { label: t('common.label.income', {}, 'Income'), data: allMonths.map(m => m.income), backgroundColor: '#10b981', borderWidth: 0, borderRadius: 2 },
-            { label: t('common.label.expenses', {}, 'Expenses'), data: allMonths.map(m => m.expense), backgroundColor: '#e8453c', borderWidth: 0, borderRadius: 2 },
+            { label: t('common.label.income', {}, 'Income'), data: allMonths.map(m => m.income), backgroundColor: cssVar('--positive'), borderWidth: 0, borderRadius: 2 },
+            { label: t('common.label.expenses', {}, 'Expenses'), data: allMonths.map(m => m.expense), backgroundColor: cssVar('--negative'), borderWidth: 0, borderRadius: 2 },
           ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 14, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, currency) + ' ' + currency } } },
-          scales: { x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 10 } } }, y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } } },
+          scales: { x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 10 } } }, y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } } },
         },
       });
       reportCharts.push(chart);
     }
   }
 
-  curEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Subscription Tracker Report ──────────────────────────────────────────
@@ -182,24 +170,22 @@ function renderSavingsRateReport() {
 function renderSubscriptionReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const savedYear = out.getAttribute('data-sub-year') || years[years.length - 1] || '2026';
+
+  const tb = reportToolbar(out, 'sub', [
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="sub-year">${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
-      </div>
+      ${tb.html}
       <div id="sub-content"></div>
     </div>
   `;
 
-  const yearEl = document.getElementById('sub-year');
-
   function update() {
-    out.setAttribute('data-sub-year', yearEl.value);
     destroyReportCharts();
-    const year = yearEl.value;
+    const year = tb.get('year');
 
     // Filter subscriptions (all Subscriptions:* categories)
     const custodyAliases = getCustodyAliases();
@@ -243,7 +229,7 @@ function renderSubscriptionReport() {
       byCat[sub] = (byCat[sub] || 0) + convertTo(tx.amount, tx.currency, cur);
     }
     const catSorted = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
-    const palette = ['#1e40af', '#e8453c', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1'];
+    const palette = chartPalette();
 
     const content = document.getElementById('sub-content');
     content.innerHTML = `
@@ -257,7 +243,7 @@ function renderSubscriptionReport() {
           </div>
           <div class="income-cell">
             <div class="ic-label">${t('reports.sub.tile_est_monthly', {}, 'Est. Monthly')}</div>
-            <div class="ic-value" style="color:var(--warn)">${formatCurrency(monthlyEst, cur)}<span class="ic-cur">${cur}</span></div>
+            <div class="ic-value c-warn">${formatCurrency(monthlyEst, cur)}<span class="ic-cur">${cur}</span></div>
             <div class="ic-count">${t('reports.sub.tile_est_monthly_detail', {}, 'Based on active months per service')}</div>
           </div>
         </div>
@@ -293,10 +279,10 @@ function renderSubscriptionReport() {
     if (barCtx) {
       const chart = new Chart(barCtx, {
         type: 'bar',
-        data: { labels: names, datasets: [{ data: monthlyTotals, backgroundColor: '#8b5cf6', borderWidth: 0, borderRadius: 3 }] },
-        options: { responsive: true, maintainAspectRatio: false,
+        data: { labels: names, datasets: [{ data: monthlyTotals, backgroundColor: chartPalette()[2], borderWidth: 0, borderRadius: 3 }] },
+        options: { ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, cur) + ' ' + cur } } },
-          scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => formatCurrency(v, cur) }, grid: { color: cssVar('--chart-grid') } } } },
+          scales: { x: { grid: { display: false } }, y: { ticks: currencyTicks(cur), grid: { color: cssVar('--chart-grid') } } } },
       });
       reportCharts.push(chart);
     }
@@ -306,8 +292,8 @@ function renderSubscriptionReport() {
     if (pieCtx && catSorted.length > 0) {
       const chart = new Chart(pieCtx, {
         type: 'doughnut',
-        data: { labels: catSorted.map(([c]) => c), datasets: [{ data: catSorted.map(([, v]) => v), backgroundColor: palette.slice(0, catSorted.length), borderWidth: 2, borderColor: '#fff' }] },
-        options: { responsive: true, maintainAspectRatio: false, cutout: '55%',
+        data: { labels: catSorted.map(([c]) => c), datasets: [{ data: catSorted.map(([, v]) => v), backgroundColor: palette.slice(0, catSorted.length), borderWidth: 2, borderColor: cssVar('--surface') }] },
+        options: { ...CHART_BASE, cutout: '55%',
           plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => ctx.label + ': ' + formatCurrency(ctx.raw, cur) + ' ' + cur } } } },
       });
@@ -315,8 +301,7 @@ function renderSubscriptionReport() {
     }
   }
 
-  yearEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Weekday vs. Weekend Report ───────────────────────────────────────────
@@ -324,33 +309,26 @@ function renderSubscriptionReport() {
 function renderWeekdayReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
 
-  const savedYear = out.getAttribute('data-wd-year') || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute('data-wd-cur') || 'TZS';
+  const tb = reportToolbar(out, 'wd', [
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="wd-year">${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="wd-currency">${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}</select>
-      </div>
+      ${tb.html}
       <div id="wd-content"></div>
     </div>
   `;
 
-  const yearEl = document.getElementById('wd-year');
-  const curEl = document.getElementById('wd-currency');
-
   function update() {
-    out.setAttribute('data-wd-year', yearEl.value);
-    out.setAttribute('data-wd-cur', curEl.value);
     destroyReportCharts();
 
-    const year = yearEl.value;
-    const currency = curEl.value;
+    const year = tb.get('year');
+    const currency = tb.get('cur');
     const custodyAliases = getCustodyAliases();
     const expenses = state.tx.filter(tx => tx.type === 'expense' && tx.date && tx.date.startsWith(year) && !custodyAliases.has(tx.account)).map(tx => ({ ...tx, amount: convertTo(tx.amount, tx.currency, currency) }));
 
@@ -393,7 +371,7 @@ function renderWeekdayReport() {
       return totB - totA;
     }).slice(0, 8);
 
-    const palette = ['#1e40af', '#e8453c', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+    const palette = chartPalette();
 
     const wdSuffix = t('reports.wd.tile.wd_suffix', {}, 'WD');
     const weSuffix = t('reports.wd.tile.we_suffix', {}, 'WE');
@@ -415,7 +393,7 @@ function renderWeekdayReport() {
           </div>
           <div class="income-cell">
             <div class="ic-label">${t('reports.wd.tile.weekend_spending', {}, 'Weekend Spending')}</div>
-            <div class="ic-value" style="color:#f59e0b">${formatCurrency(weekendTotal, currency)}<span class="ic-cur">${currency}</span></div>
+            <div class="ic-value c-warn">${formatCurrency(weekendTotal, currency)}<span class="ic-cur">${currency}</span></div>
             <div class="ic-count">${t('reports.wd.tile.detail_of_total', { n: weekendCount, pct: weekendPct }, `${weekendCount} TX · ${weekendPct}% of total`)}</div>
           </div>
           <div class="income-cell">
@@ -453,7 +431,7 @@ function renderWeekdayReport() {
           <th>${t('reports.wd.col.top_cat', {}, 'Top Category')}</th>
           <th class="amt">${t('reports.wd.col.pct_week', {}, '% of Week')}</th>
         </tr></thead><tbody>
-          ${[1,2,3,4,5,6,0].map(i => `<tr style="${i === 0 || i === 6 ? 'background:rgba(245,158,11,0.04)' : ''}">
+          ${[1,2,3,4,5,6,0].map(i => `<tr style="${i === 0 || i === 6 ? 'background:color-mix(in srgb, var(--warn) 4%, transparent)' : ''}">
             <td><strong>${dayNames[i]}</strong></td>
             <td class="amt">${formatCurrency(byDay[i].total, currency)}</td>
             <td>${byDay[i].count}</td>
@@ -474,12 +452,12 @@ function renderWeekdayReport() {
         data: {
           labels: orderedDays.map(i => dayShort[i]),
           datasets: [{ data: orderedDays.map(i => byDay[i].total),
-            backgroundColor: orderedDays.map(i => i === 0 || i === 6 ? '#f59e0b' : '#1e40af'),
+            backgroundColor: orderedDays.map(i => i === 0 || i === 6 ? chartPalette()[1] : chartPalette()[0]),
             borderWidth: 0, borderRadius: 4 }],
         },
-        options: { responsive: true, maintainAspectRatio: false,
+        options: { ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, currency) + ' ' + currency } } },
-          scales: { x: { grid: { display: false } }, y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } } } },
+          scales: { x: { grid: { display: false } }, y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } } } },
       });
       reportCharts.push(chart);
     }
@@ -497,10 +475,10 @@ function renderWeekdayReport() {
             backgroundColor: palette[ci], borderWidth: 0, borderRadius: 2,
           })),
         },
-        options: { responsive: true, maintainAspectRatio: false,
+        options: { ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 10, font: { size: 10 } } },
             tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, currency) + ' ' + currency } } },
-          scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } } } },
+          scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } } } },
       });
       reportCharts.push(chart);
     }
@@ -510,8 +488,8 @@ function renderWeekdayReport() {
     if (pieCtx) {
       const chart = new Chart(pieCtx, {
         type: 'doughnut',
-        data: { labels: [t('reports.wd.pie.weekday_label', {}, 'Weekday (Mon–Fri)'), t('reports.wd.pie.weekend_label', {}, 'Weekend (Sat–Sun)')], datasets: [{ data: [weekdayTotal, weekendTotal], backgroundColor: ['#1e40af', '#f59e0b'], borderWidth: 2, borderColor: '#fff' }] },
-        options: { responsive: true, maintainAspectRatio: false, cutout: '58%',
+        data: { labels: [t('reports.wd.pie.weekday_label', {}, 'Weekday (Mon–Fri)'), t('reports.wd.pie.weekend_label', {}, 'Weekend (Sat–Sun)')], datasets: [{ data: [weekdayTotal, weekendTotal], backgroundColor: [chartPalette()[0], chartPalette()[1]], borderWidth: 2, borderColor: cssVar('--surface') }] },
+        options: { ...CHART_BASE, cutout: '58%',
           plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 12 } } },
             tooltip: { callbacks: { label: ctx => ctx.label + ': ' + formatCurrency(ctx.raw, currency) + ' ' + currency + ' (' + (ctx.raw / totalExpenses * 100).toFixed(1) + '%)' } } } },
       });
@@ -519,9 +497,7 @@ function renderWeekdayReport() {
     }
   }
 
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Recurring Expense Tracker (E2) ─────────────────────────────────────
@@ -529,32 +505,25 @@ function renderWeekdayReport() {
 function renderRecurringReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const savedYear = out.getAttribute('data-rec-year') || years[years.length - 1] || '2026';
-  const savedMinMonths = out.getAttribute('data-rec-min') || '2';
+
+  const tb = reportToolbar(out, 'rec', [
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'min', label: t('reports.rec.label_min_months', {}, 'Min. Months'),
+      options: [2, 3, 4, 6].map(n => ({ v: n, l: t('reports.rec.opt_min_months', { n }, `${n}+`) })), def: '2' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="rec-year">${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
-        <label>${t('reports.rec.label_min_months', {}, 'Min. Months')}</label>
-        <select id="rec-min-months">
-          ${[2, 3, 4, 6].map(n => `<option value="${n}" ${String(n) === savedMinMonths ? 'selected' : ''}>${t('reports.rec.opt_min_months', { n }, `${n}+`)}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="rec-content"></div>
     </div>
   `;
 
-  const yearEl = document.getElementById('rec-year');
-  const minEl = document.getElementById('rec-min-months');
-
   function update() {
-    out.setAttribute('data-rec-year', yearEl.value);
-    out.setAttribute('data-rec-min', minEl.value);
     destroyReportCharts();
-    const year = yearEl.value;
-    const minMonths = parseInt(minEl.value) || 2;
+    const year = tb.get('year');
+    const minMonths = parseInt(tb.get('min')) || 2;
     const cur = displayCurrency;
     const englishMonthShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const monthNames = englishMonthShort.map((en, i) => t(`common.months.short.${i + 1}`, {}, en));
@@ -661,8 +630,8 @@ function renderRecurringReport() {
                   const prevVal = prevMonth ? p.months[prevMonth] : null;
                   let cls = '';
                   if (prevVal != null && val > prevVal * 1.05) cls = ' style="color:var(--negative);font-weight:600;"';
-                  else if (prevVal != null && val < prevVal * 0.95) cls = ' style="color:var(--positive);"';
-                  return `<td class="amt"${cls}>${formatCurrency(val, cur)}</td>`;
+                  else if (prevVal != null && val < prevVal * 0.95) cls = '';
+                  return `<td class="amt c-pos"${cls}>${formatCurrency(val, cur)}</td>`;
                 }).join('')}
                 <td class="amt">${formatCurrency(p.avg, cur)}</td>
                 <td class="amt"><strong>${formatCurrency(p.total, cur)}</strong></td>
@@ -684,7 +653,7 @@ function renderRecurringReport() {
 
     // Trend chart: top 8 recurring payees, line per payee
     const top8 = recurring.slice(0, 8);
-    const palette = ['#1e40af', '#e8453c', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+    const palette = chartPalette();
     const trendCtx = document.getElementById('rec-trend-chart');
     if (trendCtx && top8.length > 0) {
       const datasets = top8.map((p, i) => ({
@@ -700,14 +669,14 @@ function renderRecurringReport() {
         type: 'line',
         data: { labels: activeMonths.map(m => monthNames[m - 1]), datasets },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, cur) + ' ' + cur } },
           },
           scales: {
             x: { grid: { display: false } },
-            y: { ticks: { callback: v => formatCurrency(v, cur) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(cur), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -715,9 +684,7 @@ function renderRecurringReport() {
     }
   }
 
-  yearEl.addEventListener('change', update);
-  minEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Cash vs. Digital Report ────────────────────────────────────────────
@@ -735,50 +702,37 @@ function renderCashDigitalReport() {
 
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const savedMode = out.getAttribute('data-cd-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-cd-year') || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute('data-cd-cur') || 'TZS';
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
+
+  const tb = reportToolbar(out, 'cd', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="cd-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="cd-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="cd-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="cd-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('cd-mode');
-  const yearEl = document.getElementById('cd-year');
-  const curEl = document.getElementById('cd-currency');
-
   function update() {
-    out.setAttribute('data-cd-mode', modeEl.value);
-    out.setAttribute('data-cd-year', yearEl.value);
-    out.setAttribute('data-cd-cur', curEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
-    const currency = curEl.value;
+    const currency = tb.get('cur');
     const custodyAliases = getCustodyAliases();
     const expenses = state.tx.filter(tx => tx.type === 'expense' && !custodyAliases.has(tx.account)).map(tx => ({
       ...tx, amount: convertTo(tx.amount, tx.currency, currency),
       method: acctMethod[tx.account] || 'Other',
     }));
 
-    if (modeEl.value === 'monthly') renderCDMonthly(expenses, yearEl.value, currency);
+    if (tb.get('mode') === 'monthly') renderCDMonthly(expenses, tb.get('year'), currency);
     else renderCDYearly(expenses, currency);
   }
 
@@ -811,12 +765,12 @@ function renderCashDigitalReport() {
         <div class="income-grid">
           <div class="income-cell">
             <div class="ic-label">${t('reports.cd.tile.cash', {}, 'Cash Spending')}</div>
-            <div class="ic-value" style="color:#f59e0b">${formatCurrency(totCash, currency)}<span class="ic-cur">${currency}</span></div>
+            <div class="ic-value c-warn">${formatCurrency(totCash, currency)}<span class="ic-cur">${currency}</span></div>
             <div class="ic-count">${t('reports.cd.tile.pct_of_total', { pct: cashPctYear }, `${cashPctYear}% of total`)}</div>
           </div>
           <div class="income-cell">
             <div class="ic-label">${t('reports.cd.tile.digital', {}, 'Digital Spending')}</div>
-            <div class="ic-value" style="color:#3b82f6">${formatCurrency(totDigital, currency)}<span class="ic-cur">${currency}</span></div>
+            <div class="ic-value c-info">${formatCurrency(totDigital, currency)}<span class="ic-cur">${currency}</span></div>
             <div class="ic-count">${t('reports.cd.tile.pct_of_total', { pct: digitalPctYear }, `${digitalPctYear}% of total`)}</div>
           </div>
           <div class="income-cell">
@@ -829,7 +783,7 @@ function renderCashDigitalReport() {
             <div class="income-cell">
               <div class="ic-label">${m.label}</div>
               <div class="ic-value ${m.total === 0 ? 'zero' : ''}">${formatCurrency(m.total, currency)}<span class="ic-cur">${currency}</span></div>
-              <div class="ic-count" style="font-size:10px;">${t('reports.cd.month_detail', { pct: m.cashPct.toFixed(0), cash: formatCurrency(m.cash, currency), digital: formatCurrency(m.digital, currency) }, `Cash ${m.cashPct.toFixed(0)}% · ${formatCurrency(m.cash, currency)} / ${formatCurrency(m.digital, currency)}`)}</div>
+              <div class="ic-count fs-10">${t('reports.cd.month_detail', { pct: m.cashPct.toFixed(0), cash: formatCurrency(m.cash, currency), digital: formatCurrency(m.digital, currency) }, `Cash ${m.cashPct.toFixed(0)}% · ${formatCurrency(m.cash, currency)} / ${formatCurrency(m.digital, currency)}`)}</div>
             </div>
           `).join('')}
         </div>
@@ -855,17 +809,17 @@ function renderCashDigitalReport() {
         data: {
           labels: names,
           datasets: [
-            { label: t('reports.cd.dataset.cash', {}, 'Cash'), data: months.map(m => m.cash), backgroundColor: '#f59e0b', borderWidth: 0 },
-            { label: t('reports.cd.dataset.digital', {}, 'Digital'), data: months.map(m => m.digital), backgroundColor: '#3b82f6', borderWidth: 0 },
+            { label: t('reports.cd.dataset.cash', {}, 'Cash'), data: months.map(m => m.cash), backgroundColor: chartPalette()[1], borderWidth: 0 },
+            { label: t('reports.cd.dataset.digital', {}, 'Digital'), data: months.map(m => m.digital), backgroundColor: chartPalette()[0], borderWidth: 0 },
           ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } } },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -881,12 +835,12 @@ function renderCashDigitalReport() {
           datasets: [{
             label: t('reports.cd.dataset.cash_pct', {}, 'Cash %'),
             data: months.map(m => m.cashPct),
-            borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)',
+            borderColor: chartPalette()[1], backgroundColor: chartTint(chartPalette()[1], 0.1),
             fill: true, tension: 0.3, pointRadius: 4,
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${t('reports.cd.dataset.cash', {}, 'Cash')}: ${ctx.raw.toFixed(1)}%` } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
@@ -940,17 +894,17 @@ function renderCashDigitalReport() {
         data: {
           labels: data.map(d => d.year),
           datasets: [
-            { label: t('reports.cd.dataset.cash', {}, 'Cash'), data: data.map(d => d.cash), backgroundColor: '#f59e0b', borderWidth: 0 },
-            { label: t('reports.cd.dataset.digital', {}, 'Digital'), data: data.map(d => d.digital), backgroundColor: '#3b82f6', borderWidth: 0 },
+            { label: t('reports.cd.dataset.cash', {}, 'Cash'), data: data.map(d => d.cash), backgroundColor: chartPalette()[1], borderWidth: 0 },
+            { label: t('reports.cd.dataset.digital', {}, 'Digital'), data: data.map(d => d.digital), backgroundColor: chartPalette()[0], borderWidth: 0 },
           ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } } },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -958,17 +912,14 @@ function renderCashDigitalReport() {
     }
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Monthly Comparison Report ──────────────────────────────────────────
 
 function renderMonthlyComparisonReport() {
   const out = document.getElementById('report-output');
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
+  const currencies = reportCurrencies();
 
   // Build list of all months with data
   const allMonths = new Set();
@@ -980,6 +931,10 @@ function renderMonthlyComparisonReport() {
   const currentYM = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const savedMonth = out.getAttribute('data-mc-month') || currentYM;
 
+  // DR-M4: deliberately NOT migrated to reportToolbar() — the freestanding
+  // 'vs. previous month' label sits BETWEEN the two selects, and the factory
+  // can only append extra markup after its fields (extraHtml). A partial
+  // migration would leave one select on manual wiring; keep it hand-rolled.
   out.innerHTML = `
     <div class="report-view">
       <div class="report-toolbar">
@@ -1085,7 +1040,7 @@ function renderMonthlyComparisonReport() {
               <td class="amt" style="color:${deltaColor(r.delta)}">${r.delta >= 0 ? '+' : ''}${formatCurrency(r.delta, currency)}</td>
               <td style="color:${deltaColor(r.delta)};font-size:12px;">${deltaIcon(r.delta)} ${Math.abs(r.deltaPct).toFixed(0)}%</td>
             </tr>`).join('')}
-            <tr style="font-weight:700;border-top:2px solid var(--border);">
+            <tr class="row-total">
               <td>${t('reports.shared.total_label', {}, 'Total')}</td>
               <td class="amt">${formatCurrency(thisTotal, currency)}</td>
               <td class="amt c-mut">${formatCurrency(prevTotal, currency)}</td>
@@ -1118,17 +1073,17 @@ function renderMonthlyComparisonReport() {
         data: {
           labels: top10.map(r => r.cat),
           datasets: [
-            { label: monthLabel(thisYM), data: top10.map(r => r.this), backgroundColor: '#3b82f6', borderWidth: 0 },
-            { label: monthLabel(prevYM), data: top10.map(r => r.prev), backgroundColor: '#94a3b8', borderWidth: 0 },
+            { label: monthLabel(thisYM), data: top10.map(r => r.this), backgroundColor: chartPalette()[0], borderWidth: 0 },
+            { label: monthLabel(prevYM), data: top10.map(r => r.prev), backgroundColor: chartPalette()[9], borderWidth: 0 },
           ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -1150,11 +1105,11 @@ function renderMonthlyComparisonReport() {
           }],
         },
         options: {
-          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          indexAxis: 'y', ...CHART_BASE,
           plugins: { legend: { display: false },
             tooltip: { callbacks: { label: ctx => `${ctx.raw >= 0 ? '+' : ''}${formatCurrency(ctx.raw, currency)} ${currency}` } } },
           scales: {
-            x: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            x: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
             y: { grid: { display: false } },
           },
         },
@@ -1172,27 +1127,22 @@ function renderMonthlyComparisonReport() {
 
 function renderSeasonalReport() {
   const out = document.getElementById('report-output');
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
-  const savedCur = out.getAttribute('data-sh-cur') || 'TZS';
+
+  const tb = reportToolbar(out, 'sh', [
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="sh-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="sh-content"></div>
     </div>
   `;
 
-  const curEl = document.getElementById('sh-currency');
-
   function update() {
-    out.setAttribute('data-sh-cur', curEl.value);
     destroyReportCharts();
-    const currency = curEl.value;
+    const currency = tb.get('cur');
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
       .map((en, i) => t(`common.months.short.${i + 1}`, {}, en));
 
@@ -1264,7 +1214,7 @@ function renderSeasonalReport() {
         <div class="income-grid">
           <div class="income-cell">
             <div class="ic-label">${t('reports.sh.tile.peak_month', {}, 'Peak Month')}</div>
-            <div class="ic-value" style="color:#e8453c">${monthNames[peakMonth]}</div>
+            <div class="ic-value c-neg">${monthNames[peakMonth]}</div>
             <div class="ic-count">${t('reports.sh.tile.avg_detail', { amount: formatCurrency(monthTotals[peakMonth], currency), currency }, `Avg ${formatCurrency(monthTotals[peakMonth], currency)} ${currency}`)}</div>
           </div>
           <div class="income-cell">
@@ -1296,10 +1246,10 @@ function renderSeasonalReport() {
                 return `<tr>
                   <td style="position:sticky;left:0;background:var(--surface);z-index:1;font-weight:600;">${escapeHtml(cat)}</td>
                   ${heatData[cat].map(v => `<td style="text-align:center;background:${heatColor(v)};color:${v / globalMax > 0.5 ? '#fff' : 'var(--text)'};font-size:11px;">${v > 0 ? formatCurrency(v, currency) : '—'}</td>`).join('')}
-                  <td class="amt" style="font-weight:600;">${formatCurrency(rowTotal, currency)}</td>
+                  <td class="amt fw-600">${formatCurrency(rowTotal, currency)}</td>
                 </tr>`;
               }).join('')}
-              <tr style="font-weight:700;border-top:2px solid var(--border);">
+              <tr class="row-total">
                 <td style="position:sticky;left:0;background:var(--surface);z-index:1;">${t('reports.shared.total_label', {}, 'Total')}</td>
                 ${monthTotals.map(v => `<td style="text-align:center;font-size:11px;">${formatCurrency(v, currency)}</td>`).join('')}
                 <td class="amt">${formatCurrency(monthTotals.reduce((s, v) => s + v, 0), currency)}</td>
@@ -1316,7 +1266,7 @@ function renderSeasonalReport() {
       </div>
     `;
 
-    const stackPalette = ['#1e40af', '#e8453c', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1', '#14b8a6', '#a855f7'];
+    const stackPalette = chartPalette();
     const ctx = document.getElementById('sh-stack-chart');
     if (ctx) {
       const chart = new Chart(ctx, {
@@ -1331,12 +1281,12 @@ function renderSeasonalReport() {
           })),
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 10, font: { size: 10 } } },
             tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } } },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -1344,7 +1294,6 @@ function renderSeasonalReport() {
     }
   }
 
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 

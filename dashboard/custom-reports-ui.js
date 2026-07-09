@@ -262,12 +262,12 @@ function renderBuilderHtml() {
 
   return `
     <div class="section" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div class="flex-row gap-sm">
         <button class="btn-secondary" id="cr-builder-back">&larr; Back to list</button>
         <strong style="font-size:15px;">${isEdit ? t('pages.custom.builder.heading_edit', {}, 'Edit Custom Report') : t('pages.custom.builder.heading_new', {}, 'New Custom Report')}</strong>
       </div>
       <div style="display:flex;gap:12px;align-items:center;">
-        <span class="hint-md">Matches: <strong id="cr-match-count" style="color:var(--accent);">…</strong> tx</span>
+        <span class="hint-md">Matches: <strong id="cr-match-count" class="c-acc">…</strong> tx</span>
         <button class="btn-secondary" id="cr-builder-cancel">${t('common.actions.cancel', {}, 'Cancel')}</button>
         <button class="btn-primary"   id="cr-builder-save">${isEdit ? t('pages.custom.builder.btn.save_edit', {}, 'Save changes') : t('pages.custom.builder.btn.save_new', {}, 'Create report')}</button>
       </div>
@@ -284,16 +284,16 @@ function renderBuilderHtml() {
                style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;">
         <label>Match mode</label>
         <div style="display:flex;gap:14px;">
-          <label style="display:flex;gap:4px;align-items:center;cursor:pointer;">
+          <label class="chk-row">
             <input type="radio" name="cr-f-match" value="AND" ${def.match_mode === 'AND' ? 'checked' : ''}> AND (all blocks)
           </label>
-          <label style="display:flex;gap:4px;align-items:center;cursor:pointer;">
+          <label class="chk-row">
             <input type="radio" name="cr-f-match" value="OR" ${def.match_mode === 'OR' ? 'checked' : ''}> OR (any block)
           </label>
         </div>
         <label>Operational only</label>
         <div style="display:flex;gap:14px;align-items:center;">
-          <label style="display:flex;gap:4px;align-items:center;cursor:pointer;">
+          <label class="chk-row">
             <input type="checkbox" id="cr-f-opnoise" ${def.exclude_operational_noise !== false ? 'checked' : ''}>
             Exclude custody accounts and transfers/reimbursements
           </label>
@@ -312,10 +312,10 @@ function renderBuilderHtml() {
       <div style="display:grid;grid-template-columns:120px 1fr;gap:8px 12px;align-items:center;">
         <label>Default view</label>
         <div style="display:flex;gap:14px;">
-          <label style="display:flex;gap:4px;align-items:center;cursor:pointer;">
+          <label class="chk-row">
             <input type="radio" name="cr-f-view" value="monthly" ${def.period.default_view === 'monthly' ? 'checked' : ''}> Monthly
           </label>
-          <label style="display:flex;gap:4px;align-items:center;cursor:pointer;">
+          <label class="chk-row">
             <input type="radio" name="cr-f-view" value="yearly" ${def.period.default_view === 'yearly' ? 'checked' : ''}> Yearly
           </label>
         </div>
@@ -329,12 +329,12 @@ function renderBuilderHtml() {
         </select>
         <div id="cr-f-range-row" style="display:${def.period.default_preset === 'custom' ? 'contents' : 'none'};">
           <label>Custom range</label>
-          <div style="display:flex;gap:8px;align-items:center;">
+          <div class="flex-row gap-sm">
             <input type="date" id="cr-f-range-from" value="${(def.period.custom_range && def.period.custom_range.from) || ''}"
-                   style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
+                   class="input-sm">
             <span class="hint-md">to</span>
             <input type="date" id="cr-f-range-to" value="${(def.period.custom_range && def.period.custom_range.to) || ''}"
-                   style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
+                   class="input-sm">
           </div>
         </div>
       </div>
@@ -347,9 +347,9 @@ function renderBuilderHtml() {
           <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
             <input type="checkbox" id="cr-f-pie-on" ${def.widgets.pie.enabled ? 'checked' : ''}> Pie breakdown
           </label>
-          <label style="display:flex;gap:4px;align-items:center;">
+          <label class="flex-row gap-xs">
             Dimension:
-            <select id="cr-f-pie-dim" style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
+            <select id="cr-f-pie-dim" class="input-sm">
               <option value="category" ${def.widgets.pie.dimension === 'category' ? 'selected' : ''}>by Category</option>
               <option value="payee"    ${def.widgets.pie.dimension === 'payee'    ? 'selected' : ''}>by Payee</option>
               <option value="account"  ${def.widgets.pie.dimension === 'account'  ? 'selected' : ''}>by Account</option>
@@ -361,16 +361,16 @@ function renderBuilderHtml() {
           <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
             <input type="checkbox" id="cr-f-topn-on" ${def.widgets.top_n.enabled ? 'checked' : ''}> Top-N list
           </label>
-          <label style="display:flex;gap:4px;align-items:center;">
+          <label class="flex-row gap-xs">
             Dimension:
-            <select id="cr-f-topn-dim" style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
+            <select id="cr-f-topn-dim" class="input-sm">
               <option value="payee"    ${def.widgets.top_n.dimension === 'payee'    ? 'selected' : ''}>Payees</option>
               <option value="category" ${def.widgets.top_n.dimension === 'category' ? 'selected' : ''}>Categories</option>
               <option value="account"  ${def.widgets.top_n.dimension === 'account'  ? 'selected' : ''}>Accounts</option>
               <option value="tag"      ${def.widgets.top_n.dimension === 'tag'      ? 'selected' : ''}>Tags</option>
             </select>
           </label>
-          <label style="display:flex;gap:4px;align-items:center;">
+          <label class="flex-row gap-xs">
             N:
             <input type="number" id="cr-f-topn-n" min="3" max="50" value="${def.widgets.top_n.n || 10}"
                    style="width:60px;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
@@ -387,7 +387,7 @@ function renderFilterBlock(key, label, innerHtml) {
   return `
     <div class="section" data-cr-block="${key}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
-        <div class="section-title" style="margin:0;">${label} <span class="hint-md" style="font-weight:normal;">(${count} selected)</span></div>
+        <div class="section-title m-0">${label} <span class="hint-md" style="font-weight:normal;">(${count} selected)</span></div>
         <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
           <button data-cr-mode="${key}|include" class="cr-mode-btn ${block.mode === 'include' ? 'active' : ''}"
                   style="padding:4px 10px;font-size:11px;background:${block.mode === 'include' ? 'var(--accent)' : 'transparent'};color:${block.mode === 'include' ? '#fff' : 'var(--text)'};border:0;cursor:pointer;">Include</button>
@@ -457,7 +457,7 @@ function renderAccountsHtml(accounts) {
   let html = '';
   for (const [label, items] of Object.entries(groups)) {
     if (items.length === 0) continue;
-    html += `<div style="margin-bottom:8px;">`;
+    html += `<div class="mb-8">`;
     html += `<div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:4px;">${label}</div>`;
     html += `<div style="display:flex;flex-wrap:wrap;gap:6px;">`;
     for (const a of items) {
@@ -715,17 +715,17 @@ function renderCustomReportRunHtml(report, runState) {
   // Static shell — toolbars + named slots that drawCustomReportContent populates.
   return `
     <div class="section" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div class="flex-row gap-sm">
         <button class="btn-secondary" id="cr-run-back">&larr; Back</button>
         <strong style="font-size:15px;">${escapeHtml(report.name)}</strong>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         <button class="btn-secondary" id="cr-run-edit" title="${t('pages.custom.runner.title.edit_tooltip', {}, 'Edit this report')}">${t('pages.actions.title.edit', {}, 'Edit')}</button>
-        <select id="cr-run-view" style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
+        <select id="cr-run-view" class="input-sm">
           <option value="monthly" ${runState.view === 'monthly' ? 'selected' : ''}>Monthly</option>
           <option value="yearly"  ${runState.view === 'yearly'  ? 'selected' : ''}>Yearly</option>
         </select>
-        <select id="cr-run-preset" style="padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:12px;">
+        <select id="cr-run-preset" class="input-sm">
           <option value="current" ${runState.preset === 'current' ? 'selected' : ''}>Current year</option>
           <option value="ytd"     ${runState.preset === 'ytd'     ? 'selected' : ''}>Year to date</option>
           <option value="last12"  ${runState.preset === 'last12'  ? 'selected' : ''}>Last 12 months</option>
@@ -852,8 +852,8 @@ function drawCustomReportChart(tx, view, cur) {
     data: {
       labels: view === 'monthly' ? labels.map(k => monthLabel(k)) : labels,
       datasets: [
-        { label: t('pages.custom.runner.dataset.income', {}, 'Income'),  data: incomeData,  backgroundColor: 'rgba(34,197,94,0.7)' },
-        { label: t('pages.custom.runner.dataset.expense', {}, 'Expense'), data: expenseData, backgroundColor: 'rgba(239,68,68,0.7)' },
+        { label: t('pages.custom.runner.dataset.income', {}, 'Income'),  data: incomeData,  backgroundColor: chartTint(cssVar('--positive'), 0.7) },
+        { label: t('pages.custom.runner.dataset.expense', {}, 'Expense'), data: expenseData, backgroundColor: chartTint(cssVar('--negative'), 0.7) },
       ],
     },
     options: {
@@ -881,7 +881,7 @@ function drawCustomReportPie(tx, dimension, cur) {
       <div style="position:relative;height:280px;"><canvas id="cr-run-pie-canvas"></canvas></div>
     </div>
   `;
-  const palette = ['#3b82f6','#ef4444','#10b981','#f59e0b','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#14b8a6','#a855f7','#6b7280'];
+  const palette = chartPalette();
   const ctx = document.getElementById('cr-run-pie-canvas');
   const chart = new Chart(ctx, {
     type: 'doughnut',

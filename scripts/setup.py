@@ -65,6 +65,10 @@ def _build_parser() -> argparse.ArgumentParser:
     src.add_argument("--mmex", type=Path,
                      help="Path to a MMEX .mmb file to import.")
 
+    p.add_argument("--force", action="store_true",
+                   help="Overwrite an existing/initialized install (skips the "
+                        "setup-state and live-transactions guards, DC-H2). "
+                        "No backup is taken — use deliberately.")
     p.add_argument("--interactive", action="store_true",
                    help="Run interactive prompts instead of consuming flags.")
     p.add_argument("--git-commit", action="store_true",
@@ -315,7 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         config, staging = _flag_config(parser, args)
 
     try:
-        summary = setup_core.run_setup(config, root=args.root, staging=staging)
+        summary = setup_core.run_setup(config, root=args.root, staging=staging,
+                                       force=args.force)
     except setup_core.SetupError as exc:
         print(f"setup failed: {exc}", file=sys.stderr)
         return 2

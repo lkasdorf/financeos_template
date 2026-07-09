@@ -215,7 +215,9 @@ async function scanForSuggestions(filename) {
 async function bookReconSuggestions() {
   const statusEl = document.getElementById('recon-book-status');
   const checkboxes = document.querySelectorAll('.recon-row-check:checked');
-  const indices = Array.from(checkboxes).map(c => parseInt(c.getAttribute('data-idx')));
+  const indices = Array.from(checkboxes)
+    .map(c => parseInt(c.getAttribute('data-idx')))
+    .filter(i => reconSuggestions[i]); // already-booked rows are nulled out
 
   if (indices.length === 0) { statusEl.textContent = t('pages.recon.err.no_rows_selected', {}, 'No rows selected.'); return; }
 
@@ -247,20 +249,34 @@ async function bookReconSuggestions() {
 
   statusEl.innerHTML = `<span class="atx-spinner"></span>${t('pages.recon.spinner.booking', {}, 'Booking...')}`;
 
-  try {
-    const res = await fetch('/api/tx/confirm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lines, raw_input: '(CRDB import)' }),
-    });
-    const data = await res.json();
-    if (data.error) { statusEl.textContent = t('pages.recon.err.generic_prefix', { err: data.error }, `Error: ${data.error}`); return; }
-    statusEl.innerHTML = `<span class="c-pos">${t('pages.recon.ok.booked', { count: lines.length, ids: data.import_ids.join(', ') }, `Booked ${lines.length} transactions. IDs: ${data.import_ids.join(', ')}`)}</span>`;
-    // Reload data
-    setTimeout(() => refreshData(), 500);
-  } catch (e) {
-    statusEl.textContent = t('pages.recon.err.booking_failed', { err: e.message }, `Booking failed: ${e.message}`);
-  }
+  await withSubmitLock(document.getElementById('recon-book-btn'), async () => {
+    try {
+      const res = await fetch('/api/tx/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lines, raw_input: '(CRDB import)' }),
+      });
+      const data = await res.json();
+      if (data.error) { statusEl.textContent = t('pages.recon.err.generic_prefix', { err: data.error }, `Error: ${data.error}`); return; }
+      // Booked rows leave the table and the suggestion array (DP-H1) —
+      // the table used to stay fully intact with checked boxes and an
+      // active button, so a second click booked the same batch again.
+      for (const i of indices) {
+        const s = reconSuggestions[i];
+        // Booked = had a category (payee falls back to '(unknown)', so
+        // the lines filter above only ever drops category-less rows).
+        if (!s || !(s.category || '')) continue;
+        reconSuggestions[i] = null;
+        const cb = document.querySelector(`.recon-row-check[data-idx="${i}"]`);
+        if (cb) { const tr = cb.closest('tr'); if (tr) tr.remove(); }
+      }
+      statusEl.innerHTML = `<span class="c-pos">${t('pages.recon.ok.booked', { count: lines.length, ids: data.import_ids.join(', ') }, `Booked ${lines.length} transactions. IDs: ${data.import_ids.join(', ')}`)}</span>`;
+      // Reload data
+      setTimeout(() => refreshData(), 500);
+    } catch (e) {
+      statusEl.textContent = t('pages.recon.err.booking_failed', { err: e.message }, `Booking failed: ${e.message}`);
+    }
+  });
 }
 
 function renderMarkdown(md) {
@@ -274,13 +290,16 @@ function renderMarkdown(md) {
     const headers = tableRows[0];
     const dataRows = tableRows.slice(2); // skip separator
     html += '<table class="tx-table"><thead><tr>' +
-      headers.map(h => `<th>${h.trim()}</th>`).join('') +
+      headers.map(h => `<th>${escapeHtml(h.trim())}</th>`).join('') +
       '</tr></thead><tbody>';
     for (const row of dataRows) {
       html += '<tr>' + row.map(c => {
         const v = c.trim();
         const isNum = /^[\d.,\-]+\s*(TZS|EUR|USD)?$/.test(v) || v === '**0,00**' || v.startsWith('**');
-        return `<td${isNum ? ' class="amt"' : ''}>${v.replace(/\*\*/g, '')}</td>`;
+        // DP-M4: recon reports quote literal bank-statement detail
+        // strings (third parties control transfer narratives) — escape
+        // before injecting into innerHTML.
+        return `<td${isNum ? ' class="amt"' : ''}>${escapeHtml(v.replace(/\*\*/g, ''))}</td>`;
       }).join('') + '</tr>';
     }
     html += '</tbody></table>';
@@ -298,16 +317,20 @@ function renderMarkdown(md) {
     }
     if (inTable) flushTable();
     if (trimmed.startsWith('# ')) {
-      html += `<div class="report-section-title" style="font-size:14px;margin:24px 0 12px;">${trimmed.slice(2)}</div>`;
+      html += `<div class="report-section-title" style="font-size:14px;margin:24px 0 12px;">${escapeHtml(trimmed.slice(2))}</div>`;
     } else if (trimmed.startsWith('## ')) {
-      html += `<div class="report-section-title" style="margin:20px 0 8px;">${trimmed.slice(3)}</div>`;
+      html += `<div class="report-section-title" style="margin:20px 0 8px;">${escapeHtml(trimmed.slice(3))}</div>`;
     } else if (trimmed.startsWith('### ')) {
-      html += `<div style="font-size:11px;color:var(--muted-soft);margin:16px 0 6px;letter-spacing:0.04em;">${trimmed.slice(4)}</div>`;
+      html += `<div style="font-size:11px;color:var(--muted-soft);margin:16px 0 6px;letter-spacing:0.04em;">${escapeHtml(trimmed.slice(4))}</div>`;
     } else if (trimmed === '') {
       // skip
     } else {
-      let t = trimmed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code style="color:var(--accent-dim)">$1</code>');
-      html += `<p style="font-size:12px;color:var(--muted-soft);margin:4px 0;line-height:1.6;">${t}</p>`;
+      // DP-M4: escape FIRST, then apply the inline transforms on the
+      // escaped text (** and backticks survive escapeHtml untouched).
+      const pText = escapeHtml(trimmed)
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`(.+?)`/g, '<code style="color:var(--accent-dim)">$1</code>');
+      html += `<p style="font-size:12px;color:var(--muted-soft);margin:4px 0;line-height:1.6;">${pText}</p>`;
     }
   }
   if (inTable) flushTable();

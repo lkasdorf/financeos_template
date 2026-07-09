@@ -2,26 +2,22 @@
 
 function renderPassThroughAuditReport() {
   const out = document.getElementById('report-output');
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
-  const savedCur = out.getAttribute('data-pt-cur') || 'TZS';
+
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar().
+  const tb = reportToolbar(out, 'pt', [
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="pt-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="pt-content"></div>
     </div>
   `;
 
-  const curEl = document.getElementById('pt-currency');
-
   function update() {
-    const currency = curEl.value;
-    out.setAttribute('data-pt-cur', currency);
+    const currency = tb.get('cur');
     destroyReportCharts();
 
     // Find pass-through accounts
@@ -89,24 +85,31 @@ function renderPassThroughAuditReport() {
       const orphanIncomes = incomes.filter(inc => !usedIncomes.has(inc.import_id));
       const sortedOrphans = [...orphanIncomes].sort((a, b) => (parseFloat(b.amount) || 0) - (parseFloat(a.amount) || 0));
 
+      // DR-M2: enumerate combinations of size 2..5 directly instead of
+      // scanning all 2^n bitmasks once per size (~19×2^20 iterations per
+      // orphan income — seconds of main-thread freeze on every report
+      // open and currency switch). Real batch reimbursements rarely
+      // cover more than a handful of expenses; C(20, 2..5) ≈ 22k
+      // combinations is instant and keeps the smallest-subset-first
+      // preference of the old size-ascending scan.
       function findSubsetSum(items, target, tolerance) {
         const n = items.length;
         if (n > 20) return null;
-        for (let size = 2; size <= n; size++) {
-          for (let mask = 1; mask < (1 << n); mask++) {
-            let bits = 0;
-            for (let tmp = mask; tmp; tmp &= tmp - 1) bits++;
-            if (bits !== size) continue;
-            let sum = 0;
-            const selected = [];
-            for (let i = 0; i < n; i++) {
-              if (mask & (1 << i)) {
-                sum += parseFloat(items[i].amount) || 0;
-                selected.push(items[i]);
-              }
-            }
-            if (Math.abs(sum - target) < tolerance) return selected;
+        const amounts = items.map(it => parseFloat(it.amount) || 0);
+        const maxSize = Math.min(n, 5);
+        const idx = [];
+        function combos(start, size, sum) {
+          if (idx.length === size) return Math.abs(sum - target) < tolerance;
+          for (let i = start; i <= n - (size - idx.length); i++) {
+            idx.push(i);
+            if (combos(i + 1, size, sum + amounts[i])) return true;
+            idx.pop();
           }
+          return false;
+        }
+        for (let size = 2; size <= maxSize; size++) {
+          idx.length = 0;
+          if (combos(0, size, 0)) return idx.map(i => items[i]);
         }
         return null;
       }
@@ -244,7 +247,7 @@ function renderPassThroughAuditReport() {
       ? 'var(--positive)'
       : balanceOk
         ? 'var(--muted)'
-        : totalIssues <= 3 ? 'var(--warning, #f59e0b)' : 'var(--negative)';
+        : totalIssues <= 3 ? 'var(--warn)' : 'var(--negative)';
     const healthLabel = totalIssues === 0
       ? t('reports.pt.health.all_clear', {}, 'All Clear')
       : balanceOk
@@ -255,29 +258,29 @@ function renderPassThroughAuditReport() {
     content.innerHTML = `
       <div class="report-section">
         <div class="flex-row gap-md" style="flex-wrap:wrap;">
-          <div class="summary-card" style="flex:1;min-width:140px;">
+          <div class="summary-card fld-col">
             <div class="label-xs">${t('reports.pt.card.balance', {}, 'Account Balance')}</div>
             <div style="font-size:18px;font-weight:700;color:${balanceOk ? 'var(--positive)' : 'var(--negative)'};">
               ${balanceOk ? t('reports.pt.balance.ok', {}, 'OK (zero delta)') : t('reports.pt.balance.unbalanced', {}, 'UNBALANCED')}
             </div>
           </div>
-          <div class="summary-card" style="flex:1;min-width:140px;">
+          <div class="summary-card fld-col">
             <div class="label-xs">${t('reports.pt.card.status', {}, 'Health Status')}</div>
             <div style="font-size:18px;font-weight:700;color:${healthColor};">${healthLabel}</div>
           </div>
-          <div class="summary-card" style="flex:1;min-width:140px;">
+          <div class="summary-card fld-col">
             <div class="label-xs">${balanceOk ? t('reports.pt.card.unmatched', {}, 'Unmatched TXs') : t('reports.pt.card.hard_issues', {}, 'Hard Issues')}</div>
             <div style="font-size:18px;font-weight:700;color:${healthColor};">${totalIssues}</div>
           </div>
-          <div class="summary-card" style="flex:1;min-width:140px;">
+          <div class="summary-card fld-col">
             <div class="label-xs">${t('reports.pt.card.batch_matched', {}, 'Batch Matched')}</div>
             <div style="font-size:18px;font-weight:700;color:var(--positive);">${batchMatches.length}</div>
           </div>
-          <div class="summary-card" style="flex:1;min-width:140px;">
+          <div class="summary-card fld-col">
             <div class="label-xs">${t('reports.pt.card.date_offsets', {}, 'Date Offsets')}</div>
             <div style="font-size:18px;font-weight:700;color:var(--muted);">${dateOffsets.length}</div>
           </div>
-          <div class="summary-card" style="flex:1;min-width:140px;">
+          <div class="summary-card fld-col">
             <div class="label-xs">${t('reports.pt.card.accounts_checked', {}, 'Accounts Checked')}</div>
             <div style="font-size:18px;font-weight:700;">${ptAccounts.length}</div>
           </div>
@@ -306,11 +309,11 @@ function renderPassThroughAuditReport() {
                   ? t('reports.pt.status.issues_one', { n: 1 }, '1 issue')
                   : t('reports.pt.status.issues_many', { n: issueCount }, `${issueCount} issues`);
               return `<tr>
-                <td style="font-weight:500;">${escapeHtml(s.name)} <span style="color:var(--muted);font-size:9px;">(${s.alias})</span></td>
+                <td class="fw-500">${escapeHtml(s.name)} <span style="color:var(--muted);font-size:9px;">(${s.alias})</span></td>
                 <td class="amt">${s.expenses}</td>
                 <td class="amt">${s.incomes}</td>
                 <td class="amt c-pos">${s.matched}</td>
-                <td class="amt" style="color:var(--muted);">${s.dateOffsets || 0}</td>
+                <td class="amt c-mut">${s.dateOffsets || 0}</td>
                 <td class="amt" style="color:${s.unmatched > 0 ? 'var(--negative)' : 'var(--muted)'};">${s.unmatched}</td>
                 <td class="amt" style="color:${balColor};">${formatCurrency(s.balanceConverted, currency)}</td>
                 <td style="color:${s.unmatched === 0 && s.orphanIncomes === 0 ? 'var(--positive)' : 'var(--negative)'};">${status}</td>
@@ -335,14 +338,14 @@ function renderPassThroughAuditReport() {
           <tbody>
             ${hardIssues.map(iss => {
               const typeLabel = iss.type === 'missing_income' ? t('reports.pt.issue.missing', {}, 'Missing Counter-Entry') : t('reports.pt.issue.orphan', {}, 'Orphan Income');
-              const typeColor = iss.type === 'missing_income' ? 'var(--negative)' : 'var(--warning, #f59e0b)';
+              const typeColor = iss.type === 'missing_income' ? 'var(--negative)' : 'var(--warn)';
               return `<tr>
                 <td>${iss.account}</td>
                 <td>${fmtDate(iss.date)}</td>
                 <td style="color:${typeColor};font-size:10px;font-weight:500;">${typeLabel}</td>
                 <td class="amt">${formatCurrency(iss.convertedAmount, currency)} <span class="acc-currency">${currency}</span></td>
                 <td>${escapeHtml(iss.payee || '')}</td>
-                <td style="font-size:10px;">${escapeHtml(iss.category || '')}</td>
+                <td class="fs-10">${escapeHtml(iss.category || '')}</td>
                 <td class="hint-sm">${iss.importId || ''}</td>
               </tr>`;
             }).join('')}
@@ -364,9 +367,9 @@ function renderPassThroughAuditReport() {
               <td>${bm.account}</td>
               <td>${fmtDate(bm.date)}</td>
               <td class="amt" style="color:var(--positive);font-weight:500;">${formatCurrency(bm.convertedAmount, currency)} <span class="acc-currency">${currency}</span></td>
-              <td style="font-size:10px;">
+              <td class="fs-10">
                 ${bm.batchExpenses.map(e =>
-                  `<div style="margin:1px 0;">${fmtDate(e.date)} · ${formatCurrency(convertTo(e.amount, bm.nativeCurrency, currency), currency)} ${currency} · ${escapeHtml(e.payee || '')} · <span style="color:var(--muted);">${escapeHtml(e.category || '')}</span></div>`
+                  `<div style="margin:1px 0;">${fmtDate(e.date)} · ${formatCurrency(convertTo(e.amount, bm.nativeCurrency, currency), currency)} ${currency} · ${escapeHtml(e.payee || '')} · <span class="c-mut">${escapeHtml(e.category || '')}</span></div>`
                 ).join('')}
               </td>
             </tr>`).join('')}
@@ -391,10 +394,10 @@ function renderPassThroughAuditReport() {
               <td>${iss.account}</td>
               <td>${fmtDate(iss.date)}</td>
               <td>${fmtDate(iss.matchDate)}</td>
-              <td style="color:var(--muted);font-size:10px;">${iss.daysDiff.toFixed(0)}d</td>
+              <td class="label-xs">${iss.daysDiff.toFixed(0)}d</td>
               <td class="amt">${formatCurrency(iss.convertedAmount, currency)} <span class="acc-currency">${currency}</span></td>
               <td>${escapeHtml(iss.payee || '')}</td>
-              <td style="font-size:10px;">${escapeHtml(iss.category || '')}</td>
+              <td class="fs-10">${escapeHtml(iss.category || '')}</td>
             </tr>`).join('')}
           </tbody>
         </table></div>
@@ -402,8 +405,7 @@ function renderPassThroughAuditReport() {
     `;
   }
 
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 // ─── Savings Goals History Report ──────────────────────────────────────────
 
@@ -416,25 +418,24 @@ function renderSavingsGoalsHistoryReport() {
     return;
   }
 
-  const savedGoal = out.getAttribute('data-sgh-goal') || goals[0].id;
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar().
+  // Goal names were rendered unescaped in the old template — kept as-is.
+  const tb = reportToolbar(out, 'sgh', [
+    { key: 'goal', label: t('reports.toolbar.goal', {}, 'Goal'),
+      options: goals.map(g => ({ v: g.id, l: g.name })), def: goals[0].id },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.goal', {}, 'Goal')}</label>
-        <select id="sgh-goal">${goals.map(g => `<option value="${g.id}" ${g.id === savedGoal ? 'selected' : ''}>${g.name}</option>`).join('')}</select>
-      </div>
+      ${tb.html}
       <div id="sgh-content"></div>
     </div>
   `;
 
-  const goalEl = document.getElementById('sgh-goal');
-
   function update() {
-    out.setAttribute('data-sgh-goal', goalEl.value);
     destroyReportCharts();
 
-    const goal = goals.find(g => g.id === goalEl.value) || goals[0];
+    const goal = goals.find(g => g.id === tb.get('goal')) || goals[0];
     const currency = goal.currency || 'TZS';
     const target = goal.target || 0;
     const acctAlias = goal.account || '';
@@ -618,8 +619,8 @@ function renderSavingsGoalsHistoryReport() {
             {
               label: t('reports.savingsGoalsHistory.dataset.actual', {}, 'Actual Balance'),
               data: actualData,
-              borderColor: '#1e40af',
-              backgroundColor: 'rgba(30,64,175,0.08)',
+              borderColor: cssVar('--accent'),
+              backgroundColor: cssVar('--accent-glow'),
               fill: false,
               tension: 0.3,
               pointRadius: 3,
@@ -630,7 +631,7 @@ function renderSavingsGoalsHistoryReport() {
             {
               label: t('reports.savingsGoalsHistory.dataset.target_path', {}, 'Target Path'),
               data: targetData,
-              borderColor: '#9ca3af',
+              borderColor: cssVar('--muted'),
               borderDash: [6, 4],
               borderWidth: 2,
               pointRadius: 0,
@@ -640,7 +641,7 @@ function renderSavingsGoalsHistoryReport() {
             {
               label: t('reports.savingsGoalsHistory.dataset.target_100', {}, 'Target (100%)'),
               data: months.map(() => target),
-              borderColor: 'rgba(16,185,129,0.3)',
+              borderColor: chartTint(cssVar('--positive'), 0.3),
               borderDash: [3, 6],
               borderWidth: 1,
               pointRadius: 0,
@@ -649,8 +650,7 @@ function renderSavingsGoalsHistoryReport() {
           ],
         },
         options: {
-          responsive: true,
-          maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: {
               position: 'top',
@@ -669,7 +669,7 @@ function renderSavingsGoalsHistoryReport() {
             x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 10 } } },
             y: {
               grid: { color: cssVar('--chart-grid') },
-              ticks: { callback: v => formatCurrency(v, currency) },
+              ticks: currencyTicks(currency),
             },
           },
           interaction: { mode: 'index', intersect: false },
@@ -679,8 +679,7 @@ function renderSavingsGoalsHistoryReport() {
     }
   }
 
-  goalEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 // ─── Cost of Living Report ──────────────────────────────────────────────
@@ -691,53 +690,43 @@ function renderCostOfLivingReport() {
   const custodyAliases = getCustodyAliases();
   const nonPnl = getNonPnlCategories();
 
-  const currencies = ['TZS', 'EUR', 'USD'];
-  const savedMode = out.getAttribute('data-col-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-col-year') || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute('data-col-cur') || 'TZS';
-
   // Cost-of-living filter lives in core.js (isCostOfLivingTx + helpers)
   // so the Runway report can reuse the exact same definition.
 
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar().
+  const tb = reportToolbar(out, 'col', [
+    { key: 'mode', label: t('reports.col.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.col.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.col.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: ['TZS', 'EUR', 'USD'], def: 'TZS' },
+  ]);
+
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.col.toolbar.mode', {}, 'Mode')}</label>
-        <select id="col-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.col.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.col.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="col-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="col-cur">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="col-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('col-mode');
-  const yearEl = document.getElementById('col-year');
-  const curEl = document.getElementById('col-cur');
-
   // Cost of living category groups for breakdown.
   // label/desc are looked up lazily via t() so locale switches render immediately.
   const COL_GROUPS = [
-    { key: 'groceries', match: c => c === 'Food:Groceries' || c === 'Food', color: '#22c55e' },
-    { key: 'housing', match: c => c.startsWith('Bills:'), color: '#3b82f6' },
-    { key: 'home', match: c => c.startsWith('Home:'), color: '#06b6d4' },
-    { key: 'health', match: c => c.startsWith('Healthcare:') || c === 'Healthcare', color: '#ef4444' },
-    { key: 'transport', match: c => c.startsWith('Transport') || (c.startsWith('Automobile:') && c !== 'Automobile:Purchase'), color: '#f59e0b' },
-    { key: 'subscriptions', match: c => c.startsWith('Subscriptions:'), color: '#8b5cf6' },
-    { key: 'leisure', match: c => c.startsWith('Leisure') || c === 'Leisure', color: '#ec4899' },
-    { key: 'personal', match: c => c.startsWith('Personal:'), color: '#a855f7' },
-    { key: 'kids', match: c => c.startsWith('Kids:') || c === 'Kids', color: '#f97316' },
-    { key: 'pet', match: c => c.startsWith('Pet:') || c === 'Pet', color: '#84cc16' },
-    { key: 'other', match: () => true, color: '#6b7280' },
+    { key: 'groceries', match: c => c === 'Food:Groceries' || c === 'Food', color: chartPalette()[10] },
+    { key: 'housing', match: c => c.startsWith('Bills:'), color: chartPalette()[0] },
+    { key: 'home', match: c => c.startsWith('Home:'), color: chartPalette()[3] },
+    { key: 'health', match: c => c.startsWith('Healthcare:') || c === 'Healthcare', color: chartPalette()[11] },
+    { key: 'transport', match: c => c.startsWith('Transport') || (c.startsWith('Automobile:') && c !== 'Automobile:Purchase'), color: chartPalette()[1] },
+    { key: 'subscriptions', match: c => c.startsWith('Subscriptions:'), color: chartPalette()[2] },
+    { key: 'leisure', match: c => c.startsWith('Leisure') || c === 'Leisure', color: chartPalette()[4] },
+    { key: 'personal', match: c => c.startsWith('Personal:'), color: chartPalette()[7] },
+    { key: 'kids', match: c => c.startsWith('Kids:') || c === 'Kids', color: chartPalette()[6] },
+    { key: 'pet', match: c => c.startsWith('Pet:') || c === 'Pet', color: chartPalette()[5] },
+    { key: 'other', match: () => true, color: chartPalette()[9] },
   ];
   const colGroupLabel = k => t(`reports.col.group.${k}.label`, {}, k);
   const colGroupDesc = k => t(`reports.col.group.${k}.desc`, {}, '');
@@ -750,18 +739,15 @@ function renderCostOfLivingReport() {
   }
 
   function update() {
-    out.setAttribute('data-col-mode', modeEl.value);
-    out.setAttribute('data-col-year', yearEl.value);
-    out.setAttribute('data-col-cur', curEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
 
-    const currency = curEl.value;
+    const currency = tb.get('cur');
     const colTx = state.tx
       .filter(t => isCostOfLivingTx(t, custodyAliases, nonPnl))
       .map(t => ({ ...t, amount: convertTo(t.amount, t.currency, currency) }));
 
-    if (modeEl.value === 'monthly') renderColMonthly(colTx, yearEl.value, currency);
+    if (tb.get('mode') === 'monthly') renderColMonthly(colTx, tb.get('year'), currency);
     else renderColYearly(colTx, currency);
   }
 
@@ -829,7 +815,7 @@ function renderCostOfLivingReport() {
         <div class="income-grid">
           <div class="income-cell">
             <div class="ic-label">${t('reports.col.tile.living', {}, 'Living Expenses')}</div>
-            <div class="ic-value" style="color:#3b82f6">${formatCurrency(grandTotal, currency)}<span class="ic-cur">${currency}</span></div>
+            <div class="ic-value c-info">${formatCurrency(grandTotal, currency)}<span class="ic-cur">${currency}</span></div>
             <div class="ic-count">${t('reports.col.tile.living_sub', { count: yearTx.length }, `${yearTx.length} TX`)}</div>
           </div>
           <div class="income-cell">
@@ -839,7 +825,7 @@ function renderCostOfLivingReport() {
           </div>
           ${visitMonths.size > 0 ? `<div class="income-cell">
             <div class="ic-label">${t('reports.col.tile.avg_no_visitors', {}, 'Avg excl. Visitors')}</div>
-            <div class="ic-value" style="color:#059669">${formatCurrency(avgExclVisit, currency)}<span class="ic-cur">${currency}</span></div>
+            <div class="ic-value" style="color:var(--positive)">${formatCurrency(avgExclVisit, currency)}<span class="ic-cur">${currency}</span></div>
             <div class="ic-count">${t('reports.col.tile.avg_no_visitors_sub', { amt: formatCurrency(totalVisitSpend, currency) }, `${formatCurrency(totalVisitSpend, currency)} visitor spending removed`)}</div>
           </div>` : ''}
           <div class="income-cell">
@@ -876,12 +862,12 @@ function renderCostOfLivingReport() {
             <th class="num-right">${t('reports.col.col.total', {}, 'Total')}</th>
           </tr></thead>
           <tbody>
-            ${months.map(m => `<tr style="${m.hasVisit ? 'background:var(--warning-bg, rgba(245,158,11,0.08));' : ''}">
-              <td>${m.label}${m.hasVisit ? ` <span title="${t('reports.col.visitor.marker_title', {}, 'Visitor month')}" style="color:#f59e0b;font-size:10px;">&#9679;</span>` : ''}</td>
+            ${months.map(m => `<tr style="${m.hasVisit ? 'background:var(--warn-bg);' : ''}">
+              <td>${m.label}${m.hasVisit ? ` <span title="${t('reports.col.visitor.marker_title', {}, 'Visitor month')}" style="color:var(--warn);font-size:10px;">&#9679;</span>` : ''}</td>
               ${groupTotals.map(g => `<td class="amt" style="color:${g.color}">${formatCurrency(m[g.key], currency)}</td>`).join('')}
               <td class="amt fw-700">${formatCurrency(m.total, currency)}</td>
             </tr>`).join('')}
-            <tr style="font-weight:700;border-top:2px solid var(--border);">
+            <tr class="row-total">
               <td>${t('reports.col.row.total', {}, 'Total')}</td>
               ${groupTotals.map(g => `<td class="amt" style="color:${g.color}">${formatCurrency(g.total, currency)}</td>`).join('')}
               <td class="amt">${formatCurrency(grandTotal, currency)}</td>
@@ -891,15 +877,15 @@ function renderCostOfLivingReport() {
       </div>
       <div class="report-section">
         <details class="c-mut2" style="font-size:12px;line-height:1.5;">
-          <summary style="cursor:pointer;font-weight:600;color:var(--text);">${t('reports.col.legend.title', {}, 'What counts in each column?')}</summary>
-          <div style="margin-top:8px;">
+          <summary class="ptr fw-600 c-text">${t('reports.col.legend.title', {}, 'What counts in each column?')}</summary>
+          <div class="mt-8">
             ${COL_GROUPS.map(g => `<div style="padding:3px 0;"><strong style="color:${g.color};">${colGroupLabel(g.key)}:</strong> ${escapeHtml(colGroupDesc(g.key))}</div>`).join('')}
             <div style="margin-top:8px;opacity:0.8;"><em>${t('reports.col.legend.footer', {}, 'Hover a column header in the tables above for the same info inline.')}</em></div>
           </div>
         </details>
         <div class="report-section-title" style="color:var(--muted);font-size:0.85em;margin-top:12px;">${t('reports.col.excluded.monthly_line', { list: excludedList }, `Excluded (non-essential, from Settings → Categories): ${excludedList}`)}</div>
         ${visitMonths.size > 0 ? `<div style="color:var(--muted);font-size:0.85em;margin-top:6px;">
-          <span style="color:#f59e0b;">&#9679;</span> ${t('reports.col.visitor.line_prefix', {}, 'Visitor months:')} ${months.filter(m => m.hasVisit).map(m => t('reports.col.visitor.line_cell', { month: m.label, amt: formatCurrency(m.visitSpend, currency) }, `${m.label} (${formatCurrency(m.visitSpend, currency)} visitor-tagged)`)).join(' · ')}
+          <span class="c-warn">&#9679;</span> ${t('reports.col.visitor.line_prefix', {}, 'Visitor months:')} ${months.filter(m => m.hasVisit).map(m => t('reports.col.visitor.line_cell', { month: m.label, amt: formatCurrency(m.visitSpend, currency) }, `${m.label} (${formatCurrency(m.visitSpend, currency)} visitor-tagged)`)).join(' · ')}
           ${t('reports.col.visitor.line_suffix', {}, '— "Avg excl. Visitors" subtracts only Visit-tagged TX, not the entire month.')}
         </div>` : ''}
       </div>
@@ -920,14 +906,14 @@ function renderCostOfLivingReport() {
           })),
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.dataset.label}: ${formatCurrency(c.raw, currency)} ${currency}` } },
           },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -944,7 +930,7 @@ function renderCostOfLivingReport() {
           datasets: [{ data: groupTotals.map(g => g.total), backgroundColor: groupTotals.map(g => g.color), borderWidth: 0 }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', padding: 10, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.label}: ${formatCurrency(c.raw, currency)} ${currency} (${(c.raw / grandTotal * 100).toFixed(1)}%)` } },
@@ -964,8 +950,8 @@ function renderCostOfLivingReport() {
           datasets: [{
             label: t('reports.col.dataset.label', {}, 'Cost of Living'),
             data: months.map(m => m.total),
-            borderColor: '#3b82f6',
-            backgroundColor: '#3b82f620',
+            borderColor: cssVar('--accent'),
+            backgroundColor: cssVar('--accent-glow'),
             fill: true,
             tension: 0.3,
             pointRadius: 4,
@@ -973,14 +959,14 @@ function renderCostOfLivingReport() {
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { display: false },
             tooltip: { callbacks: { label: c => `${formatCurrency(c.raw, currency)} ${currency}` } },
           },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -1021,10 +1007,10 @@ function renderCostOfLivingReport() {
             ${data.map(d => {
               const activeMonths = Math.max(1, d.year === new Date().getFullYear().toString() ? new Date().getMonth() + 1 : 12);
               return `<tr>
-              <td style="font-weight:500;">${d.year}</td>
+              <td class="fw-500">${d.year}</td>
               ${groupTotals.map(g => `<td class="amt" style="color:${g.color}">${formatCurrency(d[g.key], currency)}</td>`).join('')}
               <td class="amt fw-700">${formatCurrency(d.total, currency)}</td>
-              <td class="amt" style="color:var(--muted);">${formatCurrency(d.total / activeMonths, currency)}</td>
+              <td class="amt c-mut">${formatCurrency(d.total / activeMonths, currency)}</td>
             </tr>`;
             }).join('')}
           </tbody>
@@ -1061,14 +1047,14 @@ function renderCostOfLivingReport() {
           })),
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.dataset.label}: ${formatCurrency(c.raw, currency)} ${currency}` } },
           },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -1084,8 +1070,8 @@ function renderCostOfLivingReport() {
           datasets: [{
             label: t('reports.col.dataset.label', {}, 'Cost of Living'),
             data: data.map(d => d.total),
-            borderColor: '#3b82f6',
-            backgroundColor: '#3b82f620',
+            borderColor: cssVar('--accent'),
+            backgroundColor: cssVar('--accent-glow'),
             fill: true,
             tension: 0.3,
             pointRadius: 5,
@@ -1093,11 +1079,11 @@ function renderCostOfLivingReport() {
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${formatCurrency(c.raw, currency)} ${currency}` } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -1105,10 +1091,7 @@ function renderCostOfLivingReport() {
     }
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 function renderBudgetActualReport() {
@@ -1120,8 +1103,8 @@ function renderBudgetActualReport() {
       <div class="report-view">
         <div class="empty-state" style="padding:48px 24px;text-align:center;">
           <div class="empty-state-icon" style="font-size:32px;margin-bottom:12px;">&#x1F4CA;</div>
-          <div class="empty-state-title" style="font-weight:600;margin-bottom:6px;">${t('reports.budget.empty_title', {}, 'No budgets defined')}</div>
-          <div class="empty-state-desc c-mut fs-12" style="margin-bottom:16px;">${t('reports.budget.empty_desc', {}, 'Add monthly budgets in Settings → Budgets to see this report.')}</div>
+          <div class="empty-state-title fw-600 mb-6">${t('reports.budget.empty_title', {}, 'No budgets defined')}</div>
+          <div class="empty-state-desc c-mut fs-12 mb-16">${t('reports.budget.empty_desc', {}, 'Add monthly budgets in Settings → Budgets to see this report.')}</div>
           <a href="#settings" data-action="presetSettingsTab" data-arg1="budgets" style="padding:6px 14px;background:var(--accent);color:var(--bg);font-size:12px;text-decoration:none;border-radius:4px;">${t('reports.budget.go_settings', {}, 'Open Settings')}</a>
         </div>
       </div>
@@ -1129,47 +1112,39 @@ function renderBudgetActualReport() {
     return;
   }
 
-  // Period state — persisted via data-attr so re-renders preserve choice.
-  const savedPeriod = out.getAttribute('data-budget-period') || 'current';
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar().
+  // Period choice stays persisted as data-budget-* so re-renders preserve it.
   const years = getAvailableYears();
-  const savedYear = out.getAttribute('data-budget-year') || (years[years.length - 1] || String(new Date().getFullYear()));
+  const tb = reportToolbar(out, 'budget', [
+    { key: 'period', label: t('reports.toolbar.period', {}, 'Period'), def: 'current',
+      options: [
+        { v: 'current', l: t('reports.budget.period_current', {}, 'Current month') },
+        { v: 'last', l: t('reports.budget.period_last', {}, 'Last month') },
+        { v: 'ytd', l: t('reports.budget.period_ytd', {}, 'Year to date') },
+        { v: 'year', l: t('reports.budget.period_year', {}, 'Full year') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || String(new Date().getFullYear()) },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.period', {}, 'Period')}</label>
-        <select id="bud-period">
-          <option value="current" ${savedPeriod === 'current' ? 'selected' : ''}>${t('reports.budget.period_current', {}, 'Current month')}</option>
-          <option value="last" ${savedPeriod === 'last' ? 'selected' : ''}>${t('reports.budget.period_last', {}, 'Last month')}</option>
-          <option value="ytd" ${savedPeriod === 'ytd' ? 'selected' : ''}>${t('reports.budget.period_ytd', {}, 'Year to date')}</option>
-          <option value="year" ${savedPeriod === 'year' ? 'selected' : ''}>${t('reports.budget.period_year', {}, 'Full year')}</option>
-        </select>
-        <label id="bud-year-lbl">${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="bud-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="bud-content"></div>
     </div>
   `;
 
-  const periodEl = document.getElementById('bud-period');
-  const yearEl = document.getElementById('bud-year');
-  const yearLbl = document.getElementById('bud-year-lbl');
-
   function update() {
-    out.setAttribute('data-budget-period', periodEl.value);
-    out.setAttribute('data-budget-year', yearEl.value);
-    const needsYear = periodEl.value === 'year' || periodEl.value === 'ytd';
-    yearEl.style.display = needsYear ? '' : 'none';
-    yearLbl.style.display = needsYear ? '' : 'none';
+    const needsYear = tb.get('period') === 'year' || tb.get('period') === 'ytd';
+    tb.el('year').style.display = needsYear ? '' : 'none';
+    // The factory renders each label directly before its select, so the
+    // year label toggles via previousElementSibling (was #bud-year-lbl).
+    tb.el('year').previousElementSibling.style.display = needsYear ? '' : 'none';
     destroyReportCharts();
-    renderBudgetActualBody(periodEl.value, yearEl.value);
+    renderBudgetActualBody(tb.get('period'), tb.get('year'));
   }
 
-  periodEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 function renderBudgetActualBody(period, year) {
@@ -1217,8 +1192,15 @@ function renderBudgetActualBody(period, year) {
     monthsInPeriod = 12;
   }
 
-  // Compute per-budget actuals
-  const expenses = state.tx.filter(tx => tx.type === 'expense' && txFilter(tx));
+  // Compute per-budget actuals. DR-M6: exclude custody accounts and
+  // non-P&L categories via the shared filter (like every other report) —
+  // custody spending (e.g. groceries booked for someone else's money)
+  // must not inflate 'Actual' or fire over-budget alerts.
+  const custodyAliases = getCustodyAliases();
+  const nonPnl = getNonPnlCategories();
+  const expenses = state.tx.filter(tx =>
+    tx.type === 'expense' && txFilter(tx) && isOperationalTx(tx, custodyAliases, nonPnl)
+  );
 
   const items = budgets.map(b => {
     const matching = expenses.filter(t => (t.category || '').startsWith(b.category));
@@ -1240,7 +1222,7 @@ function renderBudgetActualBody(period, year) {
 
   const statusColors = {
     ok: 'var(--positive)',
-    warn: 'var(--warn, #f59e0b)',
+    warn: 'var(--warn)',
     over: 'var(--negative)',
   };
   const statusLabels = {
@@ -1272,7 +1254,7 @@ function renderBudgetActualBody(period, year) {
       </div>
     </div>
 
-    <section class="section" style="margin-bottom:24px;">
+    <section class="section mb-24">
       <div class="section-title">${t('reports.budget.chart_title', {}, 'Budget vs. Actual per Category')}</div>
       <div style="position:relative;height:${Math.max(180, items.length * 36 + 60)}px;">
         <canvas id="bud-chart"></canvas>
@@ -1324,6 +1306,9 @@ function renderBudgetActualBody(period, year) {
   // Bar chart: horizontal, two bars per category
   const ctx = document.getElementById('bud-chart');
   if (ctx) {
+    // Status colors resolved at render time so theme switches re-render right
+    const cPos = cssVar('--positive'), cWarn = cssVar('--warn'),
+          cNeg = cssVar('--negative'), cMut = cssVar('--muted');
     const chart = new Chart(ctx, {
       type: 'bar',
       data: {
@@ -1332,23 +1317,22 @@ function renderBudgetActualBody(period, year) {
           {
             label: t('reports.budget.kpi_budget', {}, 'Total Budget'),
             data: items.map(i => i.budget),
-            backgroundColor: 'rgba(100,116,139,0.55)',
-            borderColor: 'rgba(100,116,139,1)',
+            backgroundColor: chartTint(cMut, 0.55),
+            borderColor: cMut,
             borderWidth: 1,
           },
           {
             label: t('reports.budget.kpi_actual', {}, 'Total Actual'),
             data: items.map(i => i.actual),
-            backgroundColor: items.map(i => i.status === 'over' ? 'rgba(232,69,60,0.7)' : i.status === 'warn' ? 'rgba(245,158,11,0.7)' : 'rgba(16,185,129,0.7)'),
-            borderColor: items.map(i => i.status === 'over' ? 'rgba(232,69,60,1)' : i.status === 'warn' ? 'rgba(245,158,11,1)' : 'rgba(16,185,129,1)'),
+            backgroundColor: items.map(i => i.status === 'over' ? chartTint(cNeg, 0.7) : i.status === 'warn' ? chartTint(cWarn, 0.7) : chartTint(cPos, 0.7)),
+            borderColor: items.map(i => i.status === 'over' ? cNeg : i.status === 'warn' ? cWarn : cPos),
             borderWidth: 1,
           },
         ],
       },
       options: {
         indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { font: { size: 11 } } },
           tooltip: {
@@ -1359,7 +1343,7 @@ function renderBudgetActualBody(period, year) {
         },
         scales: {
           x: {
-            ticks: { callback: v => formatCurrency(v, cur) },
+            ticks: currencyTicks(cur),
             grid: { color: cssVar('--chart-grid') },
           },
           y: {

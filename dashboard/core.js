@@ -196,10 +196,17 @@ function applyBranding() {
   // config/branding.json (editable via Settings → Branding) — route it
   // through the same strict tag whitelist locale HTML uses instead of
   // trusting it raw (stored-XSS sink on every page load otherwise).
-  const safeNameHtml = (typeof sanitizeI18nHtml === 'function')
-    ? sanitizeI18nHtml(nameHtml)
-    : escapeHtml(nameHtml);
-  document.querySelectorAll('[data-brand-html]').forEach(el => { el.innerHTML = safeNameHtml; });
+  // sanitizeI18nHtml returns an ARRAY of DOM nodes (same contract as the
+  // [data-i18n-html] consumer in applyI18n), so it must be spread into
+  // replaceChildren — assigning the array to .innerHTML stringifies it to
+  // "[object Text]" for a plain-text name (one Text node, no markup).
+  document.querySelectorAll('[data-brand-html]').forEach(el => {
+    if (typeof sanitizeI18nHtml === 'function') {
+      el.replaceChildren(...sanitizeI18nHtml(nameHtml));
+    } else {
+      el.innerHTML = escapeHtml(nameHtml);
+    }
+  });
   // Accent color — propagated as both --accent-color (legacy) and --accent
   // (newer chart/report styles) on :root, plus the derived variants so
   // hover glows / subtle backgrounds / lighter accent recolor with the
@@ -552,6 +559,100 @@ function getHistoricalRate(currency, ym) {
   return best[currency] || fxRates[currency] || 1;
 }
 
+// DP-M7: single source for selectable-currency dropdowns (Scheduled,
+// Budgets, Debts, Vehicles, Subscriptions, Currency tab). Baseline set
+// plus every account currency — a fork with a GBP account gets GBP in
+// ALL currency pickers instead of the drifted per-modal lists.
+// Deliberately NOT fxRates-keyed: the live FX API loads ~160 currencies
+// and would flood the dropdowns.
+function knownCurrencies() {
+  const base = ['TZS', 'EUR', 'USD', 'PLN'];
+  const extra = [...new Set((state.accounts || []).map(a => a.currency))]
+    .filter(c => c && !base.includes(c)).sort();
+  return base.concat(extra);
+}
+
+// ─── Modal Lifecycle (DP-M6) ─────────────────────────────────────────────
+// Central modal factory — since Phase 2 the ONLY modal lifecycle in the
+// dashboard. Every overlay is created here; the global closeModal() in
+// forms-edit-tx.js is a thin shim that delegates to the instance _close()
+// (kept for dispatcher-invoked save/delete flows that close the modal from
+// global scope). Historic context: four competing modal implementations (global
+// closeModal(), properties, bulk-edit shell, ad-hoc overlays) each
+// re-decided escape/click-out/submit-lock/focus per site — the root
+// cause of the recurring esc-handler leaks (F-M8) and inconsistent
+// double-submit guards. Guarantees:
+//   - the Escape listener is removed on EVERY close path (esc, ✕,
+//     click-out, [data-modal-cancel], programmatic close()) and
+//     self-cleans if the overlay was removed behind our back
+//   - close() is per-instance — stacked overlays never remove a foreign
+//     handler (the global closeModal() grabs the FIRST .modal-overlay)
+//   - onSubmit runs under withSubmitLock (DP-H1 double-submit guard);
+//     with onSubmit set, bodyHtml is wrapped in a <form> and a
+//     Cancel/Submit footer is appended
+//   - initial focus lands on the first input/select/textarea
+// `title` is injected as HTML — escape caller-side for user data.
+// `maxWidth` must be a plain length (e.g. '560px').
+// Returns { overlay, modal, form, close }; close is also reachable as
+// overlay._close for callers that only hold the DOM node.
+function openModal({ title = '', bodyHtml = '', maxWidth = '480px',
+                     onSubmit = null, submitLabel = '',
+                     onClose = null, closeOnBackdrop = true,
+                     focusFirst = true } = {}) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  let closed = false;
+  const escHandler = (e) => {
+    if (!overlay.isConnected) { document.removeEventListener('keydown', escHandler); return; }
+    if (e.key === 'Escape') close();
+  };
+  function close() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', escHandler);
+    overlay.remove();
+    if (typeof onClose === 'function') onClose();
+  }
+  const footer = onSubmit ? `
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+        <button type="button" class="btn-secondary" data-modal-cancel style="padding:8px 14px;">${escapeHtml(t('common.actions.cancel', {}, 'Cancel'))}</button>
+        <button type="submit" class="btn-primary" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;">${escapeHtml(submitLabel || t('common.actions.save', {}, 'Save'))}</button>
+      </div>` : '';
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" data-no-close-x style="max-width:${maxWidth};width:min(${maxWidth},92vw);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h3 style="margin:0;font-size:16px;">${title}</h3>
+        <button type="button" data-modal-close aria-label="Close" style="background:transparent;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1;">×</button>
+      </div>
+      ${onSubmit ? `<form>${bodyHtml}${footer}</form>` : bodyHtml}
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay._close = close;
+
+  if (closeOnBackdrop) {
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  }
+  for (const btn of overlay.querySelectorAll('[data-modal-close], [data-modal-cancel]')) {
+    btn.addEventListener('click', close);
+  }
+  document.addEventListener('keydown', escHandler);
+
+  const form = overlay.querySelector('form');
+  if (form && onSubmit) {
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      await withSubmitLock(form.querySelector('button[type="submit"]'), async () => {
+        await onSubmit(form, close);
+      });
+    });
+  }
+  if (focusFirst) {
+    const first = overlay.querySelector('input, select, textarea');
+    if (first) first.focus();
+  }
+  return { overlay, modal: overlay.querySelector('.modal'), form, close };
+}
+
 // Get TZS-per-unit rate for a currency on a specific YYYY-MM-DD.
 // Tries exact-date match first, then falls back to the latest entry within
 // the same month, then to the latest entry on/before that date.
@@ -674,10 +775,13 @@ function buildTxIndexes(tx) {
 
 // ─── Amount Input Parser ─────────────────────────────────────────────────
 // Accepts user amount inputs in all common formats and returns a Number (or NaN).
+// KEEP IN SYNC with pwa/app.js parseAmount() until the shared-module
+// refactor (PW-M7) — the two diverged once and booked 135 for '135,686'.
 //   "45k"          -> 45000
 //   "2.5m"         -> 2500000
 //   "125,069.48"   -> 125069.48   (US: comma=thousands, dot=decimal)
 //   "125.069,48"   -> 125069.48   (EU: dot=thousands, comma=decimal)
+//   "135,686"      -> 135686      (comma + 3-digit groups = bank-SMS thousands)
 //   "125069.48"    -> 125069.48
 //   "125069,48"    -> 125069.48
 //   "1 234,56"     -> 1234.56
@@ -694,6 +798,9 @@ function parseAmountInput(raw) {
     if (isNaN(base)) return NaN;
     return base * (suffixMatch[2].toLowerCase() === 'k' ? 1000 : 1000000);
   }
+  // Reject anything that isn't purely a number once suffix/spaces are
+  // handled — parseFloat('12x5') would silently truncate to 12.
+  if (!/^[-+]?[\d.,]+$/.test(s)) return NaN;
   const hasComma = s.includes(',');
   const hasDot = s.includes('.');
   if (hasComma && hasDot) {
@@ -704,8 +811,19 @@ function parseAmountInput(raw) {
       s = s.replace(/,/g, '');
     }
   } else if (hasComma) {
-    // Only comma → treat as decimal separator (EU style)
-    s = s.replace(',', '.');
+    // Only comma: '135,686' / '1,234,567' (every group after the first
+    // exactly 3 digits) is thousands-grouping — M-PESA/CRDB SMS style,
+    // PW-H1. Anything else ('12,50', '0,5') is an EU decimal separator.
+    const parts = s.replace(/^[-+]/, '').split(',');
+    const isGrouped = parts.length >= 2 && parts[0].length >= 1 &&
+      parts.slice(1).every(p => p.length === 3) && !parts[0].includes('.');
+    if (isGrouped) {
+      s = s.replace(/,/g, '');
+    } else if (s.split(',').length === 2) {
+      s = s.replace(',', '.');
+    } else {
+      return NaN; // e.g. '1,23,4' — ambiguous, refuse instead of guessing
+    }
   }
   const n = parseFloat(s);
   return isNaN(n) ? NaN : n;
@@ -1048,6 +1166,29 @@ function wireMonthNav() {
 function escapeHtml(s) {
   if (s == null) return '';
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Shared double-submit guard for booking buttons (DP-H1,
+// CODE_REVIEW_2026-07-08): disables the button for the duration of the
+// async action so an impatient second click (~800ms Tanzania→Frankfurt
+// RTT) cannot book the same money twice. Re-entry while the action is
+// still running is a no-op; the button is re-enabled in finally, so
+// error paths stay retryable. Callers whose success path replaces the
+// DOM (modal close, refreshData) lose nothing from the re-enable.
+async function withSubmitLock(btn, fn) {
+  if (btn) {
+    if (btn.dataset.submitting === '1') return;
+    btn.dataset.submitting = '1';
+    btn.disabled = true;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (btn) {
+      delete btn.dataset.submitting;
+      btn.disabled = false;
+    }
+  }
 }
 
 // ─── Delegated Click Dispatcher (replaces onclick="fn('${userdata}')") ──
@@ -1896,13 +2037,11 @@ document.addEventListener('keydown', (e) => {
 
 function showShortcutsHelp() {
   if (document.querySelector('.modal-overlay')) return;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:380px;">
-      <h3>Keyboard <span class="accent">Shortcuts</span></h3>
-      <table class="tx-table" style="margin-top:12px;">
+  openModal({
+    title: 'Keyboard <span class="accent">Shortcuts</span>',
+    maxWidth: '380px',
+    bodyHtml: `
+      <table class="tx-table mt-12">
         <tbody>
           <tr><td><kbd>/</kbd> or <kbd>Ctrl+K</kbd></td><td>Search</td></tr>
           <tr><td><kbd>n</kbd></td><td>New Transaction</td></tr>
@@ -1915,14 +2054,9 @@ function showShortcutsHelp() {
         </tbody>
       </table>
       <div style="margin-top:16px;text-align:right;">
-        <button onclick="this.closest('.modal-overlay').remove()">Close</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  // Close on Escape
-  const handler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
-  document.addEventListener('keydown', handler);
+        <button data-modal-cancel>Close</button>
+      </div>`,
+  });
 }
 
 function populateAccountsSidebar() {
@@ -1993,7 +2127,7 @@ async function loadHealthStatus() {
     parts.push(`<span class="c-mut" title="${escapeHtml(h.git_last_commit)}">${escapeHtml(h.git_last_commit.split(' ')[0])}</span>`);
   }
   if (h.git_dirty_files > 0) {
-    parts.push(`<span style="color:var(--warn)">${h.git_dirty_files} uncommitted</span>`);
+    parts.push(`<span class="c-warn">${h.git_dirty_files} uncommitted</span>`);
   }
 
   // Data size
@@ -2034,7 +2168,7 @@ async function loadHealthStatus() {
         if (synced) {
           piSpan.innerHTML = ` ${dot} <span class="c-pos">Pi synced</span>`;
         } else {
-          piSpan.innerHTML = ` ${dot} <span style="color:var(--warn)" title="Pi: ${escapeHtml(piData.git_last_commit || '?')}">Pi behind</span>`;
+          piSpan.innerHTML = ` ${dot} <span class="c-warn" title="Pi: ${escapeHtml(piData.git_last_commit || '?')}">Pi behind</span>`;
         }
       } else {
         piSpan.innerHTML = ` ${dot} <span class="c-neg">Pi error</span>`;
@@ -2136,7 +2270,7 @@ async function boot() {
       <div class="error">
         <strong>Error loading data:</strong><br>
         ${escapeHtml(err.message)}<br><br>
-        <span style="font-size:10px;">
+        <span class="fs-10">
           Dashboard requires an HTTP server (not file://). Start e.g.<br>
           <code>python -m http.server 8080</code> in repo root, then open <code>http://localhost:8080/dashboard/</code>
         </span>

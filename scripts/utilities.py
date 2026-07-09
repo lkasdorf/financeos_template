@@ -58,6 +58,7 @@ def _money(value) -> Decimal:
 
 # Local sibling modules — tx_engine carries the shared TX writer + locking.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import linked_log  # noqa: E402
 import tx_engine  # noqa: E402
 from backup import BACKUP_TARGETS, backup_file  # noqa: E402
 
@@ -144,17 +145,14 @@ _COST_RE = re.compile(r"^[\d.,]+[km]?$", re.IGNORECASE)
 
 
 def _parse_amount_kmsuffix(token: str) -> float:
-    """Parse '650k' / '2.5m' / '28553' / '28,553' to a float.
+    """Parse '650k' / '2.5m' / '28,553' / '28,5' to a float.
 
-    Mirrors tx_engine.parse_amount_input behavior so the utilities CLI
-    accepts the same shorthand the user is already used to from TX inputs.
+    Thin wrapper around tx_engine.parse_amount — the canonical backend
+    parser. DM-L2: the previous local copy stripped every comma as a
+    thousands separator, so EU-decimal input like '28,5' booked 285
+    instead of 28.5.
     """
-    text = token.strip().lower().replace(",", "")
-    if text.endswith("k"):
-        return float(text[:-1]) * 1_000
-    if text.endswith("m"):
-        return float(text[:-1]) * 1_000_000
-    return float(text)
+    return tx_engine.parse_amount(token)
 
 
 def parse_luku_freetext(
@@ -416,90 +414,44 @@ def add_property(row: dict) -> str:
 
 def load_luku_log() -> list[dict]:
     """Load all luku_log.csv rows in insertion order."""
-    if not LUKU_LOG_CSV.exists():
-        return []
-    with open(LUKU_LOG_CSV, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    return linked_log.load_log(LUKU_LOG_CSV)
 
 
 def load_water_log() -> list[dict]:
     """Load all water_log.csv rows in insertion order."""
-    if not WATER_LOG_CSV.exists():
-        return []
-    with open(WATER_LOG_CSV, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    return linked_log.load_log(WATER_LOG_CSV)
 
 
 def next_luku_id() -> str:
     """Return the next sequential luku_id, zero-padded to 3 digits."""
-    rows = load_luku_log()
-    max_n = 0
-    for r in rows:
-        lid = r.get("luku_id", "")
-        if lid.startswith("luku-"):
-            try:
-                n = int(lid.split("-", 1)[1])
-                max_n = max(max_n, n)
-            except ValueError:
-                pass
-    return f"luku-{max_n + 1:03d}"
+    return linked_log.next_seq_id(
+        (r.get("luku_id", "") for r in load_luku_log()), "luku", 3)
 
 
 def next_water_id() -> str:
     """Return the next sequential water_id, zero-padded to 3 digits."""
-    rows = load_water_log()
-    max_n = 0
-    for r in rows:
-        wid = r.get("water_id", "")
-        if wid.startswith("water-"):
-            try:
-                n = int(wid.split("-", 1)[1])
-                max_n = max(max_n, n)
-            except ValueError:
-                pass
-    return f"water-{max_n + 1:03d}"
+    return linked_log.next_seq_id(
+        (r.get("water_id", "") for r in load_water_log()), "water", 3)
 
 
 def append_luku_log(row: dict) -> None:
-    """Append a single LUKU entry to luku_log.csv (creates header if missing).
-
-    Durability: flush + fsync force the buffered append to disk before the
-    handle closes, so a power loss between the TX commit and the next sync
-    cannot leave a torn final row.
-    """
-    new_file = not LUKU_LOG_CSV.exists() or LUKU_LOG_CSV.stat().st_size == 0
-    with open(LUKU_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=LUKU_LOG_COLUMNS)
-        if new_file:
-            writer.writeheader()
-        writer.writerow({c: row.get(c, "") for c in LUKU_LOG_COLUMNS})
-        f.flush()
-        os.fsync(f.fileno())
+    """Append a single LUKU entry to luku_log.csv (flush+fsync durable)."""
+    linked_log.append_log(LUKU_LOG_CSV, LUKU_LOG_COLUMNS, row)
 
 
 def append_water_log(row: dict) -> None:
-    """Append a single water entry to water_log.csv (creates header if missing).
-
-    Same durability contract as :func:`append_luku_log`.
-    """
-    new_file = not WATER_LOG_CSV.exists() or WATER_LOG_CSV.stat().st_size == 0
-    with open(WATER_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=WATER_LOG_COLUMNS)
-        if new_file:
-            writer.writeheader()
-        writer.writerow({c: row.get(c, "") for c in WATER_LOG_COLUMNS})
-        f.flush()
-        os.fsync(f.fileno())
+    """Append a single water entry to water_log.csv (flush+fsync durable)."""
+    linked_log.append_log(WATER_LOG_CSV, WATER_LOG_COLUMNS, row)
 
 
 def write_luku_log(rows: list[dict]) -> None:
     """Atomically rewrite luku_log.csv from scratch with the given rows."""
-    tx_engine._atomic_csv_rewrite(LUKU_LOG_CSV, LUKU_LOG_COLUMNS, rows)
+    linked_log.write_log(LUKU_LOG_CSV, LUKU_LOG_COLUMNS, rows)
 
 
 def write_water_log(rows: list[dict]) -> None:
     """Atomically rewrite water_log.csv from scratch with the given rows."""
-    tx_engine._atomic_csv_rewrite(WATER_LOG_CSV, WATER_LOG_COLUMNS, rows)
+    linked_log.write_log(WATER_LOG_CSV, WATER_LOG_COLUMNS, rows)
 
 
 # ── TX Builders ─────────────────────────────────────────────────────────────
@@ -798,40 +750,13 @@ def add_water_entry(
 def _find_reimbursement_id(expense_row: dict, account: dict) -> str | None:
     """Locate the auto-generated reimbursement TX paired to an expense.
 
-    FK-first lookup (H-15 from CODE_REVIEW_2026-05-12) — mirrors
-    :func:`fuel.find_reimbursement_id`. See that docstring for the full
-    rationale; we prefer ``counter_entry_id == expense.import_id``
-    over the legacy field-tuple match.
+    Thin wrapper around :func:`linked_log.find_reimbursement_id` (OPT-14)
+    — see there for the FK-first / legacy-tuple lookup rationale. The
+    tx_path is passed from this module's DATA_DIR so monkeypatched test
+    setups keep working.
     """
-    ptp = account.get("pass_through_payee", "").strip()
-    if not ptp:
-        return None
-
-    expense_id = (expense_row.get("import_id") or "").strip()
-    reimb_cat = tx_engine.REIMBURSEMENT_CATEGORIES.get(
-        ptp, f"Income:{ptp} Reimbursement"
-    )
-    target_amount = f"{float(expense_row['amount']):.2f}"
-    target_tuple = (
-        expense_row["date"], expense_row["account"], "income",
-        target_amount, ptp, reimb_cat,
-    )
-
-    tx_path = DATA_DIR / "transactions.csv"
-    legacy_match = None
-    with open(tx_path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            if expense_id and (row.get("counter_entry_id") or "").strip() == expense_id:
-                return row["import_id"]
-            if legacy_match is None:
-                current = (
-                    row["date"], row["account"], row["type"],
-                    f"{float(row['amount']):.2f}" if row["amount"] else "",
-                    row["payee"], row["category"],
-                )
-                if current == target_tuple:
-                    legacy_match = row["import_id"]
-    return legacy_match
+    return linked_log.find_reimbursement_id(
+        expense_row, account, DATA_DIR / "transactions.csv")
 
 
 def _delete_log_entry(

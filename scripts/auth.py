@@ -17,6 +17,9 @@ Default behaviour:
     * No ``config/auth.json`` ........ middleware no-ops
     * ``mode == "none"`` ............. middleware no-ops
     * ``mode == "basic"`` ............ HTTP Basic Auth enforced
+    * ``mode == "locked"`` ........... derived, never written to disk:
+      the file exists but is corrupt/unknown — fail-closed, every
+      non-exempt request gets 401 (BE-M2)
 
 Exempt paths (always reachable):
     * ``/api/health`` — monitoring / Pi cron pings
@@ -43,7 +46,9 @@ import base64
 import getpass
 import hmac
 import json
+import os
 import sys
+import tempfile
 import threading
 import time
 from functools import lru_cache
@@ -81,18 +86,37 @@ _REALM = "FinanceOS"
 def load_auth_config() -> dict[str, Any]:
     """Read ``config/auth.json`` once and cache it.
 
-    Missing file or unreadable JSON is treated as ``mode=none`` so the
-    private repo keeps running with auth disabled by default. Restart
-    the server after editing the file (``lru_cache`` keeps the value).
+    A MISSING file is ``mode=none`` — the private repo keeps running
+    with auth disabled by default. BE-M2: a file that EXISTS but is
+    corrupt/unreadable (or carries an unknown mode) used to fall back
+    to ``mode=none`` as well, silently disabling auth — e.g. after a
+    crash mid ``--set-password`` truncated the file. It now degrades to
+    ``mode=locked`` instead, which refuses every non-exempt request
+    with 401 until the file is fixed, rewritten via
+    ``auth.py --set-password``, or deleted. Restart the server after
+    editing the file (``lru_cache`` keeps the value).
     """
     try:
         with _AUTH_PATH.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict):
+        if isinstance(data, dict) and data.get("mode") in ("none", "basic"):
             return data
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-    return {"mode": "none"}
+        reason = (
+            f"unknown mode {data.get('mode')!r}" if isinstance(data, dict)
+            else "top-level value is not a JSON object"
+        )
+    except FileNotFoundError:
+        return {"mode": "none"}
+    except (json.JSONDecodeError, OSError) as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+    print(
+        f"[auth.error] {_AUTH_PATH} exists but is unusable ({reason}) — "
+        f"failing CLOSED: every non-exempt request gets 401 until the "
+        f"file is fixed or deleted. Rewrite it with "
+        f"'python scripts/auth.py --set-password' (or --disable).",
+        file=sys.stderr,
+    )
+    return {"mode": "locked"}
 
 
 def reload_auth_config() -> dict[str, Any]:
@@ -102,9 +126,14 @@ def reload_auth_config() -> dict[str, Any]:
 
 
 def is_auth_required() -> bool:
-    """``True`` if and only if ``auth.json`` selects basic auth."""
+    """``True`` when requests must be gated.
+
+    Covers ``mode=basic`` (credentials verified) and ``mode=locked``
+    (BE-M2 fail-closed: corrupt config — verify_credentials never
+    succeeds, so every non-exempt request is refused with 401).
+    """
     cfg = load_auth_config()
-    return cfg.get("mode") == "basic"
+    return cfg.get("mode") in ("basic", "locked")
 
 
 def is_initialized() -> bool:
@@ -358,11 +387,33 @@ def _hash_password(password: str) -> str:
 
 
 def _write_config(payload: dict[str, Any]) -> None:
+    """Atomically write ``config/auth.json`` (temp + fsync + replace).
+
+    BE-M2: the previous ``Path.write_text`` could leave a truncated
+    file behind on a crash mid-write; combined with the old fail-open
+    loader that meant the next server start ran without auth. Same
+    pattern as config_loader.save_reports_config.
+    """
     _AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _AUTH_PATH.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(_AUTH_PATH.parent),
+        prefix=f".{_AUTH_PATH.name}.",
+        suffix=".tmp",
     )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _AUTH_PATH)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
     reload_auth_config()
 
 
@@ -407,6 +458,13 @@ def _cli_status() -> None:
     mode = cfg.get("mode", "none")
     if mode == "basic":
         print(f"mode: basic\nuser: {cfg.get('user', '?')}\nfile: {_AUTH_PATH}")
+    elif mode == "locked":
+        print(
+            f"mode: locked (config/auth.json exists but is corrupt or "
+            f"carries an unknown mode — every request is refused)\n"
+            f"file: {_AUTH_PATH}\n"
+            f"fix:  python scripts/auth.py --set-password  (or --disable)"
+        )
     else:
         print(f"mode: {mode}\nfile: {_AUTH_PATH}")
 

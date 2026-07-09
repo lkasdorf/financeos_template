@@ -8,10 +8,10 @@
 // Color + i18n label keys stay here. Getters re-read REPORTS_CONFIG every
 // call so a Settings save takes effect on the next render without a reload.
 const BILLS_BUCKET_META = [
-  { id: 'rent',        get label() { return t('reports.bills.cat.rent', {}, 'Rent'); },               color: '#f07070' },
-  { id: 'electricity', get label() { return t('reports.bills.cat.electricity', {}, 'Electricity'); }, color: '#f0a060' },
-  { id: 'water',       get label() { return t('reports.bills.cat.water', {}, 'Water'); },             color: '#5eb8e0' },
-  { id: 'internet',    get label() { return t('reports.bills.cat.internet', {}, 'Internet'); },       color: '#5dd4a0' },
+  { id: 'rent',        get label() { return t('reports.bills.cat.rent', {}, 'Rent'); },               get color() { return chartPalette()[11]; } },
+  { id: 'electricity', get label() { return t('reports.bills.cat.electricity', {}, 'Electricity'); }, get color() { return chartPalette()[1]; } },
+  { id: 'water',       get label() { return t('reports.bills.cat.water', {}, 'Water'); },             get color() { return chartPalette()[3]; } },
+  { id: 'internet',    get label() { return t('reports.bills.cat.internet', {}, 'Internet'); },       get color() { return chartPalette()[8]; } },
 ];
 function billsBuckets() {
   return BILLS_BUCKET_META.map(meta => ({
@@ -28,16 +28,16 @@ function billsAllCategories() {
 // config/reports.json (window.REPORTS_CONFIG.automobile.buckets). 'purchase'
 // is the one-off bucket; everything else is a "running" cost bucket.
 const AUTO_BUCKET_META = [
-  { id: 'purchase',     get label() { return t('reports.auto.cat.purchase',     {}, 'Purchase');     }, color: '#dc2626', running: false },
-  { id: 'petrol',       get label() { return t('reports.auto.cat.petrol',       {}, 'Petrol');       }, color: '#ef4444', running: true  },
-  { id: 'toll',         get label() { return t('reports.auto.cat.toll',         {}, 'Toll');         }, color: '#f59e0b', running: true  },
-  { id: 'parking',      get label() { return t('reports.auto.cat.parking',      {}, 'Parking');      }, color: '#8b5cf6', running: true  },
-  { id: 'maintenance',  get label() { return t('reports.auto.cat.maintenance',  {}, 'Maintenance');  }, color: '#3b82f6', running: true  },
-  { id: 'insurance',    get label() { return t('reports.auto.cat.insurance',    {}, 'Insurance');    }, color: '#10b981', running: true  },
-  { id: 'registration', get label() { return t('reports.auto.cat.registration', {}, 'Registration'); }, color: '#06b6d4', running: true  },
-  { id: 'accessories',  get label() { return t('reports.auto.cat.accessories',  {}, 'Accessories');  }, color: '#84cc16', running: true  },
-  { id: 'car_rental',   get label() { return t('reports.auto.cat.car_rental',   {}, 'Car Rental');   }, color: '#ec4899', running: true  },
-  { id: 'other',        get label() { return t('reports.auto.cat.other',        {}, 'Other');        }, color: '#6b7280', running: true  },
+  { id: 'purchase',     get label() { return t('reports.auto.cat.purchase',     {}, 'Purchase');     }, get color() { return chartPalette()[11]; }, running: false },
+  { id: 'petrol',       get label() { return t('reports.auto.cat.petrol',       {}, 'Petrol');       }, get color() { return chartPalette()[6]; }, running: true  },
+  { id: 'toll',         get label() { return t('reports.auto.cat.toll',         {}, 'Toll');         }, get color() { return chartPalette()[1]; }, running: true  },
+  { id: 'parking',      get label() { return t('reports.auto.cat.parking',      {}, 'Parking');      }, get color() { return chartPalette()[2]; }, running: true  },
+  { id: 'maintenance',  get label() { return t('reports.auto.cat.maintenance',  {}, 'Maintenance');  }, get color() { return chartPalette()[0]; }, running: true  },
+  { id: 'insurance',    get label() { return t('reports.auto.cat.insurance',    {}, 'Insurance');    }, get color() { return chartPalette()[10]; }, running: true  },
+  { id: 'registration', get label() { return t('reports.auto.cat.registration', {}, 'Registration'); }, get color() { return chartPalette()[3]; }, running: true  },
+  { id: 'accessories',  get label() { return t('reports.auto.cat.accessories',  {}, 'Accessories');  }, get color() { return chartPalette()[5]; }, running: true  },
+  { id: 'car_rental',   get label() { return t('reports.auto.cat.car_rental',   {}, 'Car Rental');   }, get color() { return chartPalette()[4]; }, running: true  },
+  { id: 'other',        get label() { return t('reports.auto.cat.other',        {}, 'Other');        }, get color() { return chartPalette()[9]; }, running: true  },
 ];
 function autoBuckets() {
   return AUTO_BUCKET_META.map(meta => ({
@@ -58,47 +58,40 @@ function autoAllCategories() {
 function renderBillsReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
 
-  const savedMode = out.getAttribute('data-bills-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-bills-year') || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute('data-bills-cur') || 'TZS';
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar()
+  // (reports-shared.js). reportId 'bills' + keys mode/year/cur keep the
+  // legacy data-bills-* attributes, so saved UI state survives.
+  const tb = reportToolbar(out, 'bills', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('common.col.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="bl-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="bl-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-        <label>${t('common.col.currency', {}, 'Currency')}</label>
-        <select id="bl-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="bl-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('bl-mode');
-  const yearEl = document.getElementById('bl-year');
-  const curEl = document.getElementById('bl-currency');
-
   function update() {
-    out.setAttribute('data-bills-mode', modeEl.value);
-    out.setAttribute('data-bills-year', yearEl.value);
-    out.setAttribute('data-bills-cur', curEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
-    const cur = curEl.value;
+    const cur = tb.get('cur');
     const billsCats = new Set(billsAllCategories());
+    // DR-M6: exclude custody accounts like the Automobile report below —
+    // bills paid from custody money aren't Leon's operational cost.
+    const custodyAliases = getCustodyAliases();
     const filtered = state.tx.filter(tx =>
-      tx.type === 'expense' && tx.category && billsCats.has(tx.category)
+      tx.type === 'expense' && tx.category && billsCats.has(tx.category) &&
+      !custodyAliases.has(tx.account)
     ).map(tx => ({ ...tx, amount: convertTo(tx.amount, tx.currency, cur) }));
     // rc.17 — actionable empty state when no TX in the entire dataset match
     // any of the configured Bills bucket categories.
@@ -110,14 +103,11 @@ function renderBillsReport() {
       });
       return;
     }
-    if (modeEl.value === 'monthly') renderBillsMonthly(filtered, yearEl.value, cur);
+    if (tb.get('mode') === 'monthly') renderBillsMonthly(filtered, tb.get('year'), cur);
     else renderBillsYearly(filtered, cur);
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 function renderBillsMonthly(filtered, year, currency) {
@@ -214,14 +204,14 @@ function renderBillsMonthly(filtered, year, currency) {
         })),
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } },
         },
         scales: {
           x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-          y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -242,10 +232,10 @@ function renderBillsMonthly(filtered, year, currency) {
         }],
       },
       options: {
-        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y', ...CHART_BASE,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, currency) + ' ' + currency } } },
         scales: {
-          x: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          x: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           y: { grid: { display: false } },
         },
       },
@@ -326,14 +316,14 @@ function renderBillsYearly(filtered, currency) {
         })),
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } },
         },
         scales: {
           x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-          y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -346,28 +336,25 @@ function renderAutomobileReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
 
-  const savedMode = out.getAttribute('data-auto-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-auto-year') || years[years.length - 1] || '2026';
+  // DR-M4: toolbar rendering/persistence/wiring live in reportToolbar()
+  // (reports-shared.js). reportId 'auto' + keys mode/year keep the legacy
+  // data-auto-* attributes, so saved UI state survives.
+  const tb = reportToolbar(out, 'auto', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="au-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="au-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="au-content"></div>
     </div>
   `;
-
-  const modeEl = document.getElementById('au-mode');
-  const yearEl = document.getElementById('au-year');
 
   // Bucket-based: running buckets exclude purchase, all categories driven by
   // window.REPORTS_CONFIG.automobile.buckets so users with renamed categories
@@ -405,12 +392,10 @@ function renderAutomobileReport() {
   }
 
   function update() {
-    out.setAttribute('data-auto-mode', modeEl.value);
-    out.setAttribute('data-auto-year', yearEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
 
-    if (modeEl.value === 'monthly') renderAutoMonthly(allAutoTx, yearEl.value);
+    if (tb.get('mode') === 'monthly') renderAutoMonthly(allAutoTx, tb.get('year'));
     else renderAutoYearly(allAutoTx);
   }
 
@@ -468,7 +453,7 @@ function renderAutomobileReport() {
         <div class="income-grid">
           <div class="income-cell">
             <div class="ic-label">${t('reports.auto.grand_total', {}, 'Grand Total')}</div>
-            <div class="ic-value" style="color:#f59e0b">${formatCurrency(grandTotal, 'TZS')}<span class="ic-cur">TZS</span></div>
+            <div class="ic-value c-warn">${formatCurrency(grandTotal, 'TZS')}<span class="ic-cur">TZS</span></div>
             <div class="ic-count">${t('reports.shared.tx_count', { n: yearTx.length }, `${yearTx.length} TX`)}</div>
           </div>
           <div class="income-cell">
@@ -520,7 +505,7 @@ function renderAutomobileReport() {
               ${catTotals.map(c => `<td class="amt" style="color:${BUCKET_BY_ID[c.cat]?.color}">${formatCurrency(m[c.cat] || 0, 'TZS')}</td>`).join('')}
               <td class="amt fw-700">${formatCurrency(m.total, 'TZS')}</td>
             </tr>`).join('')}
-            <tr style="font-weight:700;border-top:2px solid var(--border);">
+            <tr class="row-total">
               <td>${t('reports.shared.total_label', {}, 'Total')}</td>
               ${catTotals.map(c => `<td class="amt" style="color:${BUCKET_BY_ID[c.cat]?.color}">${formatCurrency(c.total, 'TZS')}</td>`).join('')}
               <td class="amt">${formatCurrency(runningTotal, 'TZS')}</td>
@@ -546,14 +531,14 @@ function renderAutomobileReport() {
           })),
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.dataset.label}: ${formatCurrency(c.raw, 'TZS')} TZS` } },
           },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -570,7 +555,7 @@ function renderAutomobileReport() {
           datasets: [{ data: catTotals.map(c => c.total), backgroundColor: catTotals.map(c => BUCKET_BY_ID[c.cat]?.color), borderWidth: 0 }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', padding: 10, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.label}: ${formatCurrency(c.raw, 'TZS')} TZS (${(c.raw / runningTotal * 100).toFixed(1)}%)` } },
@@ -590,8 +575,8 @@ function renderAutomobileReport() {
           datasets: [{
             label: petrolLabel,
             data: petrolMonths,
-            borderColor: '#ef4444',
-            backgroundColor: '#ef444420',
+            borderColor: cssVar('--negative'),
+            backgroundColor: chartTint(cssVar('--negative'), 0.13),
             fill: true,
             tension: 0.3,
             pointRadius: 4,
@@ -599,14 +584,14 @@ function renderAutomobileReport() {
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { display: false },
             tooltip: { callbacks: { label: c => `${petrolLabel}: ${formatCurrency(c.raw, 'TZS')} TZS` } },
           },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -645,7 +630,7 @@ function renderAutomobileReport() {
           </tr></thead>
           <tbody>
             ${data.map(d => `<tr>
-              <td style="font-weight:500;">${d.year}</td>
+              <td class="fw-500">${d.year}</td>
               ${activeBuckets.map(b => `<td class="amt" style="color:${b.color}">${formatCurrency(d.byCat[b.id] || 0, 'TZS')}</td>`).join('')}
               <td class="amt">${formatCurrency(d.running, 'TZS')}</td>
               <td class="amt c-mut">${formatCurrency(d.purchase, 'TZS')}</td>
@@ -683,14 +668,14 @@ function renderAutomobileReport() {
           })),
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: {
             legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 12, font: { size: 11 } } },
             tooltip: { callbacks: { label: c => `${c.dataset.label}: ${formatCurrency(c.raw, 'TZS')} TZS` } },
           },
           scales: {
             x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-            y: { stacked: true, ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+            y: { stacked: true, ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -708,8 +693,8 @@ function renderAutomobileReport() {
           datasets: [{
             label: yrPetrolLabel,
             data: data.map(d => d.petrol),
-            borderColor: '#ef4444',
-            backgroundColor: '#ef444420',
+            borderColor: cssVar('--negative'),
+            backgroundColor: chartTint(cssVar('--negative'), 0.13),
             fill: true,
             tension: 0.3,
             pointRadius: 5,
@@ -717,11 +702,11 @@ function renderAutomobileReport() {
           }],
         },
         options: {
-          responsive: true, maintainAspectRatio: false,
+          ...CHART_BASE,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${yrPetrolLabel}: ${formatCurrency(c.raw, 'TZS')} TZS` } } },
           scales: {
             x: { grid: { color: cssVar('--chart-grid') } },
-            y: { ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+            y: { ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
           },
         },
       });
@@ -729,7 +714,5 @@ function renderAutomobileReport() {
     }
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }

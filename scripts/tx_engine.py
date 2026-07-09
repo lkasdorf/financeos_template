@@ -305,8 +305,14 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+@with_tx_lock
 def add_payee(data: dict) -> str:
     """Add a payee to payees.json. Returns the existing or new slug ID.
+
+    DP-M1: all payees.json read-modify-write paths hold tx_write_lock —
+    the server is threaded, and unlocked full-file rewrites from
+    concurrent requests (edit modal, auto-learn, bulk regroup) were
+    last-writer-wins.
 
     L-B1 (Sprint 23, acknowledged) — batch-imports that call this in a
     loop with mixed `default_category` values keep the FIRST seen
@@ -360,6 +366,7 @@ def add_payee(data: dict) -> str:
     return pid
 
 
+@with_tx_lock
 def update_payee(pid: str, updated: dict) -> bool:
     """Update a payee by id. Returns True on success."""
     payees = load_payees()
@@ -373,6 +380,7 @@ def update_payee(pid: str, updated: dict) -> bool:
     return False
 
 
+@with_tx_lock
 def delete_payee(pid: str) -> bool:
     """Delete a payee by id. Returns True on success."""
     payees = load_payees()
@@ -381,6 +389,30 @@ def delete_payee(pid: str) -> bool:
         return False
     save_payees(new)
     return True
+
+
+@with_tx_lock
+def regroup_payees(old_group: str, new_group: str) -> int:
+    """Move every payee in ``old_group`` to ``new_group`` in ONE write.
+
+    DP-M1: the dashboard used to fire one /api/payees/update per payee
+    in parallel; each request was a full-file read-modify-write, so
+    concurrent writers overwrote each other (lost updates on group
+    rename/delete). One load-modify-save under the lock replaces N
+    racing rewrites. ``new_group=''`` ungroups (group delete).
+
+    Returns:
+        Number of payees whose group changed.
+    """
+    payees = load_payees()
+    changed = 0
+    for p in payees:
+        if p.get("group", "") == old_group:
+            p["group"] = new_group
+            changed += 1
+    if changed:
+        save_payees(payees)
+    return changed
 
 
 # ── Budgets ───────────────────────────────────────────────────────────────────
@@ -518,6 +550,7 @@ def delete_savings_goal(gid: str) -> bool:
     return True
 
 
+@with_tx_lock
 def auto_learn_payees(lines: list[dict]) -> list[str]:
     """Learn new payees from confirmed transactions.
 
@@ -672,6 +705,11 @@ def save_scheduled(items: list[dict]) -> None:
     _atomic_csv_rewrite(sched_path, list(SCHEDULED_FIELDS), items)
 
 
+# The scheduled CRUD below shares tx_write_lock even though it only touches
+# scheduled.csv: cron_sched.run_due() rewrites the same file under that lock
+# (load → fire → roll next_run → save), so an unlocked dashboard edit landing
+# mid-run would be lost — or worse, roll next_run back and re-fire the entry.
+@with_tx_lock
 def add_scheduled(data: dict) -> str:
     """Add a scheduled transaction template. Returns the generated sched_id.
 
@@ -701,6 +739,7 @@ def add_scheduled(data: dict) -> str:
     return new_id
 
 
+@with_tx_lock
 def update_scheduled(sched_id: str, updated: dict) -> bool:
     """Update a scheduled transaction by sched_id. Returns True on success."""
     items = load_scheduled()
@@ -714,6 +753,7 @@ def update_scheduled(sched_id: str, updated: dict) -> bool:
     return False
 
 
+@with_tx_lock
 def delete_scheduled(sched_id: str) -> bool:
     """Delete a scheduled transaction by sched_id. Returns True on success."""
     items = load_scheduled()
@@ -1597,37 +1637,74 @@ def update_category(path: str, updated: dict) -> bool:
 def parse_amount(text: str) -> float:
     """Parse human-friendly amount strings with shorthand notation.
 
+    Canonical backend parser — mirrors parseAmountInput (core.js) and
+    parseAmount (PWA); the three implementations MUST stay in sync
+    (PW-H1). DM-L2: the previous replace(',', '') treated every comma
+    as a thousands separator, so EU-decimal input like '28,5' silently
+    parsed as 285 (10x). Commas are now disambiguated by grouping shape.
+
     Supports:
-        '45k'   -> 45,000
-        '2.5m'  -> 2,500,000
-        '3200'  -> 3,200
-        '1,500' -> 1,500 (comma stripped)
+        '45k'      -> 45,000
+        '2.5m'     -> 2,500,000
+        '3200'     -> 3,200
+        '135,686'  -> 135,686   (3-digit groups = thousands, bank-SMS style)
+        '12,50'    -> 12.50     (EU decimal comma)
+        '98,5k'    -> 98,500    (EU decimal + suffix)
+        '1.234,56' -> 1,234.56  (both separators: the last one is decimal)
 
     Returns:
         Float amount value (always finite, non-negative).
 
     Raises:
-        ValueError: when the text parses to NaN, infinity, or a
-            negative number. M-B4 (Sprint 17) — without this guard
-            `NaN <= 0` is False, so downstream `if amount <= 0:` style
-            validations let NaN/inf slip through into transactions.csv.
+        ValueError: on ambiguous comma grouping ('1,23,4'), non-numeric
+            input, NaN, infinity, or a negative number. M-B4 (Sprint 17) —
+            without this guard `NaN <= 0` is False, so downstream
+            `if amount <= 0:` style validations let NaN/inf slip through
+            into transactions.csv.
     """
-    text = text.strip().lower()
+    # Strip ALL spaces (thousands separator in some locales), like the
+    # JS parsers do.
+    text = text.strip().lower().replace(" ", "")
     # L-B5 (Sprint 23) — length cap before float() so `'1e400'` and
     # similarly absurd inputs can't return inf. Combined with the
     # NaN/inf/negative rejection below (M-B4) the parser now refuses
     # the entire pathological-input set rather than half of it.
     if len(text) > 32:
         raise ValueError(f"amount string too long (max 32 chars, got {len(text)})")
-    multipliers = {"k": 1_000, "m": 1_000_000}
-    raw: float
-    for suffix, mult in multipliers.items():
-        if text.endswith(suffix):
-            raw = float(text[:-1]) * mult
-            break
-    else:
-        # Strip commas used as thousands separators.
-        raw = float(text.replace(",", ""))
+    mult = 1.0
+    if text.endswith("k"):
+        mult, text = 1_000.0, text[:-1]
+    elif text.endswith("m"):
+        mult, text = 1_000_000.0, text[:-1]
+    # Reject anything that isn't purely a number once suffix/spaces are
+    # handled — float() on '12x5'-style garbage would raise anyway, but
+    # an explicit gate keeps the error message uniform and blocks 'nan'/
+    # 'inf' literals before float() accepts them.
+    if not re.fullmatch(r"[-+]?[\d.,]+", text):
+        raise ValueError(f"amount is not a number: {text!r}")
+    has_comma = "," in text
+    has_dot = "." in text
+    if has_comma and has_dot:
+        # Whichever separator appears LAST is the decimal one.
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif has_comma:
+        # Only commas: '135,686' / '1,234,567' (every group after the
+        # first exactly 3 digits) is thousands-grouping — M-PESA/CRDB
+        # SMS style. Anything else ('12,50', '0,5') is an EU decimal.
+        parts = text.lstrip("+-").split(",")
+        grouped = (len(parts) >= 2 and len(parts[0]) >= 1
+                   and all(len(p) == 3 for p in parts[1:]))
+        if grouped:
+            text = text.replace(",", "")
+        elif text.count(",") == 1:
+            text = text.replace(",", ".")
+        else:
+            # e.g. '1,23,4' — ambiguous, refuse instead of guessing.
+            raise ValueError(f"ambiguous comma grouping: {text!r}")
+    raw = float(text) * mult
     import math as _math
     if _math.isnan(raw) or _math.isinf(raw):
         raise ValueError(f"amount must be a finite number (got {text!r})")
@@ -1944,9 +2021,9 @@ def generate_pass_through_line(
     # Look up the reimbursement category, with a dynamic fallback
     reimb_cat = REIMBURSEMENT_CATEGORIES.get(ptp, f"Income:{ptp} Reimbursement")
 
-    # M-B2 (Sprint 17) — verbatim tag copy is intentional. Leon's pattern
-    # for House_4C / Property_* is that the reimbursement leg keeps the
-    # same tags as the expense leg, so all reports (cost-of-living and
+    # M-B2 (Sprint 17) — verbatim tag copy is intentional. The property
+    # cost-tag pattern (Property_*) expects the reimbursement leg to keep
+    # the same tags as the expense leg, so all reports (cost-of-living and
     # the rare "TX tagged X" queries) see the matched pair together.
     # The finding flagged this as a leak risk, but the current behaviour
     # was explicitly chosen on 2026-05-13 — see memory financeos_property_tags
@@ -2015,8 +2092,14 @@ def validate_line(line: dict, accounts: dict, categories: dict) -> list[str]:
         errors.append(f"Invalid type: '{tx_type}'")
 
     if tx_type in ("expense", "income"):
+        # Category is mandatory for expense/income lines — a blank one
+        # would land an uncategorized row in transactions.csv and break
+        # every category-driven report. Transfers legitimately carry no
+        # category and are excluded by the type guard above.
         cat = line.get("category", "")
-        if cat and cat not in categories:
+        if not cat:
+            errors.append("Category is required")
+        elif cat not in categories:
             errors.append(f"Unknown category: '{cat}'")
 
     try:
@@ -2409,8 +2492,29 @@ def delete_transactions_with_counters(import_ids: list[str]) -> list[str]:
     if not expanded:
         return []
 
+    def _surviving_group_members(counter_row):
+        """Expense members of the counter's receipt group not yet deleted."""
+        rg = (counter_row.get("receipt_group") or "").strip()
+        if not rg:
+            return []
+        return [
+            m for m in rows
+            if (m.get("receipt_group") or "").strip() == rg
+            and not (m.get("counter_entry_id") or "").strip()
+            and m.get("type") == "expense"
+            and m.get("account") == counter_row.get("account")
+            and m["import_id"] not in expanded
+        ]
+
     # Fixed-point closure over the FK in both directions. Rows are few
     # enough (single-user CSV) that the simple loop is fine.
+    #
+    # Receipt splits get special treatment (BL-H1): the group shares ONE
+    # counter for the total, so per-row FK closure is wrong there —
+    # deleting a non-anchor member must not orphan-keep a stale total,
+    # and deleting the anchor must not kill the counter while other
+    # members survive. Surviving group counters are re-anchored and
+    # re-totaled after the closure settles.
     changed = True
     while changed:
         changed = False
@@ -2420,15 +2524,145 @@ def delete_transactions_with_counters(import_ids: list[str]) -> list[str]:
             if not fk:
                 continue
             if rid in expanded and fk in present and fk not in expanded:
+                # Deleting an income counter deletes its expense side.
+                # For a receipt split the counter covers EVERY member,
+                # so the whole group goes with it.
+                for m in _surviving_group_members(r):
+                    expanded.add(m["import_id"])
+                    changed = True
                 expanded.add(fk)
                 changed = True
             if fk in expanded and rid not in expanded:
-                expanded.add(rid)
-                changed = True
+                # Anchor expense deleted. A split counter survives as
+                # long as any group member survives (re-anchored below);
+                # a plain pair counter always follows its expense.
+                if not _surviving_group_members(r):
+                    expanded.add(rid)
+                    changed = True
 
     kept = [r for r in rows if r["import_id"] not in expanded]
+
+    # Re-anchor and re-total surviving split counters whose group shrank.
+    kept_ids = {r["import_id"] for r in kept}
+    for c in kept:
+        fk = (c.get("counter_entry_id") or "").strip()
+        rg = (c.get("receipt_group") or "").strip()
+        if not fk or not rg:
+            continue
+        members = [
+            m for m in kept
+            if (m.get("receipt_group") or "").strip() == rg
+            and not (m.get("counter_entry_id") or "").strip()
+            and m.get("type") == "expense"
+            and m.get("account") == c.get("account")
+        ]
+        if not members:
+            continue  # closure removed memberless counters already
+        if fk not in kept_ids:
+            c["counter_entry_id"] = members[0]["import_id"]
+        c["amount"] = f"{sum(float(m.get('amount') or 0) for m in members):.2f}"
+
     _atomic_csv_rewrite(tx_path, fieldnames, kept)
     return sorted(expanded)
+
+
+def _sync_group_counter(receipt_group, rows, by_id, accounts, fieldnames,
+                        existing_ids, to_delete, result):
+    """Re-derive the single group counter of a receipt split (BL-H1).
+
+    Splits on a pass-through account get ONE income counter for the group
+    TOTAL (see build_manual_lines), so the per-row FK logic in
+    sync_counter_entries must not run on split members: editing a
+    non-anchor member would mint a second counter for that member alone,
+    and mirroring the anchor's own amount would overwrite the group total.
+    This helper recomputes the counter from the whole group instead:
+    amount = sum of the group's pass-through expense members, header
+    fields mirrored from the anchor (the FK target while it exists),
+    exactly one counter kept per group (accidental extras minted by the
+    pre-fix logic are healed away), counter deleted only when no
+    pass-through member remains.
+    """
+    members = [
+        r for r in rows
+        if (r.get("receipt_group") or "").strip() == receipt_group
+        and not (r.get("counter_entry_id") or "").strip()
+        and r["import_id"] not in to_delete
+    ]
+    member_ids = {m["import_id"] for m in members}
+    counters = []
+    for r in rows:
+        fk = (r.get("counter_entry_id") or "").strip()
+        if not fk or r["import_id"] in to_delete:
+            continue
+        if (r.get("receipt_group") or "").strip() == receipt_group or fk in member_ids:
+            counters.append(r)
+
+    def _is_pt_expense(row):
+        acc = accounts.get(row.get("account", ""), {})
+        return (row.get("type") == "expense"
+                and bool((acc.get("pass_through_payee") or "").strip()))
+
+    pt_members = [m for m in members if _is_pt_expense(m)]
+
+    if not pt_members:
+        # Group moved off pass-through (type/account edits) — counters
+        # are orphans now.
+        for c in counters:
+            to_delete.add(c["import_id"])
+            result["deleted"].append(c["import_id"])
+        return
+
+    # Anchor: the FK target while it is still a pass-through member,
+    # otherwise the first member in file order.
+    anchor = pt_members[0]
+    for c in counters:
+        fk_row = by_id.get((c.get("counter_entry_id") or "").strip())
+        if fk_row is not None and any(fk_row is m for m in pt_members):
+            anchor = fk_row
+            break
+
+    acc_info = accounts.get(anchor.get("account", ""), {})
+    ptp = (acc_info.get("pass_through_payee") or "").strip()
+    reimb_cat = REIMBURSEMENT_CATEGORIES.get(ptp, f"Income:{ptp} Reimbursement")
+    total = sum(float(m.get("amount") or 0) for m in pt_members)
+
+    if not counters:
+        # Healing path: pass-through split without any counter.
+        pt_base = dict(anchor)
+        pt_base["amount"] = str(total)
+        pt_line = generate_pass_through_line(pt_base, acc_info, existing_ids)
+        if pt_line:
+            existing_ids.add(pt_line["import_id"])
+            new_row = {k: str(pt_line.get(k, "") or "") for k in fieldnames}
+            new_row["amount"] = f"{total:.2f}"
+            rows.append(new_row)
+            by_id[new_row["import_id"]] = new_row
+            result["created"].append(new_row["import_id"])
+        return
+
+    keeper, extras = counters[0], counters[1:]
+    for c in extras:
+        to_delete.add(c["import_id"])
+        result["deleted"].append(c["import_id"])
+
+    desired = {
+        "date": anchor.get("date", ""),
+        "amount": f"{total:.2f}",
+        "currency": anchor.get("currency", ""),
+        "account": anchor.get("account", ""),
+        "tags": anchor.get("tags", ""),
+        "receipt_group": receipt_group,
+        "payee": ptp,
+        "category": reimb_cat,
+        "counter_entry_id": anchor["import_id"],
+    }
+    changed = False
+    for col, val in desired.items():
+        if keeper.get(col, "") != val:
+            keeper[col] = val
+            changed = True
+    if changed:
+        result["updated"].append(keeper["import_id"])
 
 
 @with_tx_lock
@@ -2446,7 +2680,9 @@ def sync_counter_entries(import_ids: list[str]) -> dict:
         pass-through account, or healing a legacy orphan) → create one
 
     Income legs themselves (rows carrying a counter_entry_id FK) are
-    skipped — the expense leg is the canonical edit surface.
+    skipped — the expense leg is the canonical edit surface. Rows that
+    belong to a receipt split are handled group-wise via
+    _sync_group_counter (one counter per group, amount = group total).
 
     Returns {"updated": [...], "created": [...], "deleted": [...]} with
     the counter-entry import_ids touched per action.
@@ -2468,6 +2704,7 @@ def sync_counter_entries(import_ids: list[str]) -> dict:
     result = {"updated": [], "created": [], "deleted": []}
     to_delete: set[str] = set()
     existing_ids = set(by_id)
+    processed_groups: set[str] = set()
 
     # Columns the income leg mirrors verbatim from the expense leg
     # (tag copy is intentional — see generate_pass_through_line, M-B2).
@@ -2479,6 +2716,15 @@ def sync_counter_entries(import_ids: list[str]) -> dict:
             continue
         if (target.get("counter_entry_id") or "").strip():
             continue  # the edited row IS an income leg — leave it alone
+        rg = (target.get("receipt_group") or "").strip()
+        if rg:
+            # Receipt-split member: the group shares ONE counter for the
+            # total, so it is synced as a whole (BL-H1) — never per row.
+            if rg not in processed_groups:
+                processed_groups.add(rg)
+                _sync_group_counter(rg, rows, by_id, accounts, fieldnames,
+                                    existing_ids, to_delete, result)
+            continue
         counters = [
             c for c in counters_by_fk.get(import_id, [])
             if c["import_id"] not in to_delete
@@ -2851,7 +3097,7 @@ def build_manual_lines(form_data: dict) -> dict:
 
     Supports receipt splits: if form_data contains a 'splits' list of
     [{amount, category}, ...], each split becomes a separate TX line
-    sharing the same receipt_group (linked via a hash-based group ID).
+    sharing the same receipt_group (linked via a random group ID).
 
     For pass-through splits, a single counter-entry is created for the
     total amount (not one per split line).
@@ -2894,10 +3140,12 @@ def build_manual_lines(form_data: dict) -> dict:
     final_lines = []
 
     if splits and len(splits) >= 2:
-        # Split mode: generate receipt_group
-        import hashlib
-        rg_hash = hashlib.sha1(f"{base_date}{base_account}{base_payee}{id(splits)}".encode()).hexdigest()[:8]
-        receipt_group = f"split-{rg_hash}"
+        # Split mode: generate receipt_group. Random UUID instead of a hash
+        # over (date, account, payee, id(splits)) — id() is a reused memory
+        # address, so two independent bookings with the same header fields
+        # could collide and silently merge into one receipt group (BL-M2).
+        import uuid
+        receipt_group = f"split-{uuid.uuid4().hex[:12]}"
 
         for sp in splits:
             # Per-split note overrides the form-level note. Empty per-split

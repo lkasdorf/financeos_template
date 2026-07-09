@@ -25,9 +25,20 @@ async function loadTxContext() {
     const res = await fetch('/api/tx/context', { method: 'POST' });
     addTxState.context = await res.json();
   } catch (e) {
-    addTxState.context = { accounts: [], categories: [], tags: [], payees: [] };
+    // DP-M3/F-M5: do NOT cache the fallback — the next call should hit
+    // the API again instead of serving empty pickers until full reload.
+    return { accounts: [], categories: [], tags: [], payees: [] };
   }
   return addTxState.context;
+}
+
+// DP-M3: single invalidation point for the /api/tx/context cache. Call
+// after every successful save/delete of a context source (accounts,
+// categories, tags, payees, ATM fees) — Add-TX, Scheduled, QuickExp and
+// the LUKU/Water tag pickers all render from this cache and otherwise
+// miss new entries until a full reload.
+function invalidateTxContext() {
+  addTxState.context = null;
 }
 
 function navigateToAddTxWithAccount(alias) {
@@ -77,6 +88,22 @@ function duplicateTx(tx) {
 async function renderAddTxPage() {
   const content = document.getElementById('add-tx-content');
   if (!content) return;
+
+  // Reset split state on every mount. splitLines is module-global and survives
+  // view changes, so an abandoned "+ Split" click (or a Quick-Expense apply on
+  // top of stale state) would leave length>=2 here. The submit path then
+  // recomputes the amount from the (empty) split rows and rejects a perfectly
+  // valid main-amount entry with "Please enter an amount". The fresh
+  // content.innerHTML below already rebuilds an empty splits area + hidden
+  // badge, so we only need to clear the state variable to match it.
+  splitLines = [];
+
+  // Same mount-reset for staged receipt files (DC-H1, CODE_REVIEW_2026-07-08):
+  // the grid is rebuilt empty below, so files staged before an abandoned
+  // booking are invisible — but submitManual() would still upload them and
+  // attach their URLs to whatever unrelated TX gets booked next.
+  _atxReceiptFiles = [];
+
   const today = new Date().toISOString().slice(0, 10);
 
   // Load quick expenses for chips — skip entirely if the feature is disabled.
@@ -101,8 +128,8 @@ async function renderAddTxPage() {
   // point that stored a return route (e.g. the prominent + Add TX button
   // on an Account detail page). Returns to that route on click.
   const backBar = addTxState.returnRoute ? `
-    <div class="atx-return-bar" style="margin-bottom:12px;">
-      <button class="report-back" data-action="returnFromAddTx" style="margin:0;">${t('add_tx.back', {}, '← Back')}</button>
+    <div class="atx-return-bar mb-12">
+      <button class="report-back m-0" data-action="returnFromAddTx">${t('add_tx.back', {}, '← Back')}</button>
     </div>
   ` : '';
 
@@ -598,7 +625,13 @@ function filterCategories(txType) {
   Array.from(catSel.options).forEach(o => {
     if (!o.value) return; // keep placeholder
     const oType = o.getAttribute('data-type');
-    o.style.display = (!catType || oType === catType) ? '' : 'none';
+    // Custody categories flow both ways on a single category (deposits =
+    // income, withdrawals = expense), so always offer them regardless of the
+    // selected type. Mirrors the type-mismatch tolerance in the Edit dialog
+    // and lets a custody savings category be picked manually for a deposit,
+    // not only via its quick-expense chip.
+    const isCustody = o.value.startsWith('Custody:');
+    o.style.display = (isCustody || !catType || oType === catType) ? '' : 'none';
   });
 }
 
@@ -844,6 +877,14 @@ async function submitManual() {
 
   if (!formData.account) { showTxStatus('error', t('txflow.manual.err_no_account', {}, 'Please select an account')); return; }
   if (!formData.amount || formData.amount === '0') { showTxStatus('error', t('txflow.manual.err_no_amount', {}, 'Please enter an amount')); return; }
+  // Category is mandatory for expense/income (transfers carry none). Catch
+  // it here for an instant message; the backend validator is the real guard.
+  if (type !== 'transfer') {
+    const missingCategory = (formData.splits && formData.splits.length >= 2)
+      ? formData.splits.some(s => !s.category)
+      : !formData.category;
+    if (missingCategory) { showTxStatus('error', t('txflow.manual.err_no_category', {}, 'Please select a category')); return; }
+  }
 
   showTxLoading(t('txflow.manual.building_preview', {}, 'Building preview...'));
   document.getElementById('atx-preview-area').innerHTML = '';
@@ -924,7 +965,7 @@ function renderTxPreview(data) {
 
   // Confidence badge
   if (data.confidence && data.confidence !== 'high') {
-    html += `<div class="atx-ambiguities" style="margin-top:8px">${t('txflow.preview.confidence_html', { level: escapeHtml(data.confidence) }, `Confidence: <strong>${escapeHtml(data.confidence)}</strong>`)}</div>`;
+    html += `<div class="atx-ambiguities mt-8">${t('txflow.preview.confidence_html', { level: escapeHtml(data.confidence) }, `Confidence: <strong>${escapeHtml(data.confidence)}</strong>`)}</div>`;
   }
 
   html += `

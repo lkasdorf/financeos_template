@@ -411,7 +411,7 @@ function renderMmexSummary(summary, warnings) {
   if (warnings.length) {
     const li = document.createElement('li');
     li.style.gridColumn = '1 / -1';
-    li.style.background = 'rgba(245, 158, 11, 0.08)';
+    li.style.background = 'color-mix(in srgb, var(--warn) 8%, transparent)';
     li.innerHTML = `<b>${warnings.length}</b><span>warnings — first: ${escapeHtml(warnings[0])}</span>`;
     list.appendChild(li);
   }
@@ -586,9 +586,9 @@ function renderReportsStep() {
       ? ` · showing ${cats.length} of ${allCats.length} (filtered)`
       : ` · ${allCats.length} total options`;
     if (mmexCount) {
-      det.innerHTML = `<span style="color:var(--positive);">✓ Detected ${mmexCount} categories from your MMEX file${visibleNote}.</span>`;
+      det.innerHTML = `<span class="c-pos">✓ Detected ${mmexCount} categories from your MMEX file${visibleNote}.</span>`;
     } else if (state.config.datasource === 'mmex') {
-      det.innerHTML = `<span style="color:var(--warn);">⚠ No MMEX categories reached the frontend — using canonical defaults${visibleNote}. Open browser DevTools → Console for the upload diagnostic.</span>`;
+      det.innerHTML = `<span class="c-warn">⚠ No MMEX categories reached the frontend — using canonical defaults${visibleNote}. Open browser DevTools → Console for the upload diagnostic.</span>`;
     } else {
       det.innerHTML = `<span class="c-mut">Empty start: showing canonical default category set${visibleNote}.</span>`;
     }
@@ -603,7 +603,7 @@ function renderReportsStep() {
       const cur = node.categories || [];
       return `
         <div class="setup-card-block" data-section="${sec.key}">
-          <div style="font-weight:600;">${escapeHtml(sec.title)}</div>
+          <div class="fw-600">${escapeHtml(sec.title)}</div>
           <select multiple size="10" name="${sec.key}.categories" style="width:100%;padding:6px;margin-top:4px;">${optionsHtml(cur)}</select>
         </div>`;
     }
@@ -619,7 +619,7 @@ function renderReportsStep() {
       }).join('');
       return `
         <div class="setup-card-block" data-section="${sec.key}" data-shape="buckets">
-          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
+          <div class="fw-600 mb-6">${escapeHtml(sec.title)}</div>
           ${inner}
         </div>`;
     }
@@ -628,7 +628,7 @@ function renderReportsStep() {
       const inc = node.income_categories || [];
       return `
         <div class="setup-card-block" data-section="${sec.key}" data-shape="cd_split">
-          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
+          <div class="fw-600 mb-6">${escapeHtml(sec.title)}</div>
           <div style="display:grid;grid-template-columns:140px 1fr;gap:10px;margin-bottom:6px;">
             <div style="padding-top:4px;">Expense side</div>
             <select multiple size="8" name="${sec.key}.expense" style="width:100%;padding:4px;">${optionsHtml(exp)}</select>
@@ -649,7 +649,7 @@ function renderReportsStep() {
         : 'e.g.\nRent\nBills:\nInsurance:';
       return `
         <div class="setup-card-block" data-section="${sec.key}" data-shape="prefixes">
-          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(sec.title)}</div>
+          <div class="fw-600 mb-6">${escapeHtml(sec.title)}</div>
           <div class="c-mut" style="font-size:12px;margin:0 0 8px;line-height:1.4;">${escapeHtml(hintText)}</div>
           <textarea name="${sec.key}.fixed_prefixes" rows="5" placeholder="${escapeHtml(phText)}" style="width:100%;padding:6px;font-family:monospace;font-size:13px;">${escapeHtml(prefixes.join('\n'))}</textarea>
         </div>`;

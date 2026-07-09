@@ -21,13 +21,13 @@ function renderBackupTab() {
         <button class="btn-save" data-action="triggerBackup" data-arg1="third_party">${t('settings.backup.btn_debts', {}, 'Backup Debts')}</button>
         <button data-action="triggerBackup" data-arg1="all">${t('settings.backup.btn_all', {}, 'Backup All')}</button>
       </div>
-      <div class="section-title" style="margin-top:24px;">${t('settings.backup.full_title', {}, 'Download full backup')}</div>
+      <div class="section-title mt-24">${t('settings.backup.full_title', {}, 'Download full backup')}</div>
       <p class="hint-md mb-16">${t('settings.backup.full_hint_html', {}, 'Bundle the entire <code>data/</code> directory (excluding rolling backups) into a single ZIP for off-device storage or migration to another machine.')}</p>
       <div>
         <button class="btn-save" data-action="downloadFullBackup">${t('settings.backup.btn_download_zip', {}, 'Download full backup (.zip)')}</button>
       </div>
       <div id="backup-status" class="mt-16"></div>
-      <div id="backup-list" style="margin-top:24px;"></div>
+      <div id="backup-list" class="mt-24"></div>
     </div>
   `;
   loadBackupList();
@@ -208,13 +208,10 @@ async function showAccountAddModal() {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${escapeHtml(t('settings.accounts.modal.add_title', {}, 'Add new account'))}</h3>
+  openModal({
+    title: `${escapeHtml(t('settings.accounts.modal.add_title', {}, 'Add new account'))}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx1"><label>${t('settings.accounts.modal.label_alias', {}, 'Alias')}</label>
           <input type="text" id="acc-add-alias" placeholder="${escapeHtml(t('settings.accounts.modal.alias_ph', {}, 'short_id'))}" autocomplete="off" maxlength="32" pattern="[a-z][a-z0-9_]*" title="lowercase letters, digits, underscore; starts with a letter; max 32 chars">
@@ -259,16 +256,11 @@ async function showAccountAddModal() {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveAccountAdd">${t('common.actions.save', {}, 'Save')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
   setTimeout(() => { const el = document.getElementById('acc-add-alias'); if (el) el.focus(); }, 30);
 }
 
@@ -298,6 +290,7 @@ async function saveAccountAdd() {
       return;
     }
     closeModal();
+    invalidateTxContext(); // DP-M3: new account must reach the Add-TX pickers
     // Patch state in-memory so the new account shows up immediately
     // without a full boot() (which would jump tabs, see saveAccountEdit).
     if (typeof state !== 'undefined' && state.accounts && data.account) {
@@ -321,13 +314,10 @@ async function showAccountEditModal(alias) {
   const acc = state.accounts.find(a => a.alias === alias);
   if (!acc) return;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${t('settings.accounts.modal.title', { alias: escapeHtml(alias) }, `Edit <span class="accent">${escapeHtml(alias)}</span>`)}</h3>
+  openModal({
+    title: `${t('settings.accounts.modal.title', { alias: escapeHtml(alias) }, `Edit <span class="accent">${escapeHtml(alias)}</span>`)}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx1"><label>${t('settings.accounts.modal.label_alias', {}, 'Alias')}</label>
           <input type="text" id="acc-edit-alias" value="${escapeHtml(alias)}">
@@ -368,16 +358,11 @@ async function showAccountEditModal(alias) {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveAccountEdit" data-arg1="${escapeHtml(alias)}">${t('common.actions.save', {}, 'Save')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 async function saveAccountEdit(alias) {
@@ -393,8 +378,23 @@ async function saveAccountEdit(alias) {
   const statusEl = document.getElementById('acc-edit-status-msg');
   statusEl.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${t('common.saving', {}, 'Saving...')}</div>`;
   try {
-    // Rename first if alias changed
-    let currentAlias = alias;
+    // DP-M5: update FIRST (the old alias is still valid), rename LAST.
+    // The previous order (rename → update) was not atomic: when the
+    // update request failed after a successful rename, the alias was
+    // already changed server-side while the modal still held the old
+    // one — the retry re-ran rename(old→new) against a gone alias and
+    // the save was stuck until a full reload. With update-first, every
+    // failure mode leaves the modal retryable: a failed update changed
+    // nothing, a failed rename has the field changes already saved and
+    // the retry repeats update (idempotent) + rename.
+    const res = await fetch('/api/accounts/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias, updated }),
+    });
+    const data = await res.json();
+    if (data.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`; return; }
+    // Then rename if the alias changed
     let didRename = false;
     if (newAlias && newAlias !== alias) {
       const renameRes = await fetch('/api/accounts/rename', {
@@ -404,18 +404,10 @@ async function saveAccountEdit(alias) {
       });
       const renameData = await renameRes.json();
       if (renameData.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(renameData.error)}</div>`; return; }
-      currentAlias = newAlias;
       didRename = true;
     }
-    // Then update other fields
-    const res = await fetch('/api/accounts/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ alias: currentAlias, updated }),
-    });
-    const data = await res.json();
-    if (data.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`; return; }
     closeModal();
+    invalidateTxContext(); // DP-M3
     // Patch state.accounts in-memory so the dashboard widget and the
     // settings tab see the change immediately. We avoid boot() here
     // because navigateTo('settings') resets settingsTab to 'categories'
@@ -424,7 +416,7 @@ async function saveAccountEdit(alias) {
       const idx = state.accounts.findIndex(a => a.alias === alias);
       if (idx >= 0) {
         const merged = { ...state.accounts[idx], ...updated };
-        if (didRename) merged.alias = currentAlias;
+        if (didRename) merged.alias = newAlias;
         state.accounts[idx] = merged;
       }
     }
@@ -603,8 +595,8 @@ async function renderVehiclesTab() {
         return `
           <tr data-vid="${escapeHtml(v.vehicle_id)}">
             <td style="padding:10px 12px;">
-              <div style="font-weight:600;">${escapeHtml(v.name || v.vehicle_id)}</div>
-              <div style="font-size:11px;color:var(--muted);">${escapeHtml(v.license_plate || '')} ${v.license_plate ? '·' : ''} ${escapeHtml(v.vehicle_id)}</div>
+              <div class="fw-600">${escapeHtml(v.name || v.vehicle_id)}</div>
+              <div class="label-sm">${escapeHtml(v.license_plate || '')} ${v.license_plate ? '·' : ''} ${escapeHtml(v.vehicle_id)}</div>
             </td>
             <td style="padding:10px 12px;font-size:12px;color:var(--muted-soft);">${escapeHtml(v.currency || '—')}</td>
             <td style="padding:10px 12px;font-size:12px;color:var(--muted-soft);">${escapeHtml(v.default_account || '—')}</td>
@@ -630,11 +622,11 @@ async function renderVehiclesTab() {
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead>
           <tr style="background:var(--border-soft);font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);">
-            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.name', {}, 'Name'))}</th>
-            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.currency', {}, 'Currency'))}</th>
-            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.account', {}, 'Default account'))}</th>
-            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.payee', {}, 'Default payee'))}</th>
-            <th style="padding:8px 12px;text-align:left;font-weight:500;">${escapeHtml(t('settings.vehicles.col.status', {}, 'Status'))}</th>
+            <th class="th-left">${escapeHtml(t('settings.vehicles.col.name', {}, 'Name'))}</th>
+            <th class="th-left">${escapeHtml(t('settings.vehicles.col.currency', {}, 'Currency'))}</th>
+            <th class="th-left">${escapeHtml(t('settings.vehicles.col.account', {}, 'Default account'))}</th>
+            <th class="th-left">${escapeHtml(t('settings.vehicles.col.payee', {}, 'Default payee'))}</th>
+            <th class="th-left">${escapeHtml(t('settings.vehicles.col.status', {}, 'Status'))}</th>
             <th style="padding:8px 12px;text-align:right;font-weight:500;">${escapeHtml(t('settings.vehicles.col.actions', {}, 'Actions'))}</th>
           </tr>
         </thead>
@@ -731,26 +723,26 @@ async function renderBrandingTab() {
       <h3 style="margin:0 0 6px;">${escapeHtml(t('settings.branding.heading', {}, 'Branding'))}</h3>
       <p class="c-mut" style="margin:0 0 16px;">${escapeHtml(t('settings.branding.intro', {}, 'Display name + accent color. Both are written to config/branding.json and applied immediately to the dashboard (header, sidebar, footer, charts, hover glows).'))}</p>
       <label style="display:block;margin-bottom:14px;">
-        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(t('settings.branding.name_label', {}, 'Display name'))}</div>
+        <div class="fw-600 mb-4">${escapeHtml(t('settings.branding.name_label', {}, 'Display name'))}</div>
         <input type="text" id="branding-name" maxlength="60" value="${escapeHtml(data.display_name)}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
       </label>
       <label style="display:block;margin-bottom:14px;">
-        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(t('settings.branding.accent_label', {}, 'Accent color'))}</div>
+        <div class="fw-600 mb-4">${escapeHtml(t('settings.branding.accent_label', {}, 'Accent color'))}</div>
         <div style="display:flex;gap:10px;align-items:center;">
           <input type="color" id="branding-color" value="${escapeHtml(data.accent_color)}" style="width:60px;height:36px;padding:0;border:1px solid var(--border);border-radius:6px;cursor:pointer;">
           <input type="text" id="branding-color-hex" value="${escapeHtml(data.accent_color)}" pattern="#[0-9A-Fa-f]{6}" maxlength="7" style="width:100px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:monospace;">
-          <span class="c-mut" style="font-size:12px;">${escapeHtml(t('settings.branding.accent_hint', {}, 'Used for accents, hover glows, links.'))}</span>
+          <span class="c-mut fs-12">${escapeHtml(t('settings.branding.accent_hint', {}, 'Used for accents, hover glows, links.'))}</span>
         </div>
       </label>
       <hr style="border:0;border-top:1px solid var(--border-soft);margin:20px 0 16px;">
       <label style="display:block;margin-bottom:14px;">
-        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(t('settings.branding.fx_url_label', {}, 'FX Dashboard URL'))}</div>
+        <div class="fw-600 mb-4">${escapeHtml(t('settings.branding.fx_url_label', {}, 'FX Dashboard URL'))}</div>
         <input type="url" id="branding-fx-url" placeholder="https://example.ts.net:8446/" value="${escapeHtml(data.fx_dashboard_url || '')}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:monospace;font-size:12px;">
         <div class="c-mut" style="font-size:12px;margin-top:4px;">${escapeHtml(t('settings.branding.fx_url_hint', {}, 'Optional. If set, an "FX Charts" link appears in the sidebar and opens this URL in a new tab. Leave empty to hide.'))}</div>
       </label>
       <div style="display:flex;gap:10px;align-items:center;margin-top:18px;">
         <button class="btn btn-primary" id="branding-save">${escapeHtml(t('settings.branding.save', {}, 'Save'))}</button>
-        <span id="branding-status" class="c-mut" style="font-size:12px;"></span>
+        <span id="branding-status" class="c-mut fs-12"></span>
       </div>
     </div>
   `;
@@ -807,10 +799,10 @@ async function renderLanguageTab() {
       <h3 style="margin:0 0 12px;">${t('settings.language.heading', {}, 'Interface Language')}</h3>
       <p class="c-mut" style="margin:0 0 16px;">${t('settings.language.description', {}, 'Choose the display language for the dashboard.')}</p>
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-        <label for="locale-select" style="font-weight:600;">${t('settings.language.current_label', {}, 'Current locale:')}</label>
+        <label for="locale-select" class="fw-600">${t('settings.language.current_label', {}, 'Current locale:')}</label>
         <select id="locale-select" style="padding:6px 10px;">${options}</select>
       </div>
-      <div class="c-mut" style="font-size:12px;">${t('settings.language.fallback_note', {}, 'Strings without a translation fall back to the English value baked into the HTML.')}</div>
+      <div class="c-mut fs-12">${t('settings.language.fallback_note', {}, 'Strings without a translation fall back to the English value baked into the HTML.')}</div>
     </div>
   `;
   // Switch locale, re-apply DOM, then re-render this tab so the new strings show up immediately.
@@ -820,16 +812,33 @@ async function renderLanguageTab() {
   });
 }
 
+// OPT-13: shared fetch/loading/error scaffold for the settings CRUD tabs.
+// Renders the loading placeholder, POSTs the list endpoint and returns the
+// item array — or null after rendering the error state (callers bail out
+// with a bare `return`). The tab tables themselves stay per-entity: their
+// grouping / active-inactive splits / badge columns diverge too much for
+// a shared table factory to carry its weight.
+async function loadCrudTabItems(container, { endpoint, key, loadingText, errorText }) {
+  container.innerHTML = `<div class="loading">${escapeHtml(loadingText)}</div>`;
+  try {
+    const res = await fetch(endpoint, { method: 'POST' });
+    const data = await res.json();
+    return data[key] || [];
+  } catch (e) {
+    const msg = typeof errorText === 'function' ? errorText(e) : errorText;
+    container.innerHTML = `<div class="atx-status error">${escapeHtml(msg)}</div>`;
+    return null;
+  }
+}
+
 async function renderCategoriesTab() {
   const container = document.getElementById('settings-tab-content');
-  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.categories.loading', {}, 'Loading categories...'))}</div>`;
-
-  let categories = [];
-  try {
-    const res = await fetch('/api/categories/list', { method: 'POST' });
-    const data = await res.json();
-    categories = data.categories || [];
-  } catch (e) { container.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.categories.load_failed', {}, 'Failed to load'))}</div>`; return; }
+  const categories = await loadCrudTabItems(container, {
+    endpoint: '/api/categories/list', key: 'categories',
+    loadingText: t('settings.categories.loading', {}, 'Loading categories...'),
+    errorText: t('settings.categories.load_failed', {}, 'Failed to load'),
+  });
+  if (categories === null) return;
 
   // Group by top-level
   const groups = {};
@@ -903,13 +912,10 @@ async function showCategoryModal(editPath) {
   }
   const isEdit = !!cat;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('settings.categories.modal.title_edit', {}, 'Edit <span class="accent">Category</span>') : t('settings.categories.modal.title_add', {}, 'Add <span class="accent">Category</span>')}</h3>
+  openModal({
+    title: `${isEdit ? t('settings.categories.modal.title_edit', {}, 'Edit <span class="accent">Category</span>') : t('settings.categories.modal.title_add', {}, 'Add <span class="accent">Category</span>')}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field"><label>${t('settings.categories.modal.label_path', {}, 'Path (e.g. Food:Dining out)')}</label>
           <input type="text" id="cm-path" value="${escapeHtml(cat?.path || '')}" ${isEdit ? 'readonly style="opacity:0.6"' : ''}>
@@ -950,16 +956,11 @@ async function showCategoryModal(editPath) {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveCategory" data-arg1="${isEdit ? escapeHtml(editPath) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 async function saveCategory(editPath) {
@@ -993,14 +994,12 @@ async function saveCategory(editPath) {
 
 async function renderTagsTab() {
   const container = document.getElementById('settings-tab-content');
-  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.tags.loading', {}, 'Loading tags...'))}</div>`;
-
-  let tags = [];
-  try {
-    const res = await fetch('/api/tags/list', { method: 'POST' });
-    const data = await res.json();
-    tags = data.tags || [];
-  } catch (e) { container.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.categories.load_failed', {}, 'Failed to load'))}</div>`; return; }
+  const tags = await loadCrudTabItems(container, {
+    endpoint: '/api/tags/list', key: 'tags',
+    loadingText: t('settings.tags.loading', {}, 'Loading tags...'),
+    errorText: t('settings.categories.load_failed', {}, 'Failed to load'),
+  });
+  if (tags === null) return;
 
   // Cache translations + rename map var from `t` to `tag` to avoid shadowing t().
   const labelActive = t('common.status.active', {}, 'Active');
@@ -1054,13 +1053,10 @@ async function showTagModal(editTag) {
   }
   const isEdit = !!tag;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('settings.tags.modal.title_edit', {}, 'Edit <span class="accent">Tag</span>') : t('settings.tags.modal.title_add', {}, 'Add <span class="accent">Tag</span>')}</h3>
+  openModal({
+    title: `${isEdit ? t('settings.tags.modal.title_edit', {}, 'Edit <span class="accent">Tag</span>') : t('settings.tags.modal.title_add', {}, 'Add <span class="accent">Tag</span>')}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field"><label>${t('settings.tags.modal.label_tag_name', {}, 'Tag Name')}</label>
           <input type="text" id="tm-tag" value="${escapeHtml(tag?.tag || '')}" ${isEdit ? 'readonly style="opacity:0.6"' : ''}>
@@ -1084,16 +1080,11 @@ async function showTagModal(editTag) {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveTag" data-arg1="${isEdit ? escapeHtml(editTag) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 async function saveTag(editTag) {
@@ -1114,6 +1105,7 @@ async function saveTag(editTag) {
     const result = await res.json();
     if (result.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(result.error)}</div>`; return; }
     closeModal();
+    invalidateTxContext(); // DP-M3: new tag must reach all tag pickers
     renderTagsTab();
   } catch (e) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(e.message)}</div>`; }
 }
@@ -1122,6 +1114,7 @@ async function deleteTag(tag) {
   if (!(await uiConfirm(t('settings.tags.modal.confirm_delete', { tag }, `Delete tag "${tag}"?`), { type: 'destructive' }))) return;
   try {
     await fetch('/api/tags/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag }) });
+    invalidateTxContext(); // DP-M3
     renderTagsTab();
   } catch (e) { console.warn('[settings:silent-catch]', e); }
 }
@@ -1236,7 +1229,7 @@ async function showScheduledModal(editId) {
   const catOptions = ctx.categories.filter(c => c.active).map(c =>
     `<option value="${escapeHtml(c.path)}" ${item && item.category === c.path ? 'selected' : ''}>${escapeHtml(c.path)}</option>`
   ).join('');
-  const currencies = ['TZS', 'EUR', 'USD', 'PLN'];
+  const currencies = knownCurrencies(); // DP-M7
   const selectedCur = item?.currency || 'TZS';
   const curOptions = currencies.map(c => `<option value="${c}" ${selectedCur === c ? 'selected' : ''}>${c}</option>`).join('');
   const existingTags = new Set((item?.manual_tags || '').split(';').map(t => t.trim()).filter(Boolean));
@@ -1267,13 +1260,10 @@ async function showScheduledModal(editId) {
     }))
     .join('');
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('settings.scheduled.modal.title_edit', {}, 'Edit <span class="accent">Scheduled Transaction</span>') : t('settings.scheduled.modal.title_add', {}, 'Add <span class="accent">Scheduled Transaction</span>')}</h3>
+  openModal({
+    title: `${isEdit ? t('settings.scheduled.modal.title_edit', {}, 'Edit <span class="accent">Scheduled Transaction</span>') : t('settings.scheduled.modal.title_add', {}, 'Add <span class="accent">Scheduled Transaction</span>')}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('common.col.name', {}, 'Name')}</label>
           <input type="text" id="sm-name" value="${escapeHtml(item?.name || '')}" placeholder="${t('settings.scheduled.modal.placeholder_name', {}, 'Monthly Subscription')}">
@@ -1336,16 +1326,11 @@ async function showScheduledModal(editId) {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveScheduled" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 
   // Auto-sync currency to the selected account's native currency. Only
   // overwrites when adding a new entry or when the user hasn't manually
@@ -1413,14 +1398,12 @@ async function deleteScheduled(schedId) {
 
 async function renderQuickExpTab() {
   const container = document.getElementById('settings-tab-content');
-  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.quickexp.loading', {}, 'Loading quick expenses...'))}</div>`;
-
-  let items = [];
-  try {
-    const res = await fetch('/api/quickexp/list', { method: 'POST' });
-    const data = await res.json();
-    items = data.quick_expenses || [];
-  } catch (e) { container.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.categories.load_failed', {}, 'Failed to load'))}</div>`; return; }
+  const items = await loadCrudTabItems(container, {
+    endpoint: '/api/quickexp/list', key: 'quick_expenses',
+    loadingText: t('settings.quickexp.loading', {}, 'Loading quick expenses...'),
+    errorText: t('settings.categories.load_failed', {}, 'Failed to load'),
+  });
+  if (items === null) return;
 
   const active = items.filter(q => q.active === 'true');
   const inactive = items.filter(q => q.active !== 'true');
@@ -1485,13 +1468,10 @@ async function showQuickExpModal(editId) {
     `<option value="${escapeHtml(c.path)}" ${item && item.category === c.path ? 'selected' : ''}>${escapeHtml(c.path)}</option>`
   ).join('');
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('settings.quickexp.modal.title_edit', {}, 'Edit <span class="accent">Quick Expense</span>') : t('settings.quickexp.modal.title_add', {}, 'Add <span class="accent">Quick Expense</span>')}</h3>
+  openModal({
+    title: `${isEdit ? t('settings.quickexp.modal.title_edit', {}, 'Edit <span class="accent">Quick Expense</span>') : t('settings.quickexp.modal.title_add', {}, 'Add <span class="accent">Quick Expense</span>')}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('settings.quickexp.modal.label_name_chip', {}, 'Name (shown as chip)')}</label>
           <input type="text" id="qm-name" value="${escapeHtml(item?.name || '')}" placeholder="${t('settings.quickexp.modal.placeholder_name', {}, 'Vegetables')}">
@@ -1541,16 +1521,11 @@ async function showQuickExpModal(editId) {
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveQuickExp" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 async function saveQuickExp(editId) {
@@ -1595,14 +1570,12 @@ async function deleteQuickExp(qeId) {
 
 async function renderAtmFeesTab() {
   const container = document.getElementById('settings-tab-content');
-  container.innerHTML = `<div class="loading">${escapeHtml(t('settings.atmfees.loading', {}, 'Loading ATM fees...'))}</div>`;
-
-  let items = [];
-  try {
-    const res = await fetch('/api/atm-fees/list', { method: 'POST' });
-    const data = await res.json();
-    items = data.atm_fees || [];
-  } catch (e) { container.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.atmfees.load_failed', { msg: e.message }, `Failed to load ATM fees: ${e.message}`))}</div>`; return; }
+  const items = await loadCrudTabItems(container, {
+    endpoint: '/api/atm-fees/list', key: 'atm_fees',
+    loadingText: t('settings.atmfees.loading', {}, 'Loading ATM fees...'),
+    errorText: (e) => t('settings.atmfees.load_failed', { msg: e.message }, `Failed to load ATM fees: ${e.message}`),
+  });
+  if (items === null) return;
 
   const active = items.filter(i => i.active === 'true');
   const inactive = items.filter(i => i.active !== 'true');
@@ -1644,7 +1617,7 @@ async function renderAtmFeesTab() {
     </tr>`;
   });
   html += '</tbody></table></div>';
-  html += `<div class="hint-sm" style="margin-top:12px;">${t('settings.atmfees.footer_html', {}, '<strong>How it works:</strong> <code>TX atm 400k crdb</code> looks up the matching row (bank + amount). Claude generates 4 bookings: transfer (amount, tag <code>ATM</code>), fee_net, levy, and VAT (= fee_net × vat_rate). Unknown amounts trigger a follow-up question.')}</div>`;
+  html += `<div class="hint-sm mt-12">${t('settings.atmfees.footer_html', {}, '<strong>How it works:</strong> <code>TX atm 400k crdb</code> looks up the matching row (bank + amount). Claude generates 4 bookings: transfer (amount, tag <code>ATM</code>), fee_net, levy, and VAT (= fee_net × vat_rate). Unknown amounts trigger a follow-up question.')}</div>`;
   container.innerHTML = html;
 }
 
@@ -1673,13 +1646,10 @@ async function showAtmFeeModal(editId) {
     `<option value="${escapeHtml(a.alias)}" ${item && item.bank === a.alias ? 'selected' : ''}>${escapeHtml(a.alias)} — ${escapeHtml(a.name)} [${escapeHtml(a.currency)}]</option>`
   ).join('');
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${isEdit ? t('settings.atmfees.modal.title_edit', {}, 'Edit <span class="accent">ATM Fee</span>') : t('settings.atmfees.modal.title_add', {}, 'Add <span class="accent">ATM Fee</span>')}</h3>
+  openModal({
+    title: `${isEdit ? t('settings.atmfees.modal.title_edit', {}, 'Edit <span class="accent">ATM Fee</span>') : t('settings.atmfees.modal.title_add', {}, 'Add <span class="accent">ATM Fee</span>')}`,
+    maxWidth: '620px',
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx1"><label>${t('settings.atmfees.modal.label_bank', {}, 'Bank (account alias)')}</label>
           <select id="af-bank"><option value="">${t('common.select_placeholder', {}, 'Select...')}</option>${accOptions}</select>
@@ -1715,22 +1685,18 @@ async function showAtmFeeModal(editId) {
           <input type="text" id="af-note" value="${escapeHtml(item?.note || '')}" placeholder="${t('settings.atmfees.modal.placeholder_note', {}, 'Tier description, source, etc.')}">
         </div>
       </div>
-      <div class="hint-sm" style="margin-top:8px;">
+      <div class="hint-sm mt-8">
         ${t('settings.atmfees.modal.vat_hint', {}, "VAT = fee_net × vat_rate is computed at booking time — don't enter it separately.")}
       </div>
       <div id="af-status"></div>
       <div class="modal-footer">
         <div class="btn-left"></div>
         <div class="btn-right">
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveAtmFee" data-arg1="${isEdit ? escapeHtml(editId) : ''}">${isEdit ? t('common.actions.save', {}, 'Save') : t('common.actions.add', {}, 'Add')}</button>
         </div>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
+      </div>`,
+  });
 }
 
 async function saveAtmFee(editId) {
@@ -1756,6 +1722,7 @@ async function saveAtmFee(editId) {
     const result = await res.json();
     if (result.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(result.error)}</div>`; return; }
     closeModal();
+    invalidateTxContext(); // DP-M3
     renderAtmFeesTab();
   } catch (e) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(e.message)}</div>`; }
 }
@@ -1764,6 +1731,7 @@ async function deleteAtmFee(feeId) {
   if (!(await uiConfirm(t('settings.atmfees.modal.confirm_delete', { feeId }, `Delete ATM fee preset "${feeId}"?`), { type: 'destructive' }))) return;
   try {
     await fetch('/api/atm-fees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: feeId }) });
+    invalidateTxContext(); // DP-M3
     renderAtmFeesTab();
   } catch (e) { console.warn('[settings:silent-catch]', e); }
 }
@@ -1840,7 +1808,7 @@ async function renderReceiptsTab() {
 
     <div class="section mb-20">
       <h3 style="margin:0 0 8px 0;font-size:14px;">${escapeHtml(t('settings.receipts.export.title', {}, 'Bulk ZIP export'))}</h3>
-      <div class="hint-md" style="margin-bottom:12px;">${escapeHtml(t('settings.receipts.export.help', {}, 'Builds a ZIP with each matching transaction’s receipt files plus an index.csv. Use it for monthly reimbursement bundles, tax audits, or insurance claims.'))}</div>
+      <div class="hint-md mb-12">${escapeHtml(t('settings.receipts.export.help', {}, 'Builds a ZIP with each matching transaction’s receipt files plus an index.csv. Use it for monthly reimbursement bundles, tax audits, or insurance claims.'))}</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;align-items:end;">
         <div class="atx-field"><label>${t('settings.receipts.export.date_from', {}, 'From')}</label>
           <input type="date" id="rcpt-export-from" value="${firstOfMonth}">
@@ -1872,7 +1840,7 @@ async function renderReceiptsTab() {
     </div>
     <div class="section">
       <h3 style="margin:0 0 8px 0;font-size:14px;">${escapeHtml(t('settings.receipts.missing_title', { n: missing.length }, `Missing receipts (top ${missing.length})`))}</h3>
-      <div class="hint-md" style="margin-bottom:12px;">${escapeHtml(t('settings.receipts.missing_help', {}, 'Non-transfer transactions above the per-currency threshold without an attachment. Click a row to edit and attach.'))}</div>
+      <div class="hint-md mb-12">${escapeHtml(t('settings.receipts.missing_help', {}, 'Non-transfer transactions above the per-currency threshold without an attachment. Click a row to edit and attach.'))}</div>
   `;
 
   if (!missing.length) {
@@ -1885,7 +1853,7 @@ async function renderReceiptsTab() {
           <th>${t('common.col.account', {}, 'Account')}</th>
           <th>${t('common.col.payee', {}, 'Payee')}</th>
           <th>${t('common.col.category', {}, 'Category')}</th>
-          <th style="text-align:right;">${t('common.col.amount', {}, 'Amount')}</th>
+          <th class="t-right">${t('common.col.amount', {}, 'Amount')}</th>
           <th></th>
         </tr></thead>
         <tbody>
@@ -1897,7 +1865,7 @@ async function renderReceiptsTab() {
           <td class="fs-11">${escapeHtml(m.account)}</td>
           <td>${escapeHtml(m.payee || '')}</td>
           <td class="fs-11 c-mut2">${escapeHtml(m.category || '')}</td>
-          <td class="amt" style="text-align:right;">${formatCurrency(Number(m.amount), m.currency)} ${escapeHtml(m.currency)}</td>
+          <td class="amt t-right">${formatCurrency(Number(m.amount), m.currency)} ${escapeHtml(m.currency)}</td>
           <td><button class="tx-edit-btn" data-action="editTxFromReceiptsStats" data-arg1="${escapeHtml(m.import_id)}">${escapeHtml(t('settings.receipts.attach_btn', {}, 'Attach →'))}</button></td>
         </tr>
       `;

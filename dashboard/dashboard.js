@@ -294,7 +294,7 @@ async function openSchedRunDueModal() {
   }).join('');
 
   const warningsHtml = (preview.warnings && preview.warnings.length)
-    ? `<div style="background:var(--warning-bg, #fff3cd);color:var(--warning-fg, #664d03);border:1px solid var(--warning-border, #ffe69c);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;">${preview.warnings.map(w => `⚠ ${escapeHtml(w)}`).join('<br>')}</div>`
+    ? `<div style="background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-border);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;">${preview.warnings.map(w => `⚠ ${escapeHtml(w)}`).join('<br>')}</div>`
     : '';
 
   const body = `
@@ -303,35 +303,23 @@ async function openSchedRunDueModal() {
     <div style="max-height:50vh;overflow-y:auto;border-top:1px solid var(--border-soft);">${rowHtml}</div>
   `;
 
-  // Build the modal using the project's inline-overlay pattern (matches
-  // pages-debts.js / forms-edit-tx.js). closeModal() is the global helper
-  // from forms-edit-tx.js — it removes the overlay element.
+  // DP-M6: close any stale overlay via its own handle so its Escape
+  // listener goes with it (a bare .remove() would strand the listener).
   const existing = document.querySelector('.modal-overlay');
-  if (existing) existing.remove();
+  if (existing) (existing._close || existing.remove).call(existing);
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-  overlay.innerHTML = `
-    <div class="modal" style="max-width:760px;">
-      <h3>${t('sched.modal.title', {}, 'Run Due Scheduled Transactions')}</h3>
+  const { overlay, close } = openModal({
+    title: t('sched.modal.title', {}, 'Run Due Scheduled Transactions'),
+    maxWidth: '760px',
+    bodyHtml: `
       ${body}
       <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
-        <button id="sched-run-due-cancel" class="btn-secondary">${t('common.cancel', {}, 'Cancel')}</button>
+        <button id="sched-run-due-cancel" class="btn-secondary" data-modal-cancel>${t('common.cancel', {}, 'Cancel')}</button>
         <button id="sched-run-due-confirm" class="btn-primary">${t('sched.modal.confirm', {}, 'Book selected')}</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
+      </div>`,
+  });
 
-  // Esc key closes the modal — matches the pattern in forms-edit-tx.js.
-  const escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', escHandler);
-  overlay._escHandler = escHandler;
-
-  const cancelBtn = overlay.querySelector('#sched-run-due-cancel');
   const confirmBtn = overlay.querySelector('#sched-run-due-confirm');
-  if (cancelBtn) cancelBtn.addEventListener('click', () => closeModal());
   if (confirmBtn) confirmBtn.addEventListener('click', async () => {
     const selected = Array.from(overlay.querySelectorAll('.sched-run-due-row:checked'))
       .map(cb => cb.getAttribute('data-sched-id'));
@@ -350,7 +338,7 @@ async function openSchedRunDueModal() {
       });
       const summary = await res.json();
       if (!res.ok && res.status !== 207) throw new Error(summary.error || `HTTP ${res.status}`);
-      closeModal();
+      close();
       const msg = summary.commit_ok
         ? t('sched.modal.success', { n: summary.booked }, `Booked ${summary.booked} scheduled transaction(s).`)
         : t('sched.modal.partial', { n: summary.booked }, `Booked ${summary.booked} TX(s) but git commit failed — check logs.`);
@@ -421,7 +409,7 @@ async function renderDebtsPage() {
     return `<tr${isSettled ? ' class="op-50"' : ''}>
       <td><strong>${escapeHtml(tp.person_name)}</strong></td>
       <td style="color:${color};font-size:11px;">${label}</td>
-      <td class="amt" style="color:var(--muted-soft);">
+      <td class="amt c-mut2">
         ${formatCurrency(showOrig, cur)}<span class="acc-currency">${cur}</span>
         ${nativeOrigHint}
       </td>
@@ -491,6 +479,28 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// ─── Chart Palette ───────────────────────────────────────────────────────────────
+// Central categorical palette for all Chart.js datasets (Design-Review
+// 2026-07-08). Theme-aware: light mode uses deep tones (>=3:1 against white
+// card surfaces), dark mode bright tones (>=3:1 against dark cards). Call at
+// RENDER time — not at module load — so a theme switch picks the right
+// variant on the next render.
+// Hue order: 0 blue, 1 amber, 2 violet, 3 cyan, 4 pink, 5 olive, 6 orange,
+// 7 indigo, 8 teal, 9 slate, 10 green, 11 rose. The P&L-ish hues (green,
+// rose) sit at the end so categorical series don't read as income/expense.
+function chartPalette() {
+  return document.documentElement.classList.contains('dark')
+    ? ['#60a5fa', '#fbbf24', '#a78bfa', '#22d3ee', '#f472b6', '#a3e635', '#fb923c', '#818cf8', '#2dd4bf', '#94a3b8', '#4ade80', '#fb7185']
+    : ['#2563eb', '#b45309', '#7c3aed', '#0e7490', '#db2777', '#4d7c0f', '#c2410c', '#4f46e5', '#0f766e', '#475569', '#15803d', '#be123c'];
+}
+
+// Hex color -> rgba() string with the given alpha — for translucent chart
+// fills derived from theme tokens (Chart.js cannot parse CSS color-mix()).
+function chartTint(hex, alpha) {
+  const h = hex.replace('#', '');
+  return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${alpha})`;
+}
+
 // Apply Chart.js global defaults (theme-aware, called on init and theme change).
 // All values track CSS variables so dark/light + print modes pick up the right
 // palette without needing to re-render existing charts.
@@ -512,7 +522,7 @@ function setChartDefaults() {
   Chart.defaults.plugins.tooltip.padding = 12;
   Chart.defaults.plugins.tooltip.cornerRadius = 8;
   Chart.defaults.plugins.tooltip.titleFont = { size: 12, weight: '600' };
-  Chart.defaults.plugins.tooltip.bodyFont = { size: 11.5 };
+  Chart.defaults.plugins.tooltip.bodyFont = { size: 11 };
   Chart.defaults.plugins.tooltip.titleMarginBottom = 6;
   Chart.defaults.plugins.tooltip.displayColors = true;
   Chart.defaults.plugins.tooltip.boxPadding = 6;
@@ -552,6 +562,8 @@ function updateChartTheme() {
     catChart.options.scales.x.grid.color = grid;
     catChart.options.scales.x.ticks.color = cssVar('--chart-text');
     catChart.options.scales.y.ticks.color = cssVar('--chart-text');
+    // Dataset colors are baked at render time — reapply on theme switch
+    catChart.data.datasets[0].backgroundColor = cssVar('--accent');
     catChart.update('none');
   }
   if (cashflowChart) {
@@ -559,6 +571,10 @@ function updateChartTheme() {
     cashflowChart.options.scales.y.grid.color = grid;
     cashflowChart.options.scales.x.ticks.color = cssVar('--chart-text');
     cashflowChart.options.scales.y.ticks.color = cssVar('--chart-text');
+    const [cfInc, cfExp, cfNet] = cashflowChart.data.datasets;
+    if (cfInc) { cfInc.borderColor = cssVar('--positive'); cfInc.backgroundColor = chartTint(cssVar('--positive'), 0.08); }
+    if (cfExp) { cfExp.borderColor = cssVar('--negative'); cfExp.backgroundColor = chartTint(cssVar('--negative'), 0.08); }
+    if (cfNet) { cfNet.borderColor = cssVar('--accent'); }
     cashflowChart.update('none');
   }
 }
@@ -579,8 +595,7 @@ function initCharts() {
         labels: catData.map(([c]) => c.length > 24 ? c.slice(0, 23) + '…' : c),
         datasets: [{
           data: catData.map(([, v]) => v),
-          backgroundColor: '#1e40af',
-          borderColor: '#c8f060',
+          backgroundColor: cssVar('--accent'),
           borderWidth: 0,
         }],
       },
@@ -611,9 +626,9 @@ function initCharts() {
       data: {
         labels: cashflowData.map(d => monthLabel(d.month)),
         datasets: [
-          { label: t('dashboard.charts.cashflow_income', {}, 'Income'), data: cashflowData.map(d => d.income), borderColor: '#5dd4a0', backgroundColor: 'rgba(93,212,160,0.08)', fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2 },
-          { label: t('dashboard.charts.cashflow_expenses', {}, 'Expenses'), data: cashflowData.map(d => d.expense), borderColor: '#f07070', backgroundColor: 'rgba(240,112,112,0.08)', fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2 },
-          { label: t('dashboard.charts.cashflow_net', {}, 'Net'), data: cashflowData.map(d => d.net), borderColor: '#c8f060', backgroundColor: 'transparent', fill: false, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 1.5, borderDash: [5, 3] },
+          { label: t('dashboard.charts.cashflow_income', {}, 'Income'), data: cashflowData.map(d => d.income), borderColor: cssVar('--positive'), backgroundColor: chartTint(cssVar('--positive'), 0.08), fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2 },
+          { label: t('dashboard.charts.cashflow_expenses', {}, 'Expenses'), data: cashflowData.map(d => d.expense), borderColor: cssVar('--negative'), backgroundColor: chartTint(cssVar('--negative'), 0.08), fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2 },
+          { label: t('dashboard.charts.cashflow_net', {}, 'Net'), data: cashflowData.map(d => d.net), borderColor: cssVar('--accent'), backgroundColor: 'transparent', fill: false, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 1.5, borderDash: [5, 3] },
         ],
       },
       options: {

@@ -1,54 +1,34 @@
 function renderIncomeReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
 
-  // Default state from data attributes or defaults
-  const savedMode = out.getAttribute('data-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-year') || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute('data-cur') || 'TZS';
+  const tb = reportToolbar(out, 'ri', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="ri-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="ri-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="ri-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="ri-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('ri-mode');
-  const yearEl = document.getElementById('ri-year');
-  const curEl = document.getElementById('ri-currency');
-
   function update() {
-    out.setAttribute('data-mode', modeEl.value);
-    out.setAttribute('data-year', yearEl.value);
-    out.setAttribute('data-cur', curEl.value);
-    // Show/hide year selector depending on mode
-    yearEl.parentElement.querySelector('label:nth-of-type(2)');
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
-    if (modeEl.value === 'monthly') renderIncomeMonthly(yearEl.value, curEl.value);
-    else renderIncomeYearly(curEl.value);
+    if (tb.get('mode') === 'monthly') renderIncomeMonthly(tb.get('year'), tb.get('cur'));
+    else renderIncomeYearly(tb.get('cur'));
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 function renderIncomeMonthly(year, currency) {
@@ -122,7 +102,7 @@ function renderIncomeMonthly(year, currency) {
         </div>
         <div class="income-cell">
           <div class="ic-label">${t('reports.income.tile.reimbursements', {}, 'Reimbursements')}</div>
-          <div class="ic-value" style="color:var(--info)">${formatCurrency(reimbTotal, currency)}<span class="ic-cur">${currency}</span></div>
+          <div class="ic-value c-info">${formatCurrency(reimbTotal, currency)}<span class="ic-cur">${currency}</span></div>
           <div class="ic-count">${t('reports.income.tile.reimb_subtitle', {}, 'Business pass-through')}</div>
         </div>
       </div>
@@ -158,19 +138,19 @@ function renderIncomeMonthly(year, currency) {
       data: {
         labels: names,
         datasets: [
-          { label: t('reports.income.dataset.real', {}, 'Real Income'), data: months.map(m => m.real), backgroundColor: '#10b981', borderWidth: 0 },
-          { label: t('reports.income.dataset.reimb', {}, 'Reimbursements'), data: months.map(m => m.reimb), backgroundColor: '#3b82f6', borderWidth: 0 },
+          { label: t('reports.income.dataset.real', {}, 'Real Income'), data: months.map(m => m.real), backgroundColor: cssVar('--positive'), borderWidth: 0 },
+          { label: t('reports.income.dataset.reimb', {}, 'Reimbursements'), data: months.map(m => m.reimb), backgroundColor: chartPalette()[0], borderWidth: 0 },
         ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } },
         },
         scales: {
           x: { stacked: true, grid: { color: cssVar('--chart-grid') } },
-          y: { stacked: true, ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { stacked: true, ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -186,16 +166,16 @@ function renderIncomeMonthly(year, currency) {
         labels: topCats.map(([c]) => c.length > 28 ? c.slice(0, 27) + '...' : c),
         datasets: [{
           data: topCats.map(([, v]) => v),
-          backgroundColor: '#1e40af',
+          backgroundColor: cssVar('--accent'),
           borderWidth: 0,
         }],
       },
       options: {
         indexAxis: 'y',
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, currency) + ' ' + currency } } },
         scales: {
-          x: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          x: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
           y: { grid: { display: false } },
         },
       },
@@ -266,7 +246,7 @@ function renderIncomeYearly(currency) {
         </div>
         <div class="income-cell">
           <div class="ic-label">${t('reports.income.tile.reimbursements', {}, 'Reimbursements')}</div>
-          <div class="ic-value" style="color:var(--info)">${formatCurrency(grandReimb, currency)}<span class="ic-cur">${currency}</span></div>
+          <div class="ic-value c-info">${formatCurrency(grandReimb, currency)}<span class="ic-cur">${currency}</span></div>
           <div class="ic-count">${t('reports.income.tile.reimb_subtitle', {}, 'Business pass-through')}</div>
         </div>
       </div>
@@ -296,16 +276,16 @@ function renderIncomeYearly(currency) {
         labels: data.map(d => d.year),
         datasets: [{
           data: data.map(d => d.total),
-          backgroundColor: '#1e40af',
+          backgroundColor: cssVar('--accent'),
           borderWidth: 0,
         }],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => formatCurrency(ctx.raw, currency) + ' ' + currency } } },
         scales: {
           x: { grid: { color: cssVar('--chart-grid') } },
-          y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -321,7 +301,7 @@ function renderAICostsReport() {
     filterId: 'ai',
     filterLabel: t('reports.filter_label.ai', {}, 'AI Subscriptions'),
     filterFn: (tx) => tx.type === 'expense' && matchesReportCategory(tx, 'ai_costs'),
-    colorMain: '#1e40af',
+    colorMain: chartPalette()[0],
     showTransactions: true,
   });
 }
@@ -333,33 +313,25 @@ function renderDiningReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
 
-  const savedMode = out.getAttribute('data-dining-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-dining-year') || years[years.length - 1] || '2026';
+  const tb = reportToolbar(out, 'dining', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="dn-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="dn-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="dn-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('dn-mode');
-  const yearEl = document.getElementById('dn-year');
-
   function update() {
-    out.setAttribute('data-dining-mode', modeEl.value);
-    out.setAttribute('data-dining-year', yearEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
 
     // Filter: Dining-out expenses per config/reports.json (all currencies → TZS)
@@ -368,13 +340,11 @@ function renderDiningReport() {
       tx.type === 'expense' && matchesReportCategory(tx, 'dining_out') && !custodyAliases.has(tx.account)
     );
 
-    if (modeEl.value === 'monthly') renderDiningMonthly(diningTx, yearEl.value);
+    if (tb.get('mode') === 'monthly') renderDiningMonthly(diningTx, tb.get('year'));
     else renderDiningYearly(diningTx);
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 function classifyDining(tx) {
@@ -398,8 +368,8 @@ function renderDiningMonthly(diningTx, year) {
   // that primary color (per-entity breakdown is in the Reimbursements
   // report). Falls back to a static color for forks with no business
   // entities.
-  const colorPersonal = '#1e40af';
-  const colorBusiness = (getBusinessEntities()[0]?.color) || '#f59e0b';
+  const colorPersonal = cssVar('--accent');
+  const colorBusiness = (getBusinessEntities()[0]?.color) || chartPalette()[1];
   const englishMonthShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const names = englishMonthShort.map((en, i) => t(`common.months.short.${i + 1}`, {}, en));
   const unknownLabel = t('reports.shared.unknown', {}, '(unknown)');
@@ -513,7 +483,7 @@ function renderDiningMonthly(diningTx, year) {
             <td class="fs-11">${escapeHtml(tx.account)}</td>
             <td><span style="color:${cls === 'business' ? colorBusiness : colorPersonal};font-size:11px;font-weight:500">${escapeHtml(cls === 'business' ? labelBusiness : labelPersonal)}</span></td>
             <td class="amt">${formatCurrency(amt, 'TZS')}</td>
-            <td style="font-size:11px;color:var(--muted)">${escapeHtml(tx.note || '')}</td>
+            <td class="label-sm">${escapeHtml(tx.note || '')}</td>
           </tr>`;
         }).join('')}
       </tbody></table>
@@ -533,11 +503,11 @@ function renderDiningMonthly(diningTx, year) {
         ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, 'TZS') + ' TZS' } } },
         scales: {
           x: { stacked: true, grid: { display: false } },
-          y: { stacked: true, ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: 'rgba(0,0,0,0.04)' } },
+          y: { stacked: true, ticks: currencyTicks('TZS'), grid: { color: 'rgba(0,0,0,0.04)' } },
         },
       },
     });
@@ -557,11 +527,11 @@ function renderDiningMonthly(diningTx, year) {
         ],
       },
       options: {
-        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y', ...CHART_BASE,
         layout: { padding: { left: 0 } },
         plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, 'TZS') + ' TZS' } } },
         scales: {
-          x: { stacked: true, ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: cssVar('--chart-grid') } },
+          x: { stacked: true, ticks: currencyTicks('TZS'), grid: { color: cssVar('--chart-grid') } },
           y: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 }, autoSkip: false } },
         },
       },
@@ -576,10 +546,10 @@ function renderDiningMonthly(diningTx, year) {
       type: 'doughnut',
       data: {
         labels: [labelPersonal, labelBusiness],
-        datasets: [{ data: [totPers, totBiz], backgroundColor: [colorPersonal, colorBusiness], borderWidth: 2, borderColor: '#fff' }],
+        datasets: [{ data: [totPers, totBiz], backgroundColor: [colorPersonal, colorBusiness], borderWidth: 2, borderColor: cssVar('--surface') }],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', padding: 20, font: { size: 12 } } },
           tooltip: { callbacks: { label: ctx => ctx.label + ': ' + formatCurrency(ctx.raw, 'TZS') + ' TZS (' + Math.round(ctx.raw / totAll * 100) + '%)' } },
@@ -592,8 +562,8 @@ function renderDiningMonthly(diningTx, year) {
 }
 
 function renderDiningYearly(diningTx) {
-  const colorPersonal = '#1e40af';
-  const colorBusiness = (getBusinessEntities()[0]?.color) || '#f59e0b';
+  const colorPersonal = cssVar('--accent');
+  const colorBusiness = (getBusinessEntities()[0]?.color) || chartPalette()[1];
   const labelPersonal = t('reports.dining.cls_personal', {}, 'Personal');
   const labelBusiness = t('reports.dining.cls_business', {}, 'Business');
   const years = getAvailableYears();
@@ -645,11 +615,11 @@ function renderDiningYearly(diningTx) {
         ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: { legend: { position: 'top', labels: { usePointStyle: true, pointStyle: 'circle', padding: 16, font: { size: 12 } } }, tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatCurrency(ctx.raw, 'TZS') + ' TZS' } } },
         scales: {
           x: { stacked: true, grid: { display: false } },
-          y: { stacked: true, ticks: { callback: v => formatCurrency(v, 'TZS') }, grid: { color: 'rgba(0,0,0,0.04)' } },
+          y: { stacked: true, ticks: currencyTicks('TZS'), grid: { color: 'rgba(0,0,0,0.04)' } },
         },
       },
     });
@@ -662,51 +632,34 @@ function renderDiningYearly(diningTx) {
 function renderIncExpReport() {
   const out = document.getElementById('report-output');
   const years = getAvailableYears();
-  const currencies = [...new Set(state.accounts.filter(a => a.owner === 'self' && a.status === 'active').map(a => a.currency))];
 
-  const savedMode = out.getAttribute('data-ie-mode') || 'monthly';
-  const savedYear = out.getAttribute('data-ie-year') || years[years.length - 1] || '2026';
-  const savedCur = out.getAttribute('data-ie-cur') || 'TZS';
+  const tb = reportToolbar(out, 'ie', [
+    { key: 'mode', label: t('reports.toolbar.mode', {}, 'Mode'), def: 'monthly',
+      options: [
+        { v: 'monthly', l: t('reports.toolbar.monthly', {}, 'Monthly') },
+        { v: 'yearly', l: t('reports.toolbar.yearly', {}, 'Yearly') },
+      ] },
+    { key: 'year', label: t('reports.toolbar.year', {}, 'Year'),
+      options: years, def: years[years.length - 1] || '2026' },
+    { key: 'cur', label: t('reports.toolbar.currency', {}, 'Currency'),
+      options: reportCurrencies(), def: 'TZS' },
+  ]);
 
   out.innerHTML = `
     <div class="report-view">
-      <div class="report-toolbar">
-        <label>${t('reports.toolbar.mode', {}, 'Mode')}</label>
-        <select id="ie-mode">
-          <option value="monthly" ${savedMode === 'monthly' ? 'selected' : ''}>${t('reports.toolbar.monthly', {}, 'Monthly')}</option>
-          <option value="yearly" ${savedMode === 'yearly' ? 'selected' : ''}>${t('reports.toolbar.yearly', {}, 'Yearly')}</option>
-        </select>
-        <label>${t('reports.toolbar.year', {}, 'Year')}</label>
-        <select id="ie-year">
-          ${years.map(y => `<option value="${y}" ${y === savedYear ? 'selected' : ''}>${y}</option>`).join('')}
-        </select>
-        <label>${t('reports.toolbar.currency', {}, 'Currency')}</label>
-        <select id="ie-currency">
-          ${currencies.map(c => `<option value="${c}" ${c === savedCur ? 'selected' : ''}>${c}</option>`).join('')}
-        </select>
-      </div>
+      ${tb.html}
       <div id="ie-content"></div>
     </div>
   `;
 
-  const modeEl = document.getElementById('ie-mode');
-  const yearEl = document.getElementById('ie-year');
-  const curEl = document.getElementById('ie-currency');
-
   function update() {
-    out.setAttribute('data-ie-mode', modeEl.value);
-    out.setAttribute('data-ie-year', yearEl.value);
-    out.setAttribute('data-ie-cur', curEl.value);
-    yearEl.style.display = modeEl.value === 'yearly' ? 'none' : '';
+    tb.el('year').style.display = tb.get('mode') === 'yearly' ? 'none' : '';
     destroyReportCharts();
-    if (modeEl.value === 'monthly') renderIncExpMonthly(yearEl.value, curEl.value);
-    else renderIncExpYearly(curEl.value);
+    if (tb.get('mode') === 'monthly') renderIncExpMonthly(tb.get('year'), tb.get('cur'));
+    else renderIncExpYearly(tb.get('cur'));
   }
 
-  modeEl.addEventListener('change', update);
-  yearEl.addEventListener('change', update);
-  curEl.addEventListener('change', update);
-  update();
+  tb.wire(update);
 }
 
 function renderIncExpMonthly(year, currency) {
@@ -793,19 +746,19 @@ function renderIncExpMonthly(year, currency) {
       data: {
         labels: names,
         datasets: [
-          { label: t('common.label.income', {}, 'Income'), data: months.map(m => m.income), backgroundColor: '#10b981', borderWidth: 0 },
-          { label: t('common.label.expenses', {}, 'Expenses'), data: months.map(m => m.expense), backgroundColor: '#e8453c', borderWidth: 0 },
+          { label: t('common.label.income', {}, 'Income'), data: months.map(m => m.income), backgroundColor: cssVar('--positive'), borderWidth: 0 },
+          { label: t('common.label.expenses', {}, 'Expenses'), data: months.map(m => m.expense), backgroundColor: cssVar('--negative'), borderWidth: 0 },
         ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } },
         },
         scales: {
           x: { grid: { color: cssVar('--chart-grid') } },
-          y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -827,14 +780,14 @@ function renderIncExpMonthly(year, currency) {
         }],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: { label: ctx => `${t('common.label.net', {}, 'Net')}: ${formatCurrency(ctx.raw, currency)} ${currency}` } },
         },
         scales: {
           x: { grid: { color: cssVar('--chart-grid') } },
-          y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -911,19 +864,19 @@ function renderIncExpYearly(currency) {
       data: {
         labels: data.map(d => d.year),
         datasets: [
-          { label: t('common.label.income', {}, 'Income'), data: data.map(d => d.income), backgroundColor: '#10b981', borderWidth: 0 },
-          { label: t('common.label.expenses', {}, 'Expenses'), data: data.map(d => d.expense), backgroundColor: '#e8453c', borderWidth: 0 },
+          { label: t('common.label.income', {}, 'Income'), data: data.map(d => d.income), backgroundColor: cssVar('--positive'), borderWidth: 0 },
+          { label: t('common.label.expenses', {}, 'Expenses'), data: data.map(d => d.expense), backgroundColor: cssVar('--negative'), borderWidth: 0 },
         ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        ...CHART_BASE,
         plugins: {
           legend: { position: 'top', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw, currency)} ${currency}` } },
         },
         scales: {
           x: { grid: { color: cssVar('--chart-grid') } },
-          y: { ticks: { callback: v => formatCurrency(v, currency) }, grid: { color: cssVar('--chart-grid') } },
+          y: { ticks: currencyTicks(currency), grid: { color: cssVar('--chart-grid') } },
         },
       },
     });
@@ -940,7 +893,7 @@ function renderViceSpendingReport() {
     filterId: 'vices',
     filterLabel: t('reports.filter_label.vices', {}, 'Vice Spending'),
     filterFn: (tx) => tx.type === 'expense' && matchesReportCategory(tx, 'vice_spending'),
-    colorMain: '#dc2626',
+    colorMain: chartPalette()[11],
     showTransactions: true,
     showCategoryBreakdown: true,
     stackCategories: true,
@@ -954,7 +907,7 @@ function renderBankFeesReport() {
     filterId: 'bankfees',
     filterLabel: t('reports.filter_label.bankfees', {}, 'Bank Fees'),
     filterFn: (tx) => tx.type === 'expense' && matchesReportCategory(tx, 'bank_fees'),
-    colorMain: '#6b7280',
+    colorMain: chartPalette()[9],
     showTransactions: true,
     showCategoryBreakdown: true,
     stackCategories: true,
@@ -969,7 +922,7 @@ function renderStaffCostsReport() {
     filterId: 'staffcosts',
     filterLabel: t('reports.filter_label.staffcosts', {}, 'Staff Costs'),
     filterFn: (t) => t.type === 'expense' && t.category && t.category.startsWith('Staff:'),
-    colorMain: '#0ea5e9',
+    colorMain: chartPalette()[3],
     showTransactions: true,
     showCategoryBreakdown: true,
     stackCategories: true,

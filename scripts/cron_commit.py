@@ -42,6 +42,35 @@ _NO_WINDOW_KWARGS: dict = {"creationflags": 0x08000000} if sys.platform == "win3
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCK_PATH = REPO_ROOT / "data" / ".transactions.lock"
 
+# OF-M6 (CODE_REVIEW_2026-07-08): machine-readable "sync is wedged" marker.
+# Written when recover_stuck_rebase() refuses (stuck rebase + dirty data/ —
+# the designed 'Manual intervention required' state), cleared on every
+# successful run. /api/health exposes it and computeAlerts() renders a
+# dashboard alert — before this, the only detector was the WEEKLY
+# integrity heartbeat check, so a dead sync stayed invisible for days.
+SYNC_STUCK_PATH = REPO_ROOT / "data" / ".sync_stuck.json"
+
+
+def _write_sync_stuck(reason: str) -> None:
+    import json
+    try:
+        SYNC_STUCK_PATH.write_text(
+            json.dumps({
+                "reason": reason,
+                "since": datetime.now().isoformat(timespec="seconds"),
+            }) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # marker is best-effort; the stderr log still exists
+
+
+def _clear_sync_stuck() -> None:
+    try:
+        SYNC_STUCK_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
 
 # Cross-platform exclusive file lock matching tx_engine.tx_write_lock().
 # Holding this for the duration of cron_commit's run prevents tx_engine writes
@@ -228,6 +257,41 @@ def _rev_parse(ref: str) -> str:
     return result.stdout.strip()
 
 
+def _standby_mirror_pull() -> int:
+    """Fenced-standby tick: integrate origin without ever committing/pushing.
+
+    Fetch + rebase FETCH_HEAD only — the write direction stays fenced
+    (O-H3). A dirty staging path refuses the rebase: an ex-primary may
+    hold uncommitted pre-crash bookings or conflict markers, and wiping
+    those is exactly what the recovery paths above refuse to do. The
+    failback runbook owns that rescue.
+    """
+    with tx_write_lock():
+        fetch_result = run(["git", "fetch", "origin", "main"], timeout=15)
+        if fetch_result.returncode != 0:
+            print(f"[cron_commit] standby fetch failed: {fetch_result.stderr.strip()}", file=sys.stderr)
+            return 1
+        head = _rev_parse("HEAD")
+        fetch_head = _rev_parse("FETCH_HEAD")
+        if not head or not fetch_head or head == fetch_head:
+            return 0
+        if _data_has_uncommitted_changes():
+            print(
+                "[cron_commit] standby mirror-pull refused: working tree has local "
+                "data/config changes (pre-crash bookings?) — rescue them via the "
+                "failback runbook before this host can mirror again.",
+                file=sys.stderr,
+            )
+            return 1
+        rebase_result = run(["git", "rebase", "FETCH_HEAD"], timeout=15)
+        if rebase_result.returncode != 0:
+            print(f"[cron_commit] standby rebase failed: {rebase_result.stderr.strip()}", file=sys.stderr)
+            abort_rebase_safely()
+            return 1
+        print(f"[cron_commit] standby mirror-pull: now at {fetch_head[:9]}")
+        return 0
+
+
 def main() -> int:
     """One consolidated sync run: pull remote, commit local data, push.
 
@@ -262,15 +326,28 @@ def main() -> int:
     """
     # O-H3 (CODE_REVIEW_2026-06-12): a fenced standby must never commit or
     # push — that's exactly the dual-primary divergence the role marker
-    # exists to prevent. Mirror-pulling is git-pull-mirror.sh's job.
+    # exists to prevent.
+    # OF-M1 (CODE_REVIEW_2026-07-08): but it must still PULL. An
+    # ex-primary that self-pacified after an outage failover still
+    # carries the PRIMARY crontab (the SSH pacify was skipped, and the
+    # mirror line is PAUSED there) — 'nothing to do' froze its repo on
+    # the crash state and serve.py delivered a stale read-only dashboard
+    # until the failback. Standby behaviour is crontab-independent now:
+    # every tick does a safe mirror pull, so the primary crontab
+    # degrades into a working mirror on its own.
     import host_role
     if host_role.is_standby():
-        print("[cron_commit] host role is standby — fenced, nothing to do (O-H3)")
-        return 0
+        print("[cron_commit] host role is standby — fenced, mirror-pull only (O-H3/OF-M1)")
+        return _standby_mirror_pull()
 
     with tx_write_lock():
         if not recover_stuck_rebase():
             print("[cron_commit] cannot recover from stale rebase state, bailing", file=sys.stderr)
+            _write_sync_stuck(
+                "Stuck rebase + dirty data/ — sync is halted. SSH to the host, "
+                "inspect `git status` under data/, rescue real TX rows, then "
+                "`git rebase --abort`."
+            )
             return 1
 
         try:
@@ -381,6 +458,8 @@ def main() -> int:
                 except OSError:
                     pass
 
+            # OF-M6: a full successful run means the sync is healthy again.
+            _clear_sync_stuck()
             return 0
         except subprocess.TimeoutExpired as e:
             print(f"[cron_commit] timeout: {e}", file=sys.stderr)

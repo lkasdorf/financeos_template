@@ -33,10 +33,6 @@ function openEditModal(tx) {
 }
 
 function renderEditModal(tx, ctx, currentSubId = '') {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-
   const isTransfer = tx.type === 'transfer';
   const activeAccounts = ctx.accounts.filter(a => a.status === 'active');
 
@@ -70,9 +66,15 @@ function renderEditModal(tx, ctx, currentSubId = '') {
   }
   const catOptions = buildCatOptions(tx.type, tx.category);
 
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>${t('editx.title', {}, 'Edit <span class="accent">Transaction</span>')}</h3>
+  // DP-M6 Phase 2 — openModal() owns overlay/Escape/backdrop lifecycle;
+  // the receipt-picker detach runs via onClose on every close path.
+  const { overlay } = openModal({
+    title: t('editx.title', {}, 'Edit <span class="accent">Transaction</span>'),
+    maxWidth: '620px',
+    onClose: () => {
+      if (_editRcptDetach) { _editRcptDetach(); _editRcptDetach = null; }
+    },
+    bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx1">
           <label>${t('common.label.date', {}, 'Date')}</label>
@@ -188,15 +190,11 @@ function renderEditModal(tx, ctx, currentSubId = '') {
         </div>
         <div class="btn-right">
           <button class="edit-duplicate-btn" data-import-id="${tx.import_id}">${t('common.actions.duplicate', {}, 'Duplicate')}</button>
-          <button data-action="closeModal">${t('common.actions.cancel', {}, 'Cancel')}</button>
+          <button data-modal-cancel>${t('common.actions.cancel', {}, 'Cancel')}</button>
           <button class="btn-save" data-action="saveTxEdit" data-arg1="${tx.import_id}">${t('common.actions.save', {}, 'Save')}</button>
         </div>
-      </div>
-    </div>
-  `;
-
-  // Type change handler
-  document.body.appendChild(overlay);
+      </div>`,
+  });
 
   // v1.6.0 — initialise receipt-attachment state from the TX, then wire
   // the dropzone, file-input, and paste handler. Reset on every open so
@@ -295,19 +293,20 @@ function renderEditModal(tx, ctx, currentSubId = '') {
     duplicateTx(current);
   });
 
-  // Close on Escape
-  overlay._escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-  document.addEventListener('keydown', overlay._escHandler);
 }
 
+// DP-M6 Phase 2 — global close shim for dispatcher-invoked flows that close
+// the modal from global scope (saveTxEdit, deleteTx, duplicateTx, saveDebt,
+// savePayee, the settings save handlers, …). Overlays built
+// via openModal() close through their instance _close(), which detaches
+// the Escape listener and runs the modal's onClose cleanup. The legacy
+// _escHandler branch covers any overlay not yet migrated.
 function closeModal() {
   const overlay = document.querySelector('.modal-overlay');
-  if (overlay) {
-    document.removeEventListener('keydown', overlay._escHandler);
-    overlay.remove();
-  }
-  // v1.6.0 — detach the receipt pickers so a re-open doesn't double-bind.
-  if (_editRcptDetach) { _editRcptDetach(); _editRcptDetach = null; }
+  if (!overlay) return;
+  if (overlay._close) { overlay._close(); return; }
+  if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler);
+  overlay.remove();
 }
 
 // ─── v1.6.0 receipt attachments (Edit-TX) ─────────────────────────────
@@ -454,10 +453,6 @@ async function saveTxEdit(importId) {
     statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(t('receipts.upload.error_generic', { msg: uploadErr.message }, `Attachment upload failed: ${uploadErr.message}`))}</div>`;
     return;
   }
-  if (_editRcptToDelete.length) {
-    try { await deleteReceipts(_editRcptToDelete); } catch (e) { /* orphan-file is non-fatal */ }
-    _editRcptToDelete = [];
-  }
   updated.receipt_url = serializeReceiptList(_editRcptUrls);
 
   try {
@@ -470,6 +465,14 @@ async function saveTxEdit(importId) {
     if (data.error) {
       statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`;
       return;
+    }
+    // Detached files are removed only AFTER the TX row actually points
+    // away from them (DC-M1): deleting before the update left dead
+    // receipt links behind whenever the update itself failed. Orphaned
+    // files from a failed update are harmless; dead links are not.
+    if (_editRcptToDelete.length) {
+      try { await deleteReceipts(_editRcptToDelete); } catch (e) { /* orphan-file is non-fatal */ }
+      _editRcptToDelete = [];
     }
     closeModal();
     // Reload data
