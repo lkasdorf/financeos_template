@@ -41,7 +41,9 @@ from pathlib import Path
 # Local config loader (sibling module). Path append keeps both direct script
 # execution and `from scripts.tx_engine import ...` import styles working.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bank_ref  # noqa: E402
 import config_loader  # noqa: E402
+from backup import backup_file  # noqa: E402
 
 # ── Path Constants ──────────────────────────────────────────────────────────
 
@@ -291,9 +293,28 @@ def load_payees() -> list[dict]:
     return json.loads(json_path.read_text(encoding="utf-8"))
 
 
+def _backup_before_rewrite(path: Path) -> None:
+    """Snapshot a data file into the backup ring before it is rewritten.
+
+    B-M6 (CODE_REVIEW_2026-06-12) — the Settings save_* helpers below
+    rewrite whole files, and none of them honoured CLAUDE.md's hard rule
+    #1. The call sits in the savers rather than in the ~15 HTTP handlers
+    so CLI callers are covered too, and so there is exactly one place per
+    file to get right.
+
+    Never raises: the ring is a safety net, not a gate. Losing a backup
+    must not cost the user the edit they just made.
+    """
+    try:
+        backup_file(path.stem, path)
+    except Exception as exc:
+        print(f"[tx_engine] backup of {path.name} failed: {exc}", file=sys.stderr)
+
+
 def save_payees(payees: list[dict]) -> None:
     """Write payees to data/payees.json."""
     json_path = DATA_DIR / "payees.json"
+    _backup_before_rewrite(json_path)
     _atomic_write_text(
         json_path,
         json.dumps(payees, indent=2, ensure_ascii=False) + "\n",
@@ -428,6 +449,7 @@ def load_budgets() -> list[dict]:
 def save_budgets(budgets: list[dict]) -> None:
     """Write budgets to data/budgets.json."""
     json_path = DATA_DIR / "budgets.json"
+    _backup_before_rewrite(json_path)
     _atomic_write_text(
         json_path,
         json.dumps(budgets, indent=2, ensure_ascii=False) + "\n",
@@ -494,6 +516,7 @@ def load_savings_goals() -> list[dict]:
 def save_savings_goals(goals: list[dict]) -> None:
     """Write savings goals to data/savings_goals.json."""
     json_path = DATA_DIR / "savings_goals.json"
+    _backup_before_rewrite(json_path)
     _atomic_write_text(
         json_path,
         json.dumps(goals, indent=2, ensure_ascii=False) + "\n",
@@ -633,6 +656,7 @@ def save_tags(tags: list[dict]) -> None:
     now purely a display-friendly tag catalog with active flag.
     """
     tags_path = DATA_DIR / "tags.csv"
+    _backup_before_rewrite(tags_path)
     fieldnames = ["tag", "description", "active"]
     _atomic_csv_rewrite(tags_path, fieldnames, tags)
 
@@ -702,6 +726,7 @@ def load_scheduled() -> list[dict]:
 def save_scheduled(items: list[dict]) -> None:
     """Write scheduled transactions to data/scheduled.csv."""
     sched_path = DATA_DIR / "scheduled.csv"
+    _backup_before_rewrite(sched_path)
     _atomic_csv_rewrite(sched_path, list(SCHEDULED_FIELDS), items)
 
 
@@ -786,6 +811,7 @@ def load_debts() -> list[dict]:
 def save_debts(items: list[dict]) -> None:
     """Write debts to data/third_party.csv."""
     path = DATA_DIR / "third_party.csv"
+    _backup_before_rewrite(path)
     _atomic_csv_rewrite(path, list(DEBT_FIELDS), items)
 
 
@@ -920,26 +946,34 @@ def topup_debt(debt_id: str, additional_amount: float, note: str = "",
     Returns False if the debt is already settled or not found. On success
     returns {"id": debt_id, "import_id": <str or None>}.
     """
-    items = load_debts()
-    for item in items:
-        if item["id"] == debt_id:
-            if item.get("settled") == "true":
-                return False
-            orig = float(item.get("original_amount", 0))
-            cur = float(item.get("amount", 0))
-            item["original_amount"] = str(orig + additional_amount)
-            item["amount"] = str(cur + additional_amount)
-            if note:
-                existing_note = item.get("note", "")
-                item["note"] = f"{existing_note}; +{additional_amount} ({note})" if existing_note else f"+{additional_amount} ({note})"
-            save_debts(items)
+    # B-M7 (second half): same ordering rule as pay_debt — the TX is
+    # written before the debt row is raised, so a failed append cannot
+    # leave a topped-up debt with no matching money movement.
+    with tx_write_lock():
+        items = load_debts()
+        for item in items:
+            if item["id"] == debt_id:
+                if item.get("settled") == "true":
+                    return False
+                orig = float(item.get("original_amount", 0))
+                cur = float(item.get("amount", 0))
 
-            import_id = None
-            if not skip_tx and account:
-                tx_debt = dict(item)
-                tx_debt["note"] = f"top-up +{additional_amount}" + (f" ({note})" if note else "")
-                import_id = _create_debt_origination_tx(tx_debt, additional_amount, account)
-            return {"id": debt_id, "import_id": import_id}
+                import_id = None
+                if not skip_tx and account:
+                    tx_debt = dict(item)
+                    tx_debt["note"] = f"top-up +{additional_amount}" + (f" ({note})" if note else "")
+                    import_id = _create_debt_origination_tx(tx_debt, additional_amount, account)
+
+                # B-M7 (first half) — str(0.1 + 0.2) is
+                # "0.30000000000000004"; these are money columns and must
+                # be stored as such.
+                item["original_amount"] = f"{orig + additional_amount:.2f}"
+                item["amount"] = f"{cur + additional_amount:.2f}"
+                if note:
+                    existing_note = item.get("note", "")
+                    item["note"] = f"{existing_note}; +{additional_amount} ({note})" if existing_note else f"+{additional_amount} ({note})"
+                save_debts(items)
+                return {"id": debt_id, "import_id": import_id}
     return False
 
 
@@ -986,71 +1020,77 @@ def pay_debt(debt_id: str, amount: float, currency: str,
         note: Optional note
         account: Account alias for the TX (required for TX creation)
     """
-    debts = load_debts()
-    debt = None
-    for d in debts:
-        if d["id"] == debt_id:
-            debt = d
-            break
-    if not debt:
-        return None
+    # B-M7 (CODE_REVIEW_2026-06-12), second half: this is a three-file
+    # cascade (transactions.csv, debt_payments.csv, third_party.csv) and it
+    # used to run unlocked, ledger-first. A failing TX append then left a
+    # recorded payment against an already-reduced debt with no money
+    # movement behind it — the account balance overstates by the payment,
+    # which is exactly the direction that breaks the bank reconciliation.
+    # One lock around the whole cascade, and the TX goes first: if it
+    # fails, nothing has moved. If a ledger write fails after it, the money
+    # is booked and the debt still reads open — visible and repairable,
+    # unlike a silent balance drift. Same ordering rule as
+    # fuel.add_fuel_entry.
+    with tx_write_lock():
+        debts = load_debts()
+        debt = None
+        for d in debts:
+            if d["id"] == debt_id:
+                debt = d
+                break
+        if not debt:
+            return None
 
-    # Generate sequential payment ID (dp-001, dp-002, ...)
-    all_payments = load_debt_payments()
-    max_num = 0
-    for p in all_payments:
-        pid = p.get("id", "")
-        if pid.startswith("dp-"):
-            try:
-                num = int(pid.split("-", 1)[1])
-                if num > max_num:
-                    max_num = num
-            except ValueError:
-                pass
-    payment_id = f"dp-{max_num + 1:03d}"
+        # Generate sequential payment ID (dp-001, dp-002, ...)
+        all_payments = load_debt_payments()
+        max_num = 0
+        for p in all_payments:
+            pid = p.get("id", "")
+            if pid.startswith("dp-"):
+                try:
+                    num = int(pid.split("-", 1)[1])
+                    if num > max_num:
+                        max_num = num
+                except ValueError:
+                    pass
+        payment_id = f"dp-{max_num + 1:03d}"
 
-    # Add payment record
-    payment = {
-        "id": payment_id,
-        "debt_id": debt_id,
-        "date": date.today().isoformat(),
-        "amount": str(amount),
-        "currency": currency,
-        "converted_amount": str(converted_amount),
-        "note": note,
-    }
-    all_payments.append(payment)
-    save_debt_payments(all_payments)
+        payment = {
+            "id": payment_id,
+            "debt_id": debt_id,
+            "date": date.today().isoformat(),
+            "amount": str(amount),
+            "currency": currency,
+            "converted_amount": str(converted_amount),
+            "note": note,
+        }
 
-    # Reduce remaining debt amount; auto-settle if fully paid
-    remaining = float(debt["amount"]) - converted_amount
-    if remaining <= 0:
-        remaining = 0
-        debt["settled"] = "true"
-        debt["date_settled"] = date.today().isoformat()
-    debt["amount"] = f"{remaining:.2f}"
-    save_debts(debts)
+        # Reduced remaining debt amount; auto-settle if fully paid.
+        # B-M7 (first half) — settle on the ROUNDED remainder. An
+        # FX-converted payment carries more precision than the stored 2dp
+        # amount, so the raw difference can be a positive 5e-17 while the
+        # amount is written as "0.00": a debt reading zero but flagged open.
+        remaining = round(float(debt["amount"]) - converted_amount, 2)
 
-    # Create a corresponding TX in transactions.csv so the payment
-    # shows up in account balances and cash flow reports.
-    # H-16 (Sprint 10): the existing_ids read + append are now wrapped in
-    # tx_write_lock so a concurrent writer can't produce a duplicate
-    # generated id, and we return the line dict's final import_id (post
-    # H-01 re-validation) so the caller sees the on-disk value.
-    import_id = None
-    if account:
-        accounts = load_accounts()
-        acc = accounts.get(account, {})
-        tx_currency = acc.get("currency", currency)
-        # owed_by_me = I owe someone = paying is an expense
-        # owed_to_me = someone owes me = receiving payment is income
-        tx_type = "expense" if debt["type"] == "owed_by_me" else "income"
-        tx_category = "Debts:Repayment" if tx_type == "expense" else "Income:Debt Repayment"
-        tx_note = f"Debt payment to {debt['person_name']}" if tx_type == "expense" else f"Debt repayment from {debt['person_name']}"
-        if note:
-            tx_note += f" — {note}"
+        # Create a corresponding TX in transactions.csv so the payment
+        # shows up in account balances and cash flow reports.
+        # H-16 (Sprint 10): the existing_ids read + append share the lock so
+        # a concurrent writer can't produce a duplicate generated id, and we
+        # return the line dict's final import_id (post H-01 re-validation)
+        # so the caller sees the on-disk value.
+        import_id = None
+        if account:
+            accounts = load_accounts()
+            acc = accounts.get(account, {})
+            tx_currency = acc.get("currency", currency)
+            # owed_by_me = I owe someone = paying is an expense
+            # owed_to_me = someone owes me = receiving payment is income
+            tx_type = "expense" if debt["type"] == "owed_by_me" else "income"
+            tx_category = "Debts:Repayment" if tx_type == "expense" else "Income:Debt Repayment"
+            tx_note = f"Debt payment to {debt['person_name']}" if tx_type == "expense" else f"Debt repayment from {debt['person_name']}"
+            if note:
+                tx_note += f" — {note}"
 
-        with tx_write_lock():
             existing_ids = load_existing_import_ids()
             import_id = generate_import_id(
                 date.today().isoformat(), account, amount,
@@ -1071,6 +1111,19 @@ def pay_debt(debt_id: str, amount: float, currency: str,
             }
             append_transactions([line])
             import_id = line["import_id"]
+
+        # Ledger last: payment history before the debt mutation, so a
+        # failure between them leaves the audit trail rather than a
+        # reduced debt nobody can trace.
+        all_payments.append(payment)
+        save_debt_payments(all_payments)
+
+        if remaining <= 0:
+            remaining = 0
+            debt["settled"] = "true"
+            debt["date_settled"] = date.today().isoformat()
+        debt["amount"] = f"{remaining:.2f}"
+        save_debts(debts)
 
     return {"payment_id": payment_id, "import_id": import_id}
 
@@ -1099,6 +1152,7 @@ def load_quick_expenses() -> list[dict]:
 def save_quick_expenses(items: list[dict]) -> None:
     """Write quick expenses to data/quick_expenses.csv."""
     qe_path = DATA_DIR / "quick_expenses.csv"
+    _backup_before_rewrite(qe_path)
     _atomic_csv_rewrite(qe_path, list(QUICKEXP_FIELDS), items)
 
 
@@ -1178,6 +1232,7 @@ def load_atm_fees() -> list[dict]:
 def save_atm_fees(items: list[dict]) -> None:
     """Write ATM fee presets to data/atm_fees.csv."""
     path = DATA_DIR / "atm_fees.csv"
+    _backup_before_rewrite(path)
     _atomic_csv_rewrite(path, list(ATMFEE_FIELDS), items)
 
 
@@ -1582,6 +1637,7 @@ def duplicate_custom_report(rid: str, new_name: str | None = None) -> dict | Non
 def save_categories(cats: list[dict]) -> None:
     """Write categories to data/categories.csv."""
     cats_path = DATA_DIR / "categories.csv"
+    _backup_before_rewrite(cats_path)
     fieldnames = ["path", "type", "active", "note", "pnl", "essential"]
     # Default for legacy rows without the flag: treat expenses as essential
     # by default, non-expenses as non-essential (the flag is only consulted
@@ -2063,21 +2119,68 @@ def generate_pass_through_line(
 
 # ── Validation ───────────────────────────────────────────────────────────────
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def is_iso_date(value: str) -> bool:
+    """True when ``value`` is a real calendar day in plain YYYY-MM-DD form.
+
+    B-M3 (CODE_REVIEW_2026-06-12). Two rules, both needed: the regex pins
+    the storage format docs/schema.md mandates (date.fromisoformat alone
+    would also accept "20260819" and shift every string comparison the
+    reports do), and the parse rejects days that only look valid —
+    2026-02-30, 2026-99-99.
+    """
+    s = str(value or "").strip()
+    if not _ISO_DATE_RE.match(s):
+        return False
+    try:
+        date.fromisoformat(s)
+    except ValueError:
+        return False
+    return True
+
+
+def _check_transfer_to_amount(value, errors: list) -> None:
+    """A present transfer_to_amount must be a positive number.
+
+    Blank is legitimate and must stay that way: an empty cell means "same
+    amount on both legs" (core.js:858), which is how every same-currency
+    transfer is stored.
+    """
+    s = str(value or "").strip()
+    if not s:
+        return
+    try:
+        if float(s) <= 0:
+            errors.append(f"transfer_to_amount must be positive: '{s}'")
+    except (ValueError, TypeError):
+        errors.append(f"Invalid transfer_to_amount: '{s}'")
+
+
 def validate_line(line: dict, accounts: dict, categories: dict) -> list[str]:
     """Validate a transaction line against known accounts and categories.
 
     Checks:
+        - Date is a real day in YYYY-MM-DD form
         - Account exists in accounts.csv
         - Currency matches the account's currency
         - Transaction type is one of: expense, income, transfer
         - Category exists (for expense/income)
         - Amount is a positive number
-        - Transfer has a valid destination account
+        - Transfer has a valid destination account and a sane counter-amount
 
     Returns:
         List of error messages. Empty list means the line is valid.
     """
     errors = []
+
+    # B-M3: the date column is the axis every report buckets, filters and
+    # sorts on. A malformed value passes silently here and surfaces weeks
+    # later as a row that no month contains.
+    if not is_iso_date(line.get("date", "")):
+        errors.append(f"Invalid date: '{line.get('date', '')}' (expected YYYY-MM-DD)")
+
     alias = line.get("account", "")
     if alias not in accounts:
         errors.append(f"Unknown account: '{alias}'")
@@ -2115,6 +2218,42 @@ def validate_line(line: dict, accounts: dict, categories: dict) -> list[str]:
             errors.append("Transfer requires transfer_to_account")
         elif tta not in accounts:
             errors.append(f"Unknown transfer_to_account: '{tta}'")
+        _check_transfer_to_amount(line.get("transfer_to_amount"), errors)
+
+    return errors
+
+
+def validate_tx_update(updated: dict) -> list[str]:
+    """Validate the fields an edit actually touches (B-M3).
+
+    handle_tx_update checked account and category only, so the edit path
+    could write a negative amount or a broken date onto a row that was
+    valid when it was booked. Presence-aware like the DV1 validators: a
+    field absent from ``updated`` is left alone, a field present has to
+    satisfy the same rule validate_line applies at booking time.
+    """
+    errors: list[str] = []
+
+    if "date" in updated and not is_iso_date(updated.get("date", "")):
+        errors.append(f"Invalid date: '{updated.get('date', '')}' (expected YYYY-MM-DD)")
+
+    if "amount" in updated:
+        try:
+            if float(updated["amount"]) <= 0:
+                errors.append("Amount must be positive")
+        except (ValueError, TypeError):
+            errors.append(f"Invalid amount: '{updated['amount']}'")
+
+    if "type" in updated and updated["type"] not in ("expense", "income", "transfer"):
+        errors.append(f"Invalid type: '{updated['type']}'")
+
+    if "currency" in updated:
+        cur = str(updated.get("currency") or "").strip()
+        if cur and not _DV1_CCY_RE.match(cur):
+            errors.append(f"Invalid currency: '{cur}' (expected a 3-letter code)")
+
+    if "transfer_to_amount" in updated:
+        _check_transfer_to_amount(updated["transfer_to_amount"], errors)
 
     return errors
 
@@ -2296,8 +2435,16 @@ def check_confirm_seen(client_id: str) -> list[str] | None:
 
 
 @with_tx_lock
-def record_confirm_seen(client_id: str, import_ids: list[str]) -> None:
-    """Persist a booked client_id, pruning entries older than the TTL."""
+def record_confirm_seen(client_id: str, import_ids: list[str],
+                        result: dict | None = None) -> None:
+    """Persist a booked client_id, pruning entries older than the TTL.
+
+    ``result`` is the response body the endpoint returned. The two-step
+    TX flow does not need it — the caller rebuilds its answer from the
+    import_ids — but the single-hop cascades (fuel, LUKU, water) answer
+    with ids the client stores against its queue row, so a replay has to
+    hand back the same payload rather than a bare acknowledgement.
+    """
     if not client_id:
         return
     seen = _load_confirm_seen()
@@ -2306,11 +2453,30 @@ def record_confirm_seen(client_id: str, import_ids: list[str]) -> None:
         cid: entry for cid, entry in seen.items()
         if isinstance(entry, dict) and entry.get("ts", "") >= cutoff
     }
-    seen[client_id] = {
+    entry = {
         "ts": datetime.now().isoformat(timespec="seconds"),
         "import_ids": list(import_ids),
     }
+    if result is not None:
+        entry["result"] = result
+    seen[client_id] = entry
     _atomic_write_text(CONFIRM_SEEN_PATH, json.dumps(seen, indent=1))
+
+
+def check_confirm_result(client_id: str) -> dict | None:
+    """Return the stored response body for a known client_id, else None.
+
+    Distinct from check_confirm_seen, which answers "was this booked?"
+    with the import_ids. An empty dict is a valid stored result, so the
+    None-vs-{} distinction matters: callers test `is not None`.
+    """
+    if not client_id:
+        return None
+    entry = _load_confirm_seen().get(client_id)
+    if not isinstance(entry, dict):
+        return None
+    result = entry.get("result")
+    return result if isinstance(result, dict) else None
 
 
 @with_tx_lock
@@ -2374,19 +2540,27 @@ def append_transactions(lines: list[dict]) -> None:
             if fk in id_remap:
                 line["counter_entry_id"] = id_remap[fk]
 
+    # B-M2 (CODE_REVIEW_2026-06-12) — normalize every row BEFORE the file
+    # is opened. The float() casts below raise on a malformed amount, and
+    # doing them inside the write loop persisted the rows that came first:
+    # a half-written batch that no caller knows about. Building the rows
+    # up front makes the append all-or-nothing.
+    rows = []
+    for line in lines:
+        row = []
+        for col in TX_COLUMNS:
+            val = line.get(col, "")
+            # Normalize amounts to 2 decimal places
+            if col == "amount" and val:
+                val = f"{float(val):.2f}"
+            elif col == "transfer_to_amount" and val:
+                val = f"{float(val):.2f}"
+            row.append(val)
+        rows.append(row)
+
     with open(tx_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        for line in lines:
-            row = []
-            for col in TX_COLUMNS:
-                val = line.get(col, "")
-                # Normalize amounts to 2 decimal places
-                if col == "amount" and val:
-                    val = f"{float(val):.2f}"
-                elif col == "transfer_to_amount" and val:
-                    val = f"{float(val):.2f}"
-                row.append(val)
-            writer.writerow(row)
+        writer.writerows(rows)
         f.flush()
         os.fsync(f.fileno())
 
@@ -2773,6 +2947,268 @@ def sync_counter_entries(import_ids: list[str]) -> dict:
     return result
 
 
+# ── Receipt-split group editing ──────────────────────────────────────────────
+
+# Header fields of a receipt split. They describe the physical receipt
+# rather than the individual line, so they are stored identically on every
+# member: the recon adapter buckets on (date, receipt_group) and filters
+# on account, and the receipt matcher treats any row without a
+# receipt_url as a free candidate.
+GROUP_HEADER_FIELDS = ("date", "account", "payee", "tags", "note", "receipt_url")
+
+
+class GroupUpdateError(ValueError):
+    """A group edit that must be refused (validation)."""
+
+
+class ProtectedRowError(GroupUpdateError):
+    """Deleting this row would dangle a side-log foreign key.
+
+    Carries the blocked rows (import_id, category, amount) so the caller
+    can name them. The Edit modal cannot: by the time it submits, the user
+    has already removed those lines from the form, so they are gone from
+    the client's line list.
+    """
+
+    def __init__(self, message: str, blocked: list[dict] | None = None):
+        super().__init__(message)
+        self.blocked = blocked or []
+
+
+@with_tx_lock
+def update_transaction_group(receipt_group, header, lines,
+                             protected_ids=frozenset(), from_import_id=""):
+    """Replace a whole receipt split in one atomic rewrite.
+
+    Lines carrying an import_id are updated in place, lines without one
+    are created, and members missing from ``lines`` are deleted. Keeping
+    the existing import_ids is the entire point: subscription_log, the
+    fuel/luku/water logs and the receipt-scan log all reference rows by
+    import_id, and a delete-and-rebook would strand every one of them.
+
+    The group sum is pinned to the sum of the current members. Re-slicing
+    a receipt across categories never changes what was paid — and the
+    recon adapter matches the group against its bank line through exactly
+    that sum (Pass 2b, crdb_tz.py).
+
+    Counter-entries are NOT touched here. The caller runs
+    sync_counter_entries() afterwards, which routes receipt groups
+    through _sync_group_counter (one counter over the group total).
+
+    Args:
+        receipt_group: the group being written; must exist unless
+            from_import_id seeds a new one.
+        header: dict of GROUP_HEADER_FIELDS, applied to every member.
+        lines: list of {import_id?, amount, category, note}.
+        protected_ids: import_ids that must not be deleted.
+        from_import_id: split an existing single transaction into a new
+            group — the row is adopted as the group's first member.
+
+    Returns:
+        {"receipt_group", "created", "updated", "deleted"}
+
+    Raises:
+        ProtectedRowError: a delete would hit a protected row.
+        GroupUpdateError: any other validation failure.
+    """
+    receipt_group = (receipt_group or "").strip()
+    if not receipt_group:
+        raise GroupUpdateError("receipt_group is required")
+    if not lines:
+        raise GroupUpdateError("a group needs at least one line")
+
+    tx_path = DATA_DIR / "transactions.csv"
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+
+    # Counter-entries carry the group's receipt_group too but belong to
+    # the backend — counting them as members would double the group sum.
+    members = [
+        r for r in rows
+        if (r.get("receipt_group") or "").strip() == receipt_group
+        and not (r.get("counter_entry_id") or "").strip()
+    ]
+    if not members and from_import_id:
+        seed = next((r for r in rows if r["import_id"] == from_import_id), None)
+        if seed is None:
+            raise GroupUpdateError(f"unknown import_id: {from_import_id}")
+        if (seed.get("receipt_group") or "").strip():
+            raise GroupUpdateError("row already belongs to a group")
+        members = [seed]
+    if not members:
+        raise GroupUpdateError(f"unknown receipt_group: {receipt_group}")
+
+    by_id = {r["import_id"]: r for r in members}
+    current_sum = sum(float(r.get("amount") or 0) for r in members)
+
+    new_sum = 0.0
+    for line in lines:
+        try:
+            amount = float(line.get("amount") or 0)
+        except (TypeError, ValueError):
+            raise GroupUpdateError(f"unparseable amount: {line.get('amount')!r}")
+        if amount <= 0:
+            raise GroupUpdateError("every split line needs a positive amount")
+        new_sum += amount
+    if round(new_sum, 2) != round(current_sum, 2):
+        raise GroupUpdateError(
+            f"group sum must stay {current_sum:.2f}, got {new_sum:.2f}")
+
+    keep_ids = {
+        (line.get("import_id") or "").strip()
+        for line in lines if (line.get("import_id") or "").strip()
+    }
+    unknown = keep_ids - set(by_id)
+    if unknown:
+        raise GroupUpdateError(f"not members of this group: {sorted(unknown)}")
+
+    to_delete = [r["import_id"] for r in members if r["import_id"] not in keep_ids]
+    blocked = [i for i in to_delete if i in protected_ids]
+    if blocked:
+        raise ProtectedRowError(
+            f"linked to a fuel/utility/subscription log: {sorted(blocked)}",
+            blocked=[{
+                "import_id": i,
+                "category": by_id[i].get("category", ""),
+                "amount": by_id[i].get("amount", ""),
+                "currency": by_id[i].get("currency", ""),
+            } for i in sorted(blocked)])
+
+    hdr = {k: (header.get(k) or "") for k in GROUP_HEADER_FIELDS}
+    # A single surviving line is no longer a split — dropping the group
+    # keeps the recon adapter from treating it as an aggregation bucket.
+    final_group = receipt_group if len(lines) > 1 else ""
+
+    existing_ids = {r["import_id"] for r in rows}
+    result = {"receipt_group": final_group, "created": [],
+              "updated": [], "deleted": to_delete}
+
+    for line in lines:
+        import_id = (line.get("import_id") or "").strip()
+        category = (line.get("category") or "").strip()
+        note = line.get("note") or ""
+        amount = f"{float(line['amount']):.2f}"
+        tags = ";".join(apply_auto_tags(
+            hdr["account"], hdr["payee"],
+            [x for x in (hdr["tags"] or "").split(";") if x],
+            category,
+        ))
+        if import_id:
+            row = by_id[import_id]
+            row.update(hdr)
+            row["amount"] = amount
+            row["category"] = category
+            row["note"] = note
+            row["tags"] = tags
+            row["receipt_group"] = final_group
+            result["updated"].append(import_id)
+        else:
+            new_id = generate_import_id(
+                hdr["date"], hdr["account"], float(amount),
+                hdr["payee"], category, note, existing_ids,
+            )
+            existing_ids.add(new_id)
+            row = {c: "" for c in fieldnames}
+            row.update(hdr)
+            row.update({
+                "import_id": new_id,
+                "type": "expense",
+                "currency": members[0].get("currency", ""),
+                "amount": amount,
+                "category": category,
+                "note": note,
+                "tags": tags,
+                "receipt_group": final_group,
+            })
+            rows.append(row)
+            result["created"].append(new_id)
+
+    delete_set = set(to_delete)
+    kept = [r for r in rows if r["import_id"] not in delete_set]
+    _atomic_csv_rewrite(tx_path, fieldnames, kept)
+    return result
+
+
+@with_tx_lock
+def batch_set_field(field: str, updates: dict[str, str]) -> int:
+    """Set one column across many TXs, a different value per row.
+
+    Two write modes, because the columns mean different things:
+
+    ``raw_note`` accumulates per bank reference (see bank_ref.merge_raw_note)
+    — a row matched by two statements keeps both traces, while a second
+    wording of the SAME trace replaces the first instead of piling up.
+    The bank re-words a card purchase between authorisation and
+    settlement, and plain text comparison stored both.
+
+    ``receipt_url`` is a single pointer and is only ever filled when
+    empty; an existing attachment is never replaced.
+    """
+    allowed = {"raw_note", "receipt_url"}
+    if field not in allowed:
+        raise ValueError(f"field must be one of {sorted(allowed)}")
+    if not updates:
+        return 0
+    tx_path = DATA_DIR / "transactions.csv"
+    rows = []
+    modified = 0
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            wanted = updates.get(row["import_id"])
+            current = (row.get(field) or "").strip()
+            if not wanted:
+                rows.append(row)
+                continue
+            if field == "raw_note":
+                merged = bank_ref.merge_raw_note(current, wanted)
+                if merged is not None:
+                    row[field] = merged
+                    modified += 1
+            elif not current:
+                row[field] = wanted
+                modified += 1
+            rows.append(row)
+    if modified == 0:
+        return 0
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
+    return modified
+
+
+@with_tx_lock
+def batch_set_raw_note(updates: dict[str, str]) -> int:
+    """Add the bank descriptor to raw_note. Returns count modified.
+
+    Maps import_id -> the bank's own descriptor. An empty cell is filled;
+    a cell that already holds something gets the descriptor appended, so
+    a row matched by two statements keeps both traces. Text that is
+    already present is not appended again, which keeps repeated imports
+    idempotent. `note` is never touched — that is the user's own wording.
+    """
+    if not updates:
+        return 0
+    tx_path = DATA_DIR / "transactions.csv"
+    rows = []
+    modified = 0
+    with open(tx_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            wanted = updates.get(row["import_id"])
+            current = (row.get("raw_note") or "").strip()
+            if wanted and wanted not in current:
+                row["raw_note"] = f"{current} | {wanted}" if current else wanted
+                modified += 1
+            rows.append(row)
+    if modified == 0:
+        return 0
+    _atomic_csv_rewrite(tx_path, fieldnames, rows)
+    return modified
+
+
 @with_tx_lock
 def batch_update_payee(import_ids: list[str], new_payee: str) -> int:
     """Replace the payee on every TX in ``import_ids``. Returns count modified.
@@ -3050,38 +3486,53 @@ def git_commit(message: str, files: list[str] | None = None) -> bool:
 
     # Opt-in: synchronous in-process mode (slow, lets you see git output).
     if os.environ.get("GIT_COMMIT_SYNC") == "1":
+        # O-M4 (CODE_REVIEW_2026-06-12): this mode exists so an unattended
+        # run can tell whether the push landed — cron_sched sets the env var
+        # for exactly that. It used to check the commit return code and then
+        # fire pull and push blind, so a rejected push or a conflicted
+        # rebase still reported success.
+        #
+        # The rebase runs under tx_write_lock: it rewrites the working tree,
+        # data/*.csv included, and must not overlap a writer. That does hold
+        # the lock across two network calls (15 s timeout each) — acceptable
+        # here because this path is the cron's, not the dashboard's.
         try:
-            if files:
+            with tx_write_lock():
+                add_args = files if files else [
+                    "data/transactions.csv", "data/prompt_log.csv"]
                 subprocess.run(
-                    ["git", "add"] + files,
+                    ["git", "add"] + add_args,
                     cwd=REPO_ROOT, check=True, capture_output=True,
                     **_NO_WINDOW_KWARGS,
                 )
-            else:
-                subprocess.run(
-                    ["git", "add", "data/transactions.csv", "data/prompt_log.csv"],
-                    cwd=REPO_ROOT, check=True, capture_output=True,
+                result = subprocess.run(
+                    ["git", "commit", "-m", message],
+                    cwd=REPO_ROOT, capture_output=True, text=True,
                     **_NO_WINDOW_KWARGS,
                 )
-            result = subprocess.run(
-                ["git", "commit", "-m", message],
-                cwd=REPO_ROOT, capture_output=True, text=True,
-                **_NO_WINDOW_KWARGS,
-            )
-            if result.returncode != 0:
-                return False
-            subprocess.run(
-                ["git", "pull", "origin", "main", "--rebase"],
-                cwd=REPO_ROOT, capture_output=True, timeout=15,
-                **_NO_WINDOW_KWARGS,
-            )
-            subprocess.run(
-                ["git", "push", "origin", "main"],
-                cwd=REPO_ROOT, capture_output=True, timeout=15,
-                **_NO_WINDOW_KWARGS,
-            )
-            return True
-        except Exception:
+                if result.returncode != 0:
+                    # Also the "nothing to commit" case — no commit, so
+                    # nothing to push either.
+                    return False
+                pull = subprocess.run(
+                    ["git", "pull", "origin", "main", "--rebase"],
+                    cwd=REPO_ROOT, capture_output=True, text=True, timeout=15,
+                    **_NO_WINDOW_KWARGS,
+                )
+                if pull.returncode != 0:
+                    print(f"[git_commit] rebase failed: {pull.stderr}", file=sys.stderr)
+                    return False
+                push = subprocess.run(
+                    ["git", "push", "origin", "main"],
+                    cwd=REPO_ROOT, capture_output=True, text=True, timeout=15,
+                    **_NO_WINDOW_KWARGS,
+                )
+                if push.returncode != 0:
+                    print(f"[git_commit] push failed: {push.stderr}", file=sys.stderr)
+                    return False
+                return True
+        except Exception as exc:
+            print(f"[git_commit] sync path failed: {exc}", file=sys.stderr)
             return False
 
     # Default: async event-driven push via cron_commit.py background spawn.

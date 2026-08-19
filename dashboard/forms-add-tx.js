@@ -23,6 +23,11 @@ async function loadTxContext() {
   if (addTxState.context) return addTxState.context;
   try {
     const res = await fetch('/api/tx/context', { method: 'POST' });
+    // F-M5: a non-ok response still parses as JSON — an error envelope
+    // like {"error": "..."} would otherwise be cached AS the context, and
+    // every picker would stay empty until a full reload. The 503 from the
+    // standby write fence is the realistic case.
+    if (!res.ok) throw new Error(`tx/context ${res.status}`);
     addTxState.context = await res.json();
   } catch (e) {
     // DP-M3/F-M5: do NOT cache the fallback — the next call should hit
@@ -67,7 +72,7 @@ function returnFromAddTx() {
 function duplicateTx(tx) {
   if (!tx) return;
   closeModal();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
   addTxState.preview = null;
   addTxState.prefillTx = {
     date: today,
@@ -104,7 +109,7 @@ async function renderAddTxPage() {
   // attach their URLs to whatever unrelated TX gets booked next.
   _atxReceiptFiles = [];
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
 
   // Load quick expenses for chips — skip entirely if the feature is disabled.
   let qeChipsHtml = '';
@@ -757,34 +762,17 @@ function removeSplitLine(idx) {
 }
 
 function renderSplitLines() {
-  const area = document.getElementById('atx-splits-area');
+  // Markup and wiring live in split-lines.js so the Edit modal's group
+  // mode draws the identical rows (see renderSplitRows there).
   const catSel = document.getElementById('atx-m-category');
-  // Clone category options
-  const catOptionsHtml = catSel ? catSel.innerHTML : '';
-
-  let html = '<div class="split-block">';
-  html += `<div class="split-block-heading">${t('atx.split.heading', {}, 'Split Lines')}</div>`;
-  const amountLabel = t('common.col.amount', {}, 'Amount');
-  const removeTitle = t('atx.split.remove_title', {}, 'Remove');
-  const noteLabel = t('atx.split.placeholder_note', {}, 'Note (optional)');
-  splitLines.forEach((s, i) => {
-    html += `<div class="split-row">
-      <div class="atx-field fx1"><input type="text" placeholder="${amountLabel}" value="${escapeHtml(s.amount)}" onchange="splitLines[${i}].amount=this.value;updateSplitInfo()"></div>
-      <div class="atx-field fx2"><select onchange="splitLines[${i}].category=this.value">${catOptionsHtml}</select></div>
-      <div class="atx-field fx2"><input type="text" placeholder="${noteLabel}" value="${escapeHtml(s.note || '')}" onchange="splitLines[${i}].note=this.value"></div>
-      <button class="split-x-btn" data-action="removeSplitLine" data-arg1="${i}" title="${removeTitle}" aria-label="${removeTitle}">&times;</button>
-    </div>`;
+  renderSplitRows({
+    containerId: 'atx-splits-area',
+    lines: splitLines,
+    catOptionsHtml: catSel ? catSel.innerHTML : '',
+    onChange: updateSplitInfo,
+    addAction: 'addSplitLine',
+    removeAction: 'removeSplitLine',
   });
-  html += `<button class="split-add-line-btn" data-action="addSplitLine">${t('atx.split.btn_add_line', {}, '+ Add line')}</button>`;
-  html += '</div>';
-  area.innerHTML = html;
-
-  // Set selected categories
-  const selects = area.querySelectorAll('select');
-  splitLines.forEach((s, i) => {
-    if (selects[i] && s.category) selects[i].value = s.category;
-  });
-
   updateSplitInfo();
 }
 

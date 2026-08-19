@@ -44,7 +44,7 @@ async function renderCustomReportsPage() {
 
   const headerHtml = `
     <div class="section" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-      <div class="hint-md">Build reports with custom filters across categories, tags, accounts, and payees. Saved reports also appear on the Reports page.</div>
+      <div class="hint-md">${escapeHtml(t('crb.intro', {}, 'Build reports with custom filters across categories, tags, accounts, and payees. Saved reports also appear on the Reports page.'))}</div>
       <button id="cr-new-btn" class="btn-primary nowrap">${t('pages.custom.list.btn_new', {}, '+ New Custom Report')}</button>
     </div>
   `;
@@ -61,7 +61,7 @@ async function renderCustomReportsPage() {
   } else {
     cardsHtml = `
       <div class="report-category">
-        <div class="report-category-label">Saved Reports</div>
+        <div class="report-category-label">${escapeHtml(t('crb.saved', {}, 'Saved Reports'))}</div>
         <div class="report-cards">
           ${customReportsCache.map(r => renderCustomReportCard(r)).join('')}
         </div>
@@ -267,22 +267,22 @@ function renderBuilderHtml() {
         <strong style="font-size:15px;">${isEdit ? t('pages.custom.builder.heading_edit', {}, 'Edit Custom Report') : t('pages.custom.builder.heading_new', {}, 'New Custom Report')}</strong>
       </div>
       <div style="display:flex;gap:12px;align-items:center;">
-        <span class="hint-md">Matches: <strong id="cr-match-count" class="c-acc">…</strong> tx</span>
+        <span class="hint-md">${escapeHtml(t('crb.matches', {}, 'Matches:'))} <strong id="cr-match-count" class="c-acc">…</strong> ${escapeHtml(t('crb.matches_unit', {}, 'tx'))}</span>
         <button class="btn-secondary" id="cr-builder-cancel">${t('common.actions.cancel', {}, 'Cancel')}</button>
         <button class="btn-primary"   id="cr-builder-save">${isEdit ? t('pages.custom.builder.btn.save_edit', {}, 'Save changes') : t('pages.custom.builder.btn.save_new', {}, 'Create report')}</button>
       </div>
     </div>
 
     <div class="section">
-      <div class="section-title">Basics</div>
+      <div class="section-title">${escapeHtml(t('crb.section.basics', {}, 'Basics'))}</div>
       <div style="display:grid;grid-template-columns:120px 1fr;gap:8px 12px;align-items:center;">
-        <label for="cr-f-name">Name</label>
+        <label for="cr-f-name">${escapeHtml(t('common.col.name', {}, 'Name'))}</label>
         <input type="text" id="cr-f-name" value="${escapeHtml(def.name)}" placeholder="e.g. Bills without Internet"
                style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;">
-        <label for="cr-f-desc">Description</label>
+        <label for="cr-f-desc">${escapeHtml(t('common.label.description', {}, 'Description'))}</label>
         <input type="text" id="cr-f-desc" value="${escapeHtml(def.description || '')}" placeholder="optional"
                style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;">
-        <label>Match mode</label>
+        <label>${escapeHtml(t('crb.match_mode', {}, 'Match mode'))}</label>
         <div style="display:flex;gap:14px;">
           <label class="chk-row">
             <input type="radio" name="cr-f-match" value="AND" ${def.match_mode === 'AND' ? 'checked' : ''}> AND (all blocks)
@@ -291,13 +291,13 @@ function renderBuilderHtml() {
             <input type="radio" name="cr-f-match" value="OR" ${def.match_mode === 'OR' ? 'checked' : ''}> OR (any block)
           </label>
         </div>
-        <label>Operational only</label>
+        <label>${escapeHtml(t('crb.operational_only', {}, 'Operational only'))}</label>
         <div style="display:flex;gap:14px;align-items:center;">
           <label class="chk-row">
             <input type="checkbox" id="cr-f-opnoise" ${def.exclude_operational_noise !== false ? 'checked' : ''}>
             Exclude custody accounts and transfers/reimbursements
           </label>
-          <span class="hint-sm" style="font-size:10px;color:var(--text-muted);">Matches Fixed Reports behavior. Uncheck to audit custody flows.</span>
+          <span class="hint-sm" style="font-size:10px;color:var(--text-muted);">${escapeHtml(t('crb.operational_only_hint', {}, 'Matches Fixed Reports behavior. Uncheck to audit custody flows.'))}</span>
         </div>
       </div>
     </div>
@@ -308,9 +308,9 @@ function renderBuilderHtml() {
     ${renderFilterBlock('payees',     'Payees',     renderPayeesHtml(ctx.payees))}
 
     <div class="section">
-      <div class="section-title">Period</div>
+      <div class="section-title">${escapeHtml(t('crb.section.period', {}, 'Period'))}</div>
       <div style="display:grid;grid-template-columns:120px 1fr;gap:8px 12px;align-items:center;">
-        <label>Default view</label>
+        <label>${escapeHtml(t('crb.default_view', {}, 'Default view'))}</label>
         <div style="display:flex;gap:14px;">
           <label class="chk-row">
             <input type="radio" name="cr-f-view" value="monthly" ${def.period.default_view === 'monthly' ? 'checked' : ''}> Monthly
@@ -319,16 +319,16 @@ function renderBuilderHtml() {
             <input type="radio" name="cr-f-view" value="yearly" ${def.period.default_view === 'yearly' ? 'checked' : ''}> Yearly
           </label>
         </div>
-        <label for="cr-f-preset">Default preset</label>
+        <label for="cr-f-preset">${escapeHtml(t('crb.default_preset', {}, 'Default preset'))}</label>
         <select id="cr-f-preset" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;max-width:240px;">
-          <option value="current" ${def.period.default_preset === 'current' ? 'selected' : ''}>Current period</option>
-          <option value="ytd"     ${def.period.default_preset === 'ytd'     ? 'selected' : ''}>Year to date</option>
-          <option value="last12"  ${def.period.default_preset === 'last12'  ? 'selected' : ''}>Last 12 months</option>
-          <option value="all"     ${def.period.default_preset === 'all'     ? 'selected' : ''}>All time</option>
-          <option value="custom"  ${def.period.default_preset === 'custom'  ? 'selected' : ''}>Custom range</option>
+          <option value="current" ${def.period.default_preset === 'current' ? 'selected' : ''}>${escapeHtml(t('crb.preset.current', {}, 'Current period'))}</option>
+          <option value="ytd"     ${def.period.default_preset === 'ytd'     ? 'selected' : ''}>${escapeHtml(t('reports.budget.period_ytd', {}, 'Year to date'))}</option>
+          <option value="last12"  ${def.period.default_preset === 'last12'  ? 'selected' : ''}>${escapeHtml(t('reports.fxh.range.12m', {}, 'Last 12 months'))}</option>
+          <option value="all"     ${def.period.default_preset === 'all'     ? 'selected' : ''}>${escapeHtml(t('reports.fxh.range.all', {}, 'All time'))}</option>
+          <option value="custom"  ${def.period.default_preset === 'custom'  ? 'selected' : ''}>${escapeHtml(t('crb.preset.custom', {}, 'Custom range'))}</option>
         </select>
         <div id="cr-f-range-row" style="display:${def.period.default_preset === 'custom' ? 'contents' : 'none'};">
-          <label>Custom range</label>
+          <label>${escapeHtml(t('crb.preset.custom', {}, 'Custom range'))}</label>
           <div class="flex-row gap-sm">
             <input type="date" id="cr-f-range-from" value="${(def.period.custom_range && def.period.custom_range.from) || ''}"
                    class="input-sm">
@@ -341,7 +341,7 @@ function renderBuilderHtml() {
     </div>
 
     <div class="section">
-      <div class="section-title">Widgets</div>
+      <div class="section-title">${escapeHtml(t('crb.section.widgets', {}, 'Widgets'))}</div>
       <div style="display:flex;flex-direction:column;gap:10px;">
         <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
           <label style="display:flex;gap:6px;align-items:center;cursor:pointer;">
@@ -350,10 +350,10 @@ function renderBuilderHtml() {
           <label class="flex-row gap-xs">
             Dimension:
             <select id="cr-f-pie-dim" class="input-sm">
-              <option value="category" ${def.widgets.pie.dimension === 'category' ? 'selected' : ''}>by Category</option>
-              <option value="payee"    ${def.widgets.pie.dimension === 'payee'    ? 'selected' : ''}>by Payee</option>
-              <option value="account"  ${def.widgets.pie.dimension === 'account'  ? 'selected' : ''}>by Account</option>
-              <option value="tag"      ${def.widgets.pie.dimension === 'tag'      ? 'selected' : ''}>by Tag</option>
+              <option value="category" ${def.widgets.pie.dimension === 'category' ? 'selected' : ''}>${escapeHtml(t('crb.by.category', {}, 'by Category'))}</option>
+              <option value="payee"    ${def.widgets.pie.dimension === 'payee'    ? 'selected' : ''}>${escapeHtml(t('crb.by.payee', {}, 'by Payee'))}</option>
+              <option value="account"  ${def.widgets.pie.dimension === 'account'  ? 'selected' : ''}>${escapeHtml(t('crb.by.account', {}, 'by Account'))}</option>
+              <option value="tag"      ${def.widgets.pie.dimension === 'tag'      ? 'selected' : ''}>${escapeHtml(t('crb.by.tag', {}, 'by Tag'))}</option>
             </select>
           </label>
         </div>
@@ -364,10 +364,10 @@ function renderBuilderHtml() {
           <label class="flex-row gap-xs">
             Dimension:
             <select id="cr-f-topn-dim" class="input-sm">
-              <option value="payee"    ${def.widgets.top_n.dimension === 'payee'    ? 'selected' : ''}>Payees</option>
-              <option value="category" ${def.widgets.top_n.dimension === 'category' ? 'selected' : ''}>Categories</option>
-              <option value="account"  ${def.widgets.top_n.dimension === 'account'  ? 'selected' : ''}>Accounts</option>
-              <option value="tag"      ${def.widgets.top_n.dimension === 'tag'      ? 'selected' : ''}>Tags</option>
+              <option value="payee"    ${def.widgets.top_n.dimension === 'payee'    ? 'selected' : ''}>${escapeHtml(t('settings.tab.payees', {}, 'Payees'))}</option>
+              <option value="category" ${def.widgets.top_n.dimension === 'category' ? 'selected' : ''}>${escapeHtml(t('settings.tab.categories', {}, 'Categories'))}</option>
+              <option value="account"  ${def.widgets.top_n.dimension === 'account'  ? 'selected' : ''}>${escapeHtml(t('nav.accounts', {}, 'Accounts'))}</option>
+              <option value="tag"      ${def.widgets.top_n.dimension === 'tag'      ? 'selected' : ''}>${escapeHtml(t('settings.tab.tags', {}, 'Tags'))}</option>
             </select>
           </label>
           <label class="flex-row gap-xs">
@@ -390,9 +390,9 @@ function renderFilterBlock(key, label, innerHtml) {
         <div class="section-title m-0">${label} <span class="hint-md" style="font-weight:normal;">(${count} selected)</span></div>
         <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
           <button data-cr-mode="${key}|include" class="cr-mode-btn ${block.mode === 'include' ? 'active' : ''}"
-                  style="padding:4px 10px;font-size:11px;background:${block.mode === 'include' ? 'var(--accent)' : 'transparent'};color:${block.mode === 'include' ? '#fff' : 'var(--text)'};border:0;cursor:pointer;">Include</button>
+                  style="padding:4px 10px;font-size:11px;background:${block.mode === 'include' ? 'var(--accent)' : 'transparent'};color:${block.mode === 'include' ? '#fff' : 'var(--text)'};border:0;cursor:pointer;">${escapeHtml(t('crb.include', {}, 'Include'))}</button>
           <button data-cr-mode="${key}|exclude" class="cr-mode-btn ${block.mode === 'exclude' ? 'active' : ''}"
-                  style="padding:4px 10px;font-size:11px;background:${block.mode === 'exclude' ? 'var(--negative)' : 'transparent'};color:${block.mode === 'exclude' ? '#fff' : 'var(--text)'};border:0;cursor:pointer;">Exclude</button>
+                  style="padding:4px 10px;font-size:11px;background:${block.mode === 'exclude' ? 'var(--negative)' : 'transparent'};color:${block.mode === 'exclude' ? '#fff' : 'var(--text)'};border:0;cursor:pointer;">${escapeHtml(t('crb.exclude', {}, 'Exclude'))}</button>
         </div>
       </div>
       ${innerHtml}
@@ -418,7 +418,7 @@ function renderCategoriesTreeHtml(sortedGroups, catGroups) {
     html += `<div data-cr-cat-group="${escapeHtml(top)}" style="display:flex;flex-direction:column;gap:4px;">`;
     html += `<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
                ${groupHeader}
-               <button data-cr-cat-toggle="${escapeHtml(top)}" class="btn-secondary" style="font-size:10px;padding:2px 6px;">all</button>
+               <button data-cr-cat-toggle="${escapeHtml(top)}" class="btn-secondary" style="font-size:10px;padding:2px 6px;">${escapeHtml(t('crb.select_all', {}, 'all'))}</button>
              </div>`;
     for (const path of realChildren) {
       html += `<label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:12px;padding-left:14px;">
@@ -722,15 +722,15 @@ function renderCustomReportRunHtml(report, runState) {
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         <button class="btn-secondary" id="cr-run-edit" title="${t('pages.custom.runner.title.edit_tooltip', {}, 'Edit this report')}">${t('pages.actions.title.edit', {}, 'Edit')}</button>
         <select id="cr-run-view" class="input-sm">
-          <option value="monthly" ${runState.view === 'monthly' ? 'selected' : ''}>Monthly</option>
-          <option value="yearly"  ${runState.view === 'yearly'  ? 'selected' : ''}>Yearly</option>
+          <option value="monthly" ${runState.view === 'monthly' ? 'selected' : ''}>${escapeHtml(t('reports.toolbar.monthly', {}, 'Monthly'))}</option>
+          <option value="yearly"  ${runState.view === 'yearly'  ? 'selected' : ''}>${escapeHtml(t('reports.toolbar.yearly', {}, 'Yearly'))}</option>
         </select>
         <select id="cr-run-preset" class="input-sm">
-          <option value="current" ${runState.preset === 'current' ? 'selected' : ''}>Current year</option>
-          <option value="ytd"     ${runState.preset === 'ytd'     ? 'selected' : ''}>Year to date</option>
-          <option value="last12"  ${runState.preset === 'last12'  ? 'selected' : ''}>Last 12 months</option>
-          <option value="all"     ${runState.preset === 'all'     ? 'selected' : ''}>All time</option>
-          <option value="custom"  ${runState.preset === 'custom'  ? 'selected' : ''}>Custom range</option>
+          <option value="current" ${runState.preset === 'current' ? 'selected' : ''}>${escapeHtml(t('crb.preset.current_year', {}, 'Current year'))}</option>
+          <option value="ytd"     ${runState.preset === 'ytd'     ? 'selected' : ''}>${escapeHtml(t('reports.budget.period_ytd', {}, 'Year to date'))}</option>
+          <option value="last12"  ${runState.preset === 'last12'  ? 'selected' : ''}>${escapeHtml(t('reports.fxh.range.12m', {}, 'Last 12 months'))}</option>
+          <option value="all"     ${runState.preset === 'all'     ? 'selected' : ''}>${escapeHtml(t('reports.fxh.range.all', {}, 'All time'))}</option>
+          <option value="custom"  ${runState.preset === 'custom'  ? 'selected' : ''}>${escapeHtml(t('crb.preset.custom', {}, 'Custom range'))}</option>
         </select>
       </div>
     </div>
@@ -810,17 +810,17 @@ function drawCustomReportKpi(tx, cur, window) {
       <div class="report-section-title">Summary — ${rangeLbl}</div>
       <div class="income-grid">
         <div class="income-cell">
-          <div class="ic-label">Income</div>
+          <div class="ic-label">${escapeHtml(t('common.label.income', {}, 'Income'))}</div>
           <div class="ic-value c-pos">${formatCurrency(income, cur)}<span class="ic-cur">${cur}</span></div>
           <div class="ic-count">${tx.filter(t => t.type === 'income').length} TX</div>
         </div>
         <div class="income-cell">
-          <div class="ic-label">Expense</div>
+          <div class="ic-label">${escapeHtml(t('common.type.expense', {}, 'Expense'))}</div>
           <div class="ic-value c-neg">${formatCurrency(expense, cur)}<span class="ic-cur">${cur}</span></div>
           <div class="ic-count">${tx.filter(t => t.type === 'expense').length} TX</div>
         </div>
         <div class="income-cell">
-          <div class="ic-label">Net</div>
+          <div class="ic-label">${escapeHtml(t('common.label.net', {}, 'Net'))}</div>
           <div class="ic-value" style="color:${net >= 0 ? 'var(--positive)' : 'var(--negative)'};">${formatCurrency(net, cur)}<span class="ic-cur">${cur}</span></div>
           <div class="ic-count">${tx.length} TX total</div>
         </div>
@@ -907,9 +907,9 @@ function drawCustomReportTopN(tx, dimension, n, cur) {
   const total = data.reduce((s, d) => s + d.value, 0);
   document.getElementById('cr-run-topn').innerHTML = `
     <div class="report-section">
-      <div class="report-section-title">Top ${data.length} ${dimension}s by expense</div>
+      <div class="report-section-title">${escapeHtml(t('crb.topn.title', { n: data.length, dimension }, `Top ${data.length} ${dimension}s by expense`))}</div>
       <table class="tx-table">
-        <thead><tr><th>#</th><th>${dimension[0].toUpperCase() + dimension.slice(1)}</th><th class="t-right">Amount</th><th class="t-right">Share</th></tr></thead>
+        <thead><tr><th>#</th><th>${escapeHtml(dimension[0].toUpperCase() + dimension.slice(1))}</th><th class="t-right">${escapeHtml(t('common.col.amount', {}, 'Amount'))}</th><th class="t-right">${escapeHtml(t('reports.fx.col.share', {}, 'Share'))}</th></tr></thead>
         <tbody>
           ${data.map((d, i) => `<tr>
             <td>${i + 1}</td>
@@ -930,9 +930,9 @@ function drawCustomReportList(tx, cur) {
   const more = sorted.length - shown.length;
   document.getElementById('cr-run-list').innerHTML = `
     <div class="report-section">
-      <div class="report-section-title">Transactions (${sorted.length})${more > 0 ? ` — showing first ${limit}` : ''}</div>
+      <div class="report-section-title">${escapeHtml(t('crb.tx_table.title', { n: sorted.length }, `Transactions (${sorted.length})`))}${more > 0 ? escapeHtml(t('crb.tx_table.truncated', { n: limit }, ` — showing first ${limit}`)) : ''}</div>
       <table class="tx-table">
-        <thead><tr><th>Date</th><th>Type</th><th>Account</th><th>Payee</th><th>Category</th><th class="t-right">Amount</th><th>Tags</th></tr></thead>
+        <thead><tr><th>${escapeHtml(t('common.col.date', {}, 'Date'))}</th><th>${escapeHtml(t('common.col.type', {}, 'Type'))}</th><th>${escapeHtml(t('common.col.account', {}, 'Account'))}</th><th>${escapeHtml(t('common.col.payee', {}, 'Payee'))}</th><th>${escapeHtml(t('common.col.category', {}, 'Category'))}</th><th class="t-right">${escapeHtml(t('common.col.amount', {}, 'Amount'))}</th><th>${escapeHtml(t('settings.tab.tags', {}, 'Tags'))}</th></tr></thead>
         <tbody>
           ${shown.map(t => `<tr>
             <td>${escapeHtml(t.date || '')}</td>

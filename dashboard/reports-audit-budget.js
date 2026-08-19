@@ -453,7 +453,7 @@ function renderSavingsGoalsHistoryReport() {
         if ((t.account === alias || t.transfer_to_account === alias) && (!startDate || t.date < startDate)) startDate = t.date;
       }
     }
-    if (!startDate) startDate = new Date().toISOString().slice(0, 10);
+    if (!startDate) startDate = localTodayIso();
 
     // Build month-by-month balances from transactions
     const startYM = startDate.slice(0, 7);

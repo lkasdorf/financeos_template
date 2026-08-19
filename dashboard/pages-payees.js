@@ -304,10 +304,8 @@ async function savePayee(editId) {
 
 async function deletePayee(id) {
   if (!(await uiConfirm(t('settings.payees.modal.confirm_delete', {}, 'Delete this payee?'), { type: 'destructive' }))) return;
-  try {
-    await fetch('/api/payees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-    closeModal();
-    invalidateTxContext(); // DP-M3
-    renderPayeesPage();
-  } catch (e) { console.warn('[payees:silent-catch]', e); }
+  if (!await apiMutate('/api/payees/delete', { id })) return;
+  closeModal();
+  invalidateTxContext(); // DP-M3
+  renderPayeesPage();
 }

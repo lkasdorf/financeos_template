@@ -67,7 +67,7 @@ function getFilteredTxCount(reportDef, allTx) {
 
 function computePeriodWindow(preset, customRange) {
   const now = new Date();
-  const today = now.toISOString().slice(0, 10);
+  const today = localIsoDate(now);
   const year = String(now.getFullYear());
 
   if (preset === 'all') return { from: null, to: null };
@@ -82,7 +82,7 @@ function computePeriodWindow(preset, customRange) {
     const past = new Date(now);
     past.setMonth(past.getMonth() - 12);
     past.setDate(past.getDate() + 1);  // inclusive of "12 months back"
-    return { from: past.toISOString().slice(0, 10), to: today };
+    return { from: localIsoDate(past), to: today };
   }
   // 'current' default — current calendar year
   return { from: year + '-01-01', to: year + '-12-31' };

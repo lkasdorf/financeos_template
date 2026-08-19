@@ -70,12 +70,19 @@ async function triggerBackup(target) {
     const targets = target === 'all' ? ['transactions', 'scheduled', 'third_party'] : [target];
     const results = [];
     // Inner loop var renamed to `target_` to avoid shadowing the global t() i18n function.
+    // F-M3 (CODE_REVIEW_2026-06-12): the response text went into innerHTML
+    // unescaped, and every outcome was painted as a success — a failed
+    // backup reported itself in green, which is the one message that must
+    // never be misread.
+    let anyFailed = false;
     for (const target_ of targets) {
       const res = await fetch('/api/backup/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: target_ }) });
-      const data = await res.json();
-      results.push(data.message || data.error || target_);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) anyFailed = true;
+      results.push(String(data.message || data.error || target_));
     }
-    statusEl.innerHTML = `<div class="atx-status success">${results.join('<br>')}</div>`;
+    const cls = anyFailed ? 'error' : 'success';
+    statusEl.innerHTML = `<div class="atx-status ${cls}">${results.map(escapeHtml).join('<br>')}</div>`;
     loadBackupList();
   } catch (e) {
     statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(t('settings.backup.failed', { msg: e.message }, `Backup failed: ${e.message}`))}</div>`;
@@ -149,12 +156,12 @@ async function renderAccountsSettingsTab() {
       return `<tr>
         <td><strong>${escapeHtml(a.alias)}</strong></td>
         <td>${escapeHtml(a.name)}</td>
-        <td>${a.currency}</td>
-        <td>${a.type}</td>
-        <td>${a.owner}</td>
-        <td>${a.status}</td>
-        <td class="amt">${formatCurrency(bal, a.currency)}<span class="acc-currency"> ${a.currency}</span></td>
-        <td>${a.initial_balance_date || ''}</td>
+        <td>${escapeHtml(a.currency)}</td>
+        <td>${escapeHtml(a.type)}</td>
+        <td>${escapeHtml(a.owner)}</td>
+        <td>${escapeHtml(a.status)}</td>
+        <td class="amt">${formatCurrency(bal, a.currency)}<span class="acc-currency"> ${escapeHtml(a.currency)}</span></td>
+        <td>${escapeHtml(a.initial_balance_date || '')}</td>
         <td><button style="font-size:10px;padding:3px 8px;" data-action="toggleAccountNetWorth" data-arg1="${escapeHtml(a.alias)}" data-arg2="${currentFlag}">${inNw ? labelOn : labelOff}</button></td>
         <td><button class="tx-edit-btn" data-action="showAccountEditModal" data-arg1="${escapeHtml(a.alias)}">${editLabel}</button></td>
       </tr>`;
@@ -179,11 +186,8 @@ async function renderAccountsSettingsTab() {
 // a full reload.
 async function toggleAccountNetWorth(alias, currentFlag) {
   const next = (currentFlag === 'true') ? 'false' : 'true';
-  await fetch('/api/accounts/update', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ alias, updated: { include_in_net_worth: next } }),
-  });
+  if (!await apiMutate('/api/accounts/update',
+      { alias, updated: { include_in_net_worth: next } })) return;
   if (typeof state !== 'undefined' && state.accounts) {
     const acc = state.accounts.find(a => a.alias === alias);
     if (acc) acc.include_in_net_worth = next;
@@ -206,7 +210,7 @@ async function showAccountAddModal() {
   const ownerOptions = distinct('owner', ['self']);
   const currencyOptions = distinct('currency', ['EUR', 'USD']);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
 
   openModal({
     title: `${escapeHtml(t('settings.accounts.modal.add_title', {}, 'Add new account'))}`,
@@ -474,6 +478,7 @@ async function renderSettingsPage() {
     { id: 'vehicles', group: 'assets', label: t('settings.tab.vehicles', {}, 'Vehicles'), feature: 'vehicles' },
     { id: 'properties', group: 'assets', label: t('settings.tab.properties', {}, 'Properties') },
     { id: 'quickexp', group: 'workflows', label: t('settings.tab.quickexp', {}, 'Quick Expenses'), feature: 'quick_expenses' },
+    { id: 'cashcount', group: 'workflows', label: t('settings.tab.cashcount', {}, 'Cash Count') },
     { id: 'scheduled', group: 'workflows', label: t('settings.tab.scheduled', {}, 'Scheduled'), feature: 'scheduled_tx' },
     { id: 'atmfees', group: 'workflows', label: t('settings.tab.atmfees', {}, 'ATM Fees') },
     { id: 'receipts', group: 'workflows', label: t('settings.tab.receipts', {}, 'Receipts') },
@@ -525,6 +530,7 @@ async function renderSettingsPage() {
   else if (settingsTab === 'tags') renderTagsTab();
   else if (settingsTab === 'scheduled') renderScheduledTab();
   else if (settingsTab === 'quickexp') renderQuickExpTab();
+  else if (settingsTab === 'cashcount') renderCashCountTab();
   else if (settingsTab === 'atmfees') renderAtmFeesTab();
   else if (settingsTab === 'receipts') renderReceiptsTab();
   else if (settingsTab === 'payees') renderPayeesPage();
@@ -893,10 +899,8 @@ async function toggleCategory(path, isActive) {
   // passes data-arg2 verbatim); also accept the original boolean shape so
   // direct callers don't break.
   const wasActive = isActive === true || isActive === 'true';
-  await fetch('/api/categories/update', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, updated: { active: wasActive ? 'false' : 'true' } }),
-  });
+  if (!await apiMutate('/api/categories/update',
+      { path, updated: { active: wasActive ? 'false' : 'true' } })) return;
   renderCategoriesTab();
   reloadCategories();
 }
@@ -1035,10 +1039,8 @@ async function renderTagsTab() {
 }
 
 async function toggleTag(tag, active) {
-  await fetch('/api/tags/update', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tag, updated: { active: active === 'true' ? 'false' : 'true' } }),
-  });
+  if (!await apiMutate('/api/tags/update',
+      { tag, updated: { active: active === 'true' ? 'false' : 'true' } })) return;
   renderTagsTab();
 }
 
@@ -1112,11 +1114,9 @@ async function saveTag(editTag) {
 
 async function deleteTag(tag) {
   if (!(await uiConfirm(t('settings.tags.modal.confirm_delete', { tag }, `Delete tag "${tag}"?`), { type: 'destructive' }))) return;
-  try {
-    await fetch('/api/tags/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag }) });
-    invalidateTxContext(); // DP-M3
-    renderTagsTab();
-  } catch (e) { console.warn('[settings:silent-catch]', e); }
+  if (!await apiMutate('/api/tags/delete', { tag })) return;
+  invalidateTxContext(); // DP-M3
+  renderTagsTab();
 }
 
 // ─── Scheduled Tab ────────────────────────────────────────────────────────
@@ -1164,7 +1164,7 @@ async function renderScheduledTab() {
       </tr></thead><tbody>
   `;
   items.forEach(s => {
-    const overdue = s.active === 'true' && s.next_run && s.next_run <= new Date().toISOString().slice(0,10);
+    const overdue = s.active === 'true' && s.next_run && s.next_run <= localTodayIso();
     html += `<tr style="${s.active !== 'true' ? 'opacity:0.5' : ''}">
       <td><strong>${escapeHtml(s.name)}</strong>${s.subscription_id && subsById[s.subscription_id] ? `<br><span class="sched-sub-badge" title="${escapeHtml(t('settings.scheduled.subscription_badge_title', {}, 'Linked to subscription'))}">🔗 ${escapeHtml(subsById[s.subscription_id].name)}</span>` : ''}${s.note ? `<br><span class="hint-sm">${escapeHtml(s.note)}</span>` : ''}</td>
       <td class="fs-11">${escapeHtml(s.account)}</td>
@@ -1189,10 +1189,8 @@ async function renderScheduledTab() {
 }
 
 async function toggleScheduled(schedId, active) {
-  await fetch('/api/scheduled/update', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sched_id: schedId, updated: { active: active === 'true' ? 'false' : 'true' } }),
-  });
+  if (!await apiMutate('/api/scheduled/update',
+      { sched_id: schedId, updated: { active: active === 'true' ? 'false' : 'true' } })) return;
   renderScheduledTab();
 }
 
@@ -1266,7 +1264,7 @@ async function showScheduledModal(editId) {
     bodyHtml: `
       <div class="atx-row">
         <div class="atx-field fx2"><label>${t('common.col.name', {}, 'Name')}</label>
-          <input type="text" id="sm-name" value="${escapeHtml(item?.name || '')}" placeholder="${t('settings.scheduled.modal.placeholder_name', {}, 'Monthly Subscription')}">
+          <input type="text" id="sm-name" value="${escapeHtml(item?.name || '')}" placeholder="${t('settings.scheduled.modal.placeholder_name', {}, 'Bank account monthly fee')}">
         </div>
         <div class="atx-field fx1"><label>${t('common.status.active', {}, 'Active')}</label>
           <select id="sm-active">
@@ -1388,10 +1386,8 @@ async function saveScheduled(editId) {
 
 async function deleteScheduled(schedId) {
   if (!(await uiConfirm(t('settings.scheduled.modal.confirm_delete', { schedId }, `Delete scheduled "${schedId}"?`), { type: 'destructive' }))) return;
-  try {
-    await fetch('/api/scheduled/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sched_id: schedId }) });
-    renderScheduledTab();
-  } catch (e) { console.warn('[settings:silent-catch]', e); }
+  if (!await apiMutate('/api/scheduled/delete', { sched_id: schedId })) return;
+  renderScheduledTab();
 }
 
 // ─── Quick Expenses Settings Tab ─────────────────────────────────────────
@@ -1442,10 +1438,8 @@ async function renderQuickExpTab() {
 }
 
 async function toggleQuickExp(qeId, active) {
-  await fetch('/api/quickexp/update', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: qeId, updated: { active: active === 'true' ? 'false' : 'true' } }),
-  });
+  if (!await apiMutate('/api/quickexp/update',
+      { id: qeId, updated: { active: active === 'true' ? 'false' : 'true' } })) return;
   renderQuickExpTab();
 }
 
@@ -1560,10 +1554,8 @@ async function saveQuickExp(editId) {
 
 async function deleteQuickExp(qeId) {
   if (!(await uiConfirm(t('settings.quickexp.modal.confirm_delete', { qeId }, `Delete quick expense "${qeId}"?`), { type: 'destructive' }))) return;
-  try {
-    await fetch('/api/quickexp/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: qeId }) });
-    renderQuickExpTab();
-  } catch (e) { console.warn('[settings:silent-catch]', e); }
+  if (!await apiMutate('/api/quickexp/delete', { id: qeId })) return;
+  renderQuickExpTab();
 }
 
 // ─── ATM Fees Settings Tab ───────────────────────────────────────────────
@@ -1622,10 +1614,8 @@ async function renderAtmFeesTab() {
 }
 
 async function toggleAtmFee(feeId, active) {
-  await fetch('/api/atm-fees/update', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: feeId, updated: { active: active === 'true' ? 'false' : 'true' } }),
-  });
+  if (!await apiMutate('/api/atm-fees/update',
+      { id: feeId, updated: { active: active === 'true' ? 'false' : 'true' } })) return;
   renderAtmFeesTab();
 }
 
@@ -1729,11 +1719,9 @@ async function saveAtmFee(editId) {
 
 async function deleteAtmFee(feeId) {
   if (!(await uiConfirm(t('settings.atmfees.modal.confirm_delete', { feeId }, `Delete ATM fee preset "${feeId}"?`), { type: 'destructive' }))) return;
-  try {
-    await fetch('/api/atm-fees/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: feeId }) });
-    invalidateTxContext(); // DP-M3
-    renderAtmFeesTab();
-  } catch (e) { console.warn('[settings:silent-catch]', e); }
+  if (!await apiMutate('/api/atm-fees/delete', { id: feeId })) return;
+  invalidateTxContext(); // DP-M3
+  renderAtmFeesTab();
 }
 
 // ─── Receipts Settings Tab (v1.6.0-rc.1.1) ───────────────────────────────
@@ -1788,7 +1776,7 @@ async function renderReceiptsTab() {
   // today is the typical monthly-reimbursement workflow; user adjusts the
   // range when they need an annual or claim-window export.
   const today = new Date();
-  const isoToday = today.toISOString().slice(0, 10);
+  const isoToday = localIsoDate(today);
   const firstOfMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
   const accountOptions = (ctx.accounts || []).map(a =>
     `<option value="${escapeHtml(a.alias)}">${escapeHtml(a.alias)} — ${escapeHtml(a.name || '')}</option>`

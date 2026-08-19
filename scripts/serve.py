@@ -39,6 +39,7 @@ import argparse
 import gzip
 import http.server
 import json
+import math
 import os
 import secrets
 import socket
@@ -56,8 +57,11 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import alert_acks
 import auth
 import backup
+import cash_count
+import config_loader
 import fuel
 import fuel_export
 import fx_backfill
@@ -66,6 +70,7 @@ import receipts
 import setup_core
 import subscriptions
 import tx_engine
+import tx_links
 import utilities
 from config_loader import (
     get_auto_tags_config,
@@ -232,6 +237,7 @@ FEATURE_GATED_ROUTES = {
     "/api/subscriptions/active_for_picker": "subscriptions",
     "/api/subscriptions/log_for_tx": "subscriptions",
     "/api/subscriptions/log_for_subscription": "subscriptions",
+    "/api/subscriptions/log_all": "subscriptions",
     "/api/subscriptions/add": "subscriptions",
     "/api/subscriptions/update": "subscriptions",
     "/api/subscriptions/delete": "subscriptions",
@@ -269,7 +275,15 @@ def _read_app_version() -> str:
     idx = REPO_ROOT / "dashboard" / "index.html"
     try:
         text = idx.read_text(encoding="utf-8", errors="ignore")
+        # Two shapes in the wild: the date-counter scheme upstream uses
+        # (v2026-05-01.1) and the semver a template fork carries
+        # (v1.9.0-rc.1). Matching only the first made every fork report
+        # "unknown", which the service worker reads as "no version" and
+        # answers by parking the whole shell in its fallback cache —
+        # the cache-busting the version exists for never happened.
         m = re.search(r"v\d{4}-\d{2}-\d{2}(?:\.\d+)?", text)
+        if not m:
+            m = re.search(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", text)
         return m.group(0) if m else "unknown"
     except OSError:
         return "unknown"
@@ -308,6 +322,68 @@ def _cors_allowed_hosts() -> tuple[str, ...]:
     if env:
         return tuple(h.strip() for h in env.split(",") if h.strip())
     return _DEFAULT_CORS_HOSTS
+
+
+# A-M2 (CODE_REVIEW_2026-06-12): the static handler serves the whole repo
+# checkout, so without a denylist internals like `.git/`, `.env`,
+# `config/auth.json` (bcrypt hash) and the `memory/` snapshot are one GET
+# away. Tailnet-only today, but network position must not be the only wall.
+_BLOCKED_STATIC_FILES = (("config", "auth.json"),)
+_BLOCKED_STATIC_DIRS = ("memory",)
+
+
+def _is_blocked_static_path(fs_path: str) -> bool:
+    """True when a translated static path must never be served.
+
+    Blocks every dot-prefixed path segment (`.git`, `.env`, `.github`,
+    runtime state files), the repo-private `memory/` snapshot, and
+    `config/auth.json`. A path that does not resolve under REPO_ROOT is
+    blocked outright — the parent handler already prevents traversal, so
+    a ValueError here means something unexpected and undeserving of trust.
+    """
+    try:
+        rel = Path(fs_path).resolve().relative_to(REPO_ROOT)
+    except (ValueError, OSError):
+        return True
+    parts = rel.parts
+    if any(part.startswith(".") for part in parts):
+        return True
+    if parts and parts[0] in _BLOCKED_STATIC_DIRS:
+        return True
+    return parts in _BLOCKED_STATIC_FILES
+
+
+class _BadJsonBody(ValueError):
+    """The request body is not a JSON object — a 400, never a 500."""
+
+
+def _finite_amount(value, field: str) -> float:
+    """Parse a money argument, refusing NaN/Infinity and garbage.
+
+    A-L4 (CODE_REVIEW_2026-06-12): ``float()`` happily returns NaN for
+    "NaN" and inf for "Infinity", and NaN is truthy — so the usual
+    ``if not amount`` guard waved it through and the value landed in a
+    money column, where every later sum turns into NaN. Garbage like
+    "45k" raised ValueError deep in the handler and surfaced as a 500.
+    """
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        raise _BadJsonBody(f"{field} must be a number") from None
+    if not math.isfinite(amount):
+        raise _BadJsonBody(f"{field} must be a finite number")
+    return amount
+
+
+def _attachment_filename(name: str) -> str:
+    """Strip anything that could break out of a Content-Disposition value.
+
+    A-L1: the receipts export builds its filename from two request
+    parameters. Without this, a CR/LF in one of them writes a header of
+    the caller's choosing into the response.
+    """
+    cleaned = _re.sub(r'[\r\n"\\]', "", str(name or ""))
+    return cleaned or "download"
 
 
 class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
@@ -391,21 +467,53 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         """Override default logging to use a cleaner format."""
         sys.stderr.write(f"  {self.address_string()} - {format % args}\n")
 
-    def do_GET(self):
-        """Serve static files, but block feature-gated paths when disabled."""
+    def _static_request_refused(self) -> bool:
+        """Auth + denylist + feature gates shared by GET and HEAD.
+
+        Returns True when a response has already been sent and the caller
+        must return. A-L5 (CODE_REVIEW_2026-06-12): only do_GET used to
+        run these. The parent's do_HEAD went straight to send_head(),
+        which knows the A-M2 denylist but nothing about auth or the
+        feature flags — so HEAD confirmed the existence of /pwa/ or
+        /data/crdb_data on a server whose GET refuses both, without ever
+        presenting credentials.
+        """
         # Block F: Basic-Auth gate. No-op when auth.json is missing or
         # mode='none', so the private repo behaves as before. Exempts
         # /api/health and (when uninitialized) the setup wizard assets
         # so a fresh install can still reach the wizard.
         if not auth.check_request(self):
-            return
+            return True
+        # A-M2: refuse repo internals before any serving path runs — the
+        # gzip and cache-bust fast paths below serve files directly and
+        # would otherwise bypass the send_head() gate.
+        if _is_blocked_static_path(self.translate_path(self.path)):
+            self.send_error(404, "File not found")
+            return True
         # Block the PWA entry point and all its assets if the feature is off.
         if self.path.startswith("/pwa") and not is_enabled("pwa"):
             self.send_error(404, "PWA feature disabled")
-            return
+            return True
         # Block the CRDB reconciliation data tree (XLS + JSON + MD reports).
         if self.path.startswith("/data/crdb_data") and not is_enabled("crdb_recon"):
             self.send_error(404, "CRDB reconciliation disabled")
+            return True
+        # Block the metals data files so the dashboard can't load them either.
+        if (self.path.startswith("/data/metals_portfolio")
+                or self.path.startswith("/data/metal_price_history")) and not is_enabled("metals"):
+            self.send_error(404, "Metals feature disabled")
+            return True
+        return False
+
+    def do_HEAD(self):
+        """Same gates as GET, then the parent's metadata-only response."""
+        if self._static_request_refused():
+            return
+        super().do_HEAD()
+
+    def do_GET(self):
+        """Serve static files, but block feature-gated paths when disabled."""
+        if self._static_request_refused():
             return
         # Cache-bust JS/CSS asset references in HTML responses. The browser
         # caches /dashboard/*.{js,css} for 1 hour (see _cache_policy_for_path),
@@ -414,11 +522,6 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # to every script/link reference in the served HTML changes the URL
         # on each release and forces a fresh fetch.
         if self._serve_html_with_cache_bust():
-            return
-        # Block the metals data files so the dashboard can't load them either.
-        if (self.path.startswith("/data/metals_portfolio")
-                or self.path.startswith("/data/metal_price_history")) and not is_enabled("metals"):
-            self.send_error(404, "Metals feature disabled")
             return
         # data/integrity_report.txt is an *optional* report — `computeAlerts`
         # fetches it on every dashboard load to surface integrity findings,
@@ -433,7 +536,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain; charset=utf-8")
                     self.send_header("Content-Length", "0")
-                    self.send_header("Cache-Control", "no-store, max-age=0")
+                    # A-L7: end_headers() injects the Cache-Control policy
+                    # for this path; sending one here too put two of them
+                    # on the wire.
                     self.end_headers()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
@@ -446,6 +551,25 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if self._serve_gzipped_static():
             return
         super().do_GET()
+
+    def send_head(self):
+        """Gate the parent's GET/HEAD serving through the A-M2 denylist.
+
+        do_GET checks the denylist itself (its fast paths bypass this
+        method), but HEAD requests go straight from the parent's do_HEAD
+        to send_head — without this override they would leak existence
+        and metadata of blocked paths.
+        """
+        if _is_blocked_static_path(self.translate_path(self.path)):
+            self.send_error(404, "File not found")
+            return None
+        return super().send_head()
+
+    def list_directory(self, path):
+        # A-M2: no directory listings — the dashboard never requests
+        # one, and a listing hands over the repo map for free.
+        self.send_error(404, "File not found")
+        return None
 
     # File suffixes worth compressing. Binary/already-compressed
     # formats (PNG, JPG, PDF, woff2) are deliberately omitted — gzip
@@ -512,7 +636,13 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # link — an unchanged transactions.csv costs one 304 instead of ~50KB
         # of re-shipped gzip. Cache-Control is emitted by end_headers().
         inm = self.headers.get("If-None-Match", "")
-        if etag in (t.strip() for t in inm.split(",")):
+        # A-L8 (CODE_REVIEW_2026-06-12): RFC 9110 lets a client send the
+        # wildcard, and any intermediary may weaken an ETag to W/"...".
+        # Comparing the raw strings missed both, so those clients
+        # re-downloaded the full file on every load.
+        candidates = {t.strip() for t in inm.split(",") if t.strip()}
+        candidates = {c[2:] if c.startswith("W/") else c for c in candidates}
+        if "*" in candidates or etag in candidates:
             try:
                 self.send_response(304)
                 self.send_header("ETag", etag)
@@ -759,11 +889,25 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         Returns:
             Parsed dict from JSON body, or empty dict if no body.
+
+        Raises:
+            _BadJsonBody: body is not parseable JSON, or parses to
+                something other than an object. A-L2
+                (CODE_REVIEW_2026-06-12): both used to surface as a 500 —
+                a JSONDecodeError from here, or an AttributeError from the
+                first ``body.get(...)`` in the handler when a list came in.
+                do_POST turns the exception into a 400.
         """
         raw = getattr(self, "_raw_body", b"")
         if not raw:
             return {}
-        return json.loads(raw.decode("utf-8"))
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise _BadJsonBody(f"malformed JSON body: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise _BadJsonBody("JSON body must be an object")
+        return parsed
 
     # Threshold below which gzip overhead (~20 bytes for header + CRC)
     # is not worth the CPU. Most API responses are well over this.
@@ -794,16 +938,23 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             # rather than 500ing the response.
             return body, None
 
-    def _respond_json(self, status: int, data: dict):
+    def _respond_json(self, status: int, data: dict, close: bool = False):
         """Send a JSON response with CORS headers.
 
         Args:
             status: HTTP status code (200, 400, 404, 500, etc.)
             data: Dict to serialize as JSON response body.
+            close: A-M3 — set on error early-outs that leave the request
+                body unread. The unread bytes would prefix the next
+                request line on a keep-alive socket, so the connection
+                must be torn down (send_header('Connection', 'close')
+                also flips self.close_connection for the base handler).
         """
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         body, encoding = self._maybe_gzip(body)
         self.send_response(status)
+        if close:
+            self.send_header("Connection", "close")
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self._send_cors_origin()
         if encoding:
@@ -828,6 +979,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         "/api/tx/batch-delete": "handle_tx_batch_delete",
         "/api/tx/batch-tag": "handle_tx_batch_tag",
         "/api/tx/batch-update": "handle_tx_batch_update",
+        "/api/tx/batch-set-raw-note": "handle_tx_batch_set_raw_note",
         "/api/tx/batch-link-subscription": "handle_tx_batch_link_subscription",
         "/api/tx/batch-unlink-subscription": "handle_tx_batch_unlink_subscription",
         "/api/payees/list": "handle_payees_list",
@@ -905,6 +1057,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         "/api/properties/add": "handle_properties_add",
         "/api/properties/update": "handle_properties_update",
         "/api/properties/delete": "handle_properties_delete",
+        "/api/cashcount/context": "handle_cashcount_context",
+        "/api/cashcount/confirm": "handle_cashcount_confirm",
+        "/api/cashcount/settings/save": "handle_cashcount_settings_save",
         "/api/properties/luku/add": "handle_luku_add",
         "/api/properties/luku/update": "handle_luku_update",
         "/api/properties/luku/delete": "handle_luku_delete",
@@ -916,7 +1071,14 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         "/api/subscriptions/active_for_picker": "handle_subscriptions_picker",
         "/api/subscriptions/log_for_tx": "handle_subscriptions_log_for_tx",
         "/api/subscriptions/log_for_subscription": "handle_subscriptions_log_for_subscription",
+        "/api/subscriptions/log_all": "handle_subscriptions_log_all",
         "/api/subscriptions/drift_alerts": "handle_subscriptions_drift_alerts",
+        # Rewrite a whole receipt split (add/remove/change lines) in one
+        # atomic operation — keeps the existing import_ids alive.
+        "/api/tx/group-update": "handle_tx_group_update",
+        # Acknowledge one observed alert (price drift / price anomaly).
+        # Not feature-gated: the store is shared by every producer.
+        "/api/alerts/ack": "handle_alerts_ack",
         "/api/subscriptions/add": "handle_subscriptions_add",
         "/api/subscriptions/update": "handle_subscriptions_update",
         "/api/subscriptions/delete": "handle_subscriptions_delete",
@@ -957,13 +1119,24 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         try:
             content_length = int(self.headers.get("Content-Length", 0))
         except (TypeError, ValueError):
-            content_length = 0
+            # A-L3 (CODE_REVIEW_2026-06-12): coercing a non-numeric length
+            # to 0 left the actual body sitting in the socket, and on a
+            # keep-alive connection those bytes prefix the next request
+            # line. Same reasoning as the negative case below: no length,
+            # no safe drain, so the connection has to go.
+            self._respond_json(
+                400, {"error": "Content-Length must be an integer"}, close=True)
+            return
         # L-S3 (Sprint 23) — a negative or absurdly-large Content-Length
         # used to be coerced to 0 silently, which on keep-alive
         # connections could leak the actual body bytes into the next
         # request's parse. Now we reject explicitly with 400.
         if content_length < 0:
-            self._respond_json(400, {"error": "Content-Length must be non-negative"})
+            # A-M3: with a bogus length there is no way to drain the
+            # body, so the connection cannot be reused.
+            self._respond_json(
+                400, {"error": "Content-Length must be non-negative"},
+                close=True)
             return
         # L-S2 (Sprint 23) — hard cap on request body so a malicious
         # `Content-Length: 5000000000` doesn't try to read 5 GB into
@@ -972,10 +1145,12 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         # bigger gets rejected before we touch self.rfile.
         MAX_BODY_BYTES = 60 * 1024 * 1024
         if content_length > MAX_BODY_BYTES:
+            # A-M3: the refused body was never read — close instead of
+            # letting its bytes corrupt the next keep-alive request.
             self._respond_json(413, {
                 "error": "Request body too large",
                 "limit_bytes": MAX_BODY_BYTES,
-            })
+            }, close=True)
             return
         self._raw_body = self.rfile.read(content_length) if content_length > 0 else b""
         # CSRF gate (C-06 from CODE_REVIEW_2026-05-12). All /api/* POSTs
@@ -1013,6 +1188,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 handler()
             except BrokenPipeError:
                 pass  # client disconnected before response was sent
+            except _BadJsonBody as e:
+                # A-L2 / A-L4: a body the client got wrong is a 400. The
+                # generic handler below would log it as a server crash and
+                # hand back a request id nobody can act on.
+                self._respond_json(400, {"error": str(e)})
             except Exception as e:
                 # Don't leak Python internals (file paths, exception types,
                 # stack traces) to the client. Log full detail server-side
@@ -1160,6 +1340,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             # B-H2: regenerate auto lines from the validated user lines.
             lines = tx_engine.rebuild_auto_lines(user_lines)
 
+            # Opt-in subscription resolution for callers that build their
+            # own lines and never showed a subscription picker — today the
+            # Reconciliation tab. Off by default so the Add-TX path keeps
+            # its semantics: there an empty subscription_id means the user
+            # cleared the suggestion, and that choice must stick. Runs
+            # before prompt_log so the audit trail shows what was booked.
+            if body.get("resolve_subscription_links"):
+                try:
+                    subscriptions.resolve_links_for_lines(lines)
+                except Exception as exc:
+                    print(f"[serve] subscription link resolution failed: {exc}",
+                          file=sys.stderr)
+
             # Log raw input to prompt_log for audit trail and offline queue recovery
             prompt_id = tx_engine.log_to_prompt_log(raw_input, json.dumps(lines, ensure_ascii=False))
 
@@ -1223,6 +1416,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             # via the Edit-TX modal if a write breaks. Same trade-off as
             # auto_learn_payees below.
             sub_log_written = []
+            renewal_rolled = False
             for line in sub_links:
                 try:
                     log_id = subscriptions.append_subscription_log({
@@ -1241,6 +1435,20 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                         f"{line.get('import_id', '')}: {exc}",
                         file=sys.stderr,
                     )
+
+            # Roll next_renewal off the just-linked charge(s). Non-fatal:
+            # TX and log mirror are already on disk; the daily cron
+            # fallback catches the date up if this fails.
+            for line in sub_links:
+                try:
+                    if subscriptions.roll_renewal_for_charge(
+                            line.get("subscription_id", ""),
+                            line.get("date", "")):
+                        renewal_rolled = True
+                except Exception as exc:
+                    print(f"[serve] renewal roll failed for "
+                          f"{line.get('subscription_id', '')}: {exc}",
+                          file=sys.stderr)
 
             # Auto-learn unknown payees for future autocomplete/defaults.
             # B-M5: guarded — a corrupt payees.json must not turn a
@@ -1263,6 +1471,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             files.append("data/payees.json")
         if sub_log_written:
             files.append("data/subscription_log.csv")
+        if sub_links and renewal_rolled:
+            files.append("data/subscriptions.csv")
         git_ok = tx_engine.git_commit(commit_msg, files=files)
 
         import_ids = [l["import_id"] for l in lines]
@@ -1536,7 +1746,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
     def handle_debts_topup(self):
         body = self._read_json_body()
         debt_id = body.get("id", "")
-        amount = float(body.get("amount", 0))
+        # A-L4: NaN is truthy, so the "amount required" guard below waved
+        # it straight into a money column.
+        amount = _finite_amount(body.get("amount", 0), "amount")
         note = body.get("note", "")
         account = body.get("account", "")
         skip_tx = bool(body.get("skip_tx", False))
@@ -1579,9 +1791,9 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         """
         body = self._read_json_body()
         debt_id = body.get("debt_id", "")
-        amount = float(body.get("amount", 0))
+        amount = _finite_amount(body.get("amount", 0), "amount")
         currency = body.get("currency", "")
-        converted = float(body.get("converted_amount", 0))
+        converted = _finite_amount(body.get("converted_amount", 0), "converted_amount")
         note = body.get("note", "")
         account = body.get("account", "")
         if not debt_id or not amount or not currency or not converted:
@@ -2111,7 +2323,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             filename = f"financeos-backup-{stamp}.zip"
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Disposition",
+                f'attachment; filename="{_attachment_filename(filename)}"')
             self._send_cors_origin()
             self.send_header("Content-Length", str(size))
             self.end_headers()
@@ -2149,15 +2362,19 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
     def handle_recon_files(self):
         """List statement files for a given account / adapter.
 
-        Query string: ``?account=<alias>`` (default: ``crdb``).
+        Body: ``{"account": "<alias>"}`` (default: ``crdb``).
         Adapter is resolved via ``config/reconciliation.json``; files
         come from the adapter's ``data_subdir`` under ``data/``.
+
+        A-M4 (CODE_REVIEW_2026-06-12): this used to read ``?account=``
+        from the query string, which never arrived — API_ROUTES is keyed
+        on the exact path, so a request carrying a query string 404s
+        before dispatch. Multi-bank routing over HTTP was unreachable.
         """
-        from urllib.parse import urlparse, parse_qs
         from reconciliation import get_adapter_for_account
 
-        qs = parse_qs(urlparse(self.path).query)
-        account = (qs.get("account", ["crdb"]) or ["crdb"])[0]
+        body = self._read_json_body()
+        account = (body.get("account") or "crdb").strip() or "crdb"
         # M-S3 (Sprint 16) — validate the alias against the live accounts
         # set before resolving an adapter. The adapter factory has its
         # own fallback path that would happily list files for an alias
@@ -2329,25 +2546,58 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "reconciliation": fuel.reconcile(rows, vehicles),
         })
 
+    def _cascade_replay(self, client_id: str) -> bool:
+        """Answer a replayed cascade request from the idempotency store.
+
+        Returns True when the response has been sent and the caller must
+        return. The PWA queues fuel/LUKU/water entries offline and replays
+        them on reconnect; a lost ACK (tunnel drops after the write, before
+        the response) otherwise books the whole cascade a second time —
+        log row, expense and reimbursement.
+        """
+        if not client_id:
+            return False
+        cached = tx_engine.check_confirm_result(client_id)
+        if cached is None:
+            return False
+        self._respond_json(200, {**cached, "idempotent": True})
+        return True
+
+    def _record_cascade(self, client_id: str, payload: dict) -> None:
+        """Remember a booked cascade so its replay is answered, not rebooked."""
+        if not client_id:
+            return
+        ids = [payload.get("tx_import_id"), payload.get("reimburse_import_id")]
+        tx_engine.record_confirm_seen(
+            client_id, [i for i in ids if i], result=payload)
+
     def handle_fuel_add(self):
         """Create a fuel entry and the linked expense (+ reimbursement) TX."""
         body = self._read_json_body()
-        try:
-            result = fuel.add_fuel_entry(
-                date=body["date"],
-                vehicle_id=body["vehicle_id"],
-                odometer_km=float(body["odometer_km"]),
-                liters=float(body["liters"]),
-                total_cost=float(body["total_cost"]),
-                station=body.get("station", "").strip(),
-                full_tank=bool(body.get("full_tank", True)),
-                account=(body.get("account") or "").strip() or None,
-                remarks=body.get("remarks", "").strip(),
-            )
-        except (KeyError, ValueError) as exc:
-            self._respond_json(400, {"error": str(exc)})
-            return
-        self._respond_json(200, {"success": True, **result})
+        client_id = (body.get("client_id") or "").strip()
+        # Check and book under one lock: two replays arriving together
+        # would otherwise both miss the store and both write.
+        with tx_engine.tx_write_lock():
+            if self._cascade_replay(client_id):
+                return
+            try:
+                result = fuel.add_fuel_entry(
+                    date=body["date"],
+                    vehicle_id=body["vehicle_id"],
+                    odometer_km=float(body["odometer_km"]),
+                    liters=float(body["liters"]),
+                    total_cost=float(body["total_cost"]),
+                    station=body.get("station", "").strip(),
+                    full_tank=bool(body.get("full_tank", True)),
+                    account=(body.get("account") or "").strip() or None,
+                    remarks=body.get("remarks", "").strip(),
+                )
+            except (KeyError, ValueError) as exc:
+                self._respond_json(400, {"error": str(exc)})
+                return
+            payload = {"success": True, **result}
+            self._record_cascade(client_id, payload)
+        self._respond_json(200, payload)
 
     def handle_fuel_update(self):
         """Edit an existing fuel entry. Body: {fuel_id, ...partial fields}.
@@ -2433,7 +2683,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "Content-Type",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition",
+            f'attachment; filename="{_attachment_filename(filename)}"')
         self._send_cors_origin()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -2663,7 +2914,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "Content-Type",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Disposition",
+            f'attachment; filename="{_attachment_filename(filename)}"')
         self._send_cors_origin()
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -2711,7 +2963,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         FinanceOS warnings.
         """
         try:
-            alerts = utilities.compute_property_alerts()
+            alerts = alert_acks.filter_acked(utilities.compute_property_alerts())
         except Exception as exc:
             req_id = secrets.token_hex(4)
             print(
@@ -2901,6 +3153,27 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         rows = subscriptions.list_log_for_subscription(sid)
         self._respond_json(200, {"log": rows})
 
+    def handle_subscriptions_log_all(self):
+        """Return the full subscription log, newest first.
+
+        Single fetch for the Subscriptions page's cost-over-time chart
+        and the per-sub drilldown — cheaper than one log_for_subscription
+        round-trip per subscription.
+        """
+        try:
+            rows = subscriptions.list_log_all()
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] subscriptions_log_all req={req_id}: "
+                f"{type(exc).__name__}: {exc}", file=sys.stderr,
+            )
+            self._respond_json(500, {
+                "error": "subscriptions_log_all failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"log": rows})
+
     def handle_subscriptions_drift_alerts(self):
         """Phase 3 — surface subscriptions whose latest charge spiked.
 
@@ -2918,8 +3191,27 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 threshold = subscriptions.DEFAULT_DRIFT_THRESHOLD_PCT
         except (TypeError, ValueError):
             threshold = subscriptions.DEFAULT_DRIFT_THRESHOLD_PCT
-        alerts = subscriptions.compute_drift_alerts(threshold_pct=threshold)
+        alerts = alert_acks.filter_acked(
+            subscriptions.compute_drift_alerts(threshold_pct=threshold))
         self._respond_json(200, {"alerts": alerts, "threshold_pct": threshold})
+
+    def handle_alerts_ack(self):
+        """Acknowledge one observed alert.
+
+        Body: ``{"ack_key": "sub_drift:sub-3:2026-08-01:15900.00",
+        "alert_type": "subscription_drift"}``. The key is minted by the
+        producer and echoed back unchanged by the dashboard — the server
+        never reconstructs it, so an ack can only ever match the exact
+        observation the user saw.
+        """
+        body = self._read_json_body() or {}
+        key = str(body.get("ack_key") or "").strip()
+        if not key:
+            self._respond_json(400, {"error": "ack_key required"})
+            return
+        alert_type = str(body.get("alert_type") or "").strip()
+        added = alert_acks.add_ack(key, alert_type)
+        self._respond_json(200, {"ok": True, "added": added})
 
     def handle_subscriptions_add(self):
         """Create a new subscription. Body is the full row dict.
@@ -3015,6 +3307,91 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         )
         self._respond_json(200, {"success": True})
 
+    # ── Cash Count (spec 2026-07-19) ────────────────────────────────────
+
+    def handle_cashcount_context(self):
+        """Configured accounts with fresh server-side book balances."""
+        try:
+            result = cash_count.get_context()
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] cashcount_context req={req_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "cashcount_context failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_cashcount_confirm(self):
+        """Book counted balances. Body: {date, client_id, rows:[{account, counted, expected_client}]}."""
+        body = self._read_json_body()
+        try:
+            result = cash_count.confirm_counts(
+                date=str(body.get("date") or ""),
+                rows=body.get("rows") or [],
+                client_id=str(body.get("client_id") or "").strip()[:64],
+            )
+        except (KeyError, ValueError) as exc:
+            self._respond_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] cashcount_confirm req={req_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "cashcount_confirm failed", "request_id": req_id,
+            })
+            return
+        self._respond_json(200, {"success": True, **result})
+
+    def handle_cashcount_settings_save(self):
+        """Persist the cash_count config block (Settings → Cash Count)."""
+        body = self._read_json_body()
+        cfg = body.get("config") or {}
+        try:
+            accounts = tx_engine.load_accounts()
+            categories = tx_engine.load_categories()
+            for alias in (cfg.get("accounts") or []):
+                acc = accounts.get(alias)
+                if (not acc or acc.get("status") != "active"
+                        or acc.get("owner") != "self"
+                        or acc.get("type") == "pass_through"):
+                    raise ValueError(f"account not eligible for cash count: {alias}")
+            exp = cfg.get("expense_category", "")
+            inc = cfg.get("income_category", "")
+            if exp not in categories or categories[exp].get("type") != "expense":
+                raise ValueError(f"unknown expense category: {exp}")
+            if inc not in categories or categories[inc].get("type") != "income":
+                raise ValueError(f"unknown income category: {inc}")
+            config_loader.save_cash_count_config(cfg)
+        except ValueError as e:
+            self._respond_json(400, {"error": str(e)})
+            return
+        except Exception as exc:
+            req_id = secrets.token_hex(4)
+            print(
+                f"[serve] cashcount_settings_save req={req_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
+            self._respond_json(500, {
+                "error": "cashcount_settings_save failed", "request_id": req_id,
+            })
+            return
+        try:
+            tx_engine.git_commit("Cash count settings updated", ["config/defaults.json"])
+        except Exception:
+            pass
+        self._respond_json(200, {"ok": True,
+                                 "config": config_loader.get_cash_count_config()})
+
     def handle_luku_add(self):
         """Create a LUKU log entry + linked expense (+ reimburse) TX.
 
@@ -3035,33 +3412,39 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if isinstance(raw_tags, str):
             raw_tags = [raw_tags]
         tag_list = [str(t).strip() for t in raw_tags if str(t).strip()]
-        try:
-            result = utilities.add_luku_entry(
-                date=body["date"],
-                property_id=body["property_id"],
-                units_kwh=float(body["units_kwh"]),
-                total_price=float(body["total_price"]),
-                account=(body.get("account") or "").strip() or None,
-                meter=body.get("meter", "").strip(),
-                meter_reading_kwh=reading_raw,
-                note=body.get("note", "").strip(),
-                tags=tag_list,
-            )
-        except (KeyError, ValueError) as exc:
-            self._respond_json(400, {"error": str(exc)})
-            return
-        except Exception as exc:
-            req_id = secrets.token_hex(4)
-            print(
-                f"[serve] luku_add req={req_id}: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            traceback.print_exc(file=sys.stderr)
-            self._respond_json(500, {
-                "error": "luku_add failed", "request_id": req_id,
-            })
-            return
-        self._respond_json(200, {"success": True, **result})
+        client_id = (body.get("client_id") or "").strip()
+        with tx_engine.tx_write_lock():
+            if self._cascade_replay(client_id):
+                return
+            try:
+                result = utilities.add_luku_entry(
+                    date=body["date"],
+                    property_id=body["property_id"],
+                    units_kwh=float(body["units_kwh"]),
+                    total_price=float(body["total_price"]),
+                    account=(body.get("account") or "").strip() or None,
+                    meter=body.get("meter", "").strip(),
+                    meter_reading_kwh=reading_raw,
+                    note=body.get("note", "").strip(),
+                    tags=tag_list,
+                )
+            except (KeyError, ValueError) as exc:
+                self._respond_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:
+                req_id = secrets.token_hex(4)
+                print(
+                    f"[serve] luku_add req={req_id}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc(file=sys.stderr)
+                self._respond_json(500, {
+                    "error": "luku_add failed", "request_id": req_id,
+                })
+                return
+            payload = {"success": True, **result}
+            self._record_cascade(client_id, payload)
+        self._respond_json(200, payload)
 
     def handle_water_add(self):
         """Create a Water log entry + linked expense (+ reimburse) TX.
@@ -3075,32 +3458,38 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if isinstance(raw_tags, str):
             raw_tags = [raw_tags]
         tag_list = [str(t).strip() for t in raw_tags if str(t).strip()]
-        try:
-            result = utilities.add_water_entry(
-                date=body["date"],
-                property_id=body["property_id"],
-                total_price=float(body["total_price"]),
-                account=(body.get("account") or "").strip() or None,
-                control_number=body.get("control_number", "").strip(),
-                meter=body.get("meter", "").strip(),
-                note=body.get("note", "").strip(),
-                tags=tag_list,
-            )
-        except (KeyError, ValueError) as exc:
-            self._respond_json(400, {"error": str(exc)})
-            return
-        except Exception as exc:
-            req_id = secrets.token_hex(4)
-            print(
-                f"[serve] water_add req={req_id}: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-            traceback.print_exc(file=sys.stderr)
-            self._respond_json(500, {
-                "error": "water_add failed", "request_id": req_id,
-            })
-            return
-        self._respond_json(200, {"success": True, **result})
+        client_id = (body.get("client_id") or "").strip()
+        with tx_engine.tx_write_lock():
+            if self._cascade_replay(client_id):
+                return
+            try:
+                result = utilities.add_water_entry(
+                    date=body["date"],
+                    property_id=body["property_id"],
+                    total_price=float(body["total_price"]),
+                    account=(body.get("account") or "").strip() or None,
+                    control_number=body.get("control_number", "").strip(),
+                    meter=body.get("meter", "").strip(),
+                    note=body.get("note", "").strip(),
+                    tags=tag_list,
+                )
+            except (KeyError, ValueError) as exc:
+                self._respond_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:
+                req_id = secrets.token_hex(4)
+                print(
+                    f"[serve] water_add req={req_id}: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc(file=sys.stderr)
+                self._respond_json(500, {
+                    "error": "water_add failed", "request_id": req_id,
+                })
+                return
+            payload = {"success": True, **result}
+            self._record_cascade(client_id, payload)
+        self._respond_json(200, payload)
 
     def handle_luku_update(self):
         """Edit a LUKU log entry. Body: {luku_id, ...partial fields}.
@@ -3316,6 +3705,14 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             json.dumps(staging, ensure_ascii=False),
             encoding="utf-8",
         )
+        # A-L9 (CODE_REVIEW_2026-06-12): this is the user's whole ledger in
+        # a shared temp directory, world-readable by default. The random
+        # name is not a permission. (No-op on Windows, which ignores the
+        # POSIX bits — the multi-user case this guards is the server.)
+        try:
+            os.chmod(staging_path, 0o600)
+        except OSError:
+            pass
 
         # Light-weight account preview for the alias-override UI in step 6.
         # Importer returns `currency_code`; expose under both keys so the
@@ -3895,6 +4292,15 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if not df or not dt:
             self._respond_json(400, {"error": "date_from and date_to are required"})
             return
+        # A-L1 (CODE_REVIEW_2026-06-12): both values end up inside the
+        # Content-Disposition filename. Unvalidated, a CR/LF in either one
+        # lets the caller append headers of their choosing to the response.
+        # The format check is the fix; _attachment_filename below is the
+        # belt to its braces.
+        if not tx_engine.is_iso_date(df) or not tx_engine.is_iso_date(dt):
+            self._respond_json(400, {
+                "error": "date_from and date_to must be YYYY-MM-DD"})
+            return
         if df > dt:
             self._respond_json(400, {"error": "date_from must be <= date_to"})
             return
@@ -3972,7 +4378,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/zip")
                 self.send_header("Content-Length", str(size))
-                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Disposition",
+                    f'attachment; filename="{_attachment_filename(filename)}"')
                 # Surface the counts in headers so the frontend can show a
                 # "Exported 23 TXs, 47 files (5.2 MB)" toast without parsing
                 # the ZIP itself.
@@ -4080,9 +4487,7 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         # Minimal payload for unauth callers when auth is required.
         if auth.is_auth_required():
-            hdr = self.headers.get("Authorization", "")
-            creds = auth._decode_basic(hdr)
-            if not (creds is not None and auth.verify_credentials(*creds)):
+            if not auth.verify_optional_credentials(self):
                 self._respond_json(200, {"ok": True})
                 return
 
@@ -4190,6 +4595,81 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API: /api/tx/update ───────────────────────────────────────────
 
+    def handle_tx_group_update(self):
+        """Rewrite a whole receipt split.
+
+        Body: ``{receipt_group, header: {...}, lines: [{import_id?,
+        amount, category, note}], from_import_id?, client_id}``. Lines
+        with an import_id are updated, lines without one created,
+        missing members deleted.
+
+        Refuses with 409 when a delete would strand a fuel/luku/water or
+        subscription log row — those logs own their own cascade and must
+        not be bypassed from here.
+        """
+        body = self._read_json_body() or {}
+        receipt_group = (body.get("receipt_group") or "").strip()
+        header = body.get("header") or {}
+        lines = body.get("lines") or []
+        from_import_id = (body.get("from_import_id") or "").strip()
+        client_id = (body.get("client_id") or "").strip()
+
+        seen = tx_engine.check_confirm_seen(client_id)
+        if seen is not None:
+            self._respond_json(200, {"ok": True, "idempotent": True,
+                                     "import_ids": seen})
+            return
+
+        accounts = tx_engine.load_accounts()
+        categories = tx_engine.load_categories()
+        if header.get("account") not in accounts:
+            self._respond_json(400, {"error": f"Unknown account: '{header.get('account')}'"})
+            return
+        for line in lines:
+            cat = (line.get("category") or "").strip()
+            if not cat:
+                self._respond_json(400, {"error": "Category is required on every split line"})
+                return
+            if cat not in categories:
+                self._respond_json(400, {"error": f"Unknown category: '{cat}'"})
+                return
+
+        try:
+            backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
+        except Exception as e:
+            self._respond_json(500, {"error": f"backup failed: {e}"})
+            return
+
+        try:
+            result = tx_engine.update_transaction_group(
+                receipt_group, header, lines,
+                protected_ids=tx_links.linked_tx_ids(),
+                from_import_id=from_import_id,
+            )
+        except tx_engine.ProtectedRowError as e:
+            # `blocked` carries category + amount per refused row so the
+            # modal can name the line; it has already dropped those rows
+            # from its own list by the time it submits.
+            self._respond_json(409, {"error": str(e), "blocked": e.blocked})
+            return
+        except tx_engine.GroupUpdateError as e:
+            self._respond_json(400, {"error": str(e)})
+            return
+
+        touched = result["created"] + result["updated"]
+        # Members share ONE counter over the group total; sync_counter_entries
+        # routes receipt groups through _sync_group_counter, so one call with
+        # every touched id is both correct and cheap.
+        tx_engine.sync_counter_entries(touched)
+
+        git_ok = tx_engine.git_commit(
+            f"TX group edit: {receipt_group or from_import_id} "
+            f"(+{len(result['created'])}/-{len(result['deleted'])})",
+            files=["data/transactions.csv"],
+        )
+        tx_engine.record_confirm_seen(client_id, touched)
+        self._respond_json(200, {"ok": True, "git_committed": git_ok, **result})
+
     def handle_tx_update(self):
         """Edit fields of an existing transaction (identified by import_id).
 
@@ -4213,6 +4693,17 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
         if "account" in updated and updated["account"] not in accounts:
             self._respond_json(400, {"error": f"Unknown account: '{updated['account']}'"})
             return
+        # Currency follows the account: the Edit-TX modal sends the account
+        # but never a currency, so an account move used to leave the old
+        # currency on the row (e.g. a TZS row parked on a TRY account).
+        # Single-edit twin of the batch-move currency pre-flight — when no
+        # explicit currency accompanies an account change, derive it from
+        # the target account. An explicit currency (API callers doing
+        # cross-currency surgery) is respected as-is.
+        if updated.get("account") and not updated.get("currency"):
+            acc_currency = accounts[updated["account"]].get("currency", "")
+            if acc_currency:
+                updated["currency"] = acc_currency
         if "category" in updated and updated["category"] and updated["category"] not in categories:
             self._respond_json(400, {"error": f"Unknown category: '{updated['category']}'"})
             return
@@ -4228,6 +4719,16 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             if eff_type in ("expense", "income") and not eff_category:
                 self._respond_json(400, {"error": "Category is required"})
                 return
+
+        # B-M3 (CODE_REVIEW_2026-06-12): amount, date and transfer_to_amount
+        # reached transactions.csv unvalidated — an edit could write what
+        # Add TX refuses, and a non-numeric amount surfaced as a 500 from
+        # deep inside update_transaction instead of a 400 here.
+        value_errors = tx_engine.validate_tx_update(updated)
+        if value_errors:
+            self._respond_json(400, {"error": "; ".join(value_errors),
+                                     "errors": value_errors})
+            return
 
         # subscription_id is not a TX column; pop it out of `updated`
         # and handle the link mutation separately so update_transaction
@@ -4341,6 +4842,38 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API: /api/tx/delete ───────────────────────────────────────────
 
+    def _side_log_blocked(self, import_ids: list) -> list:
+        """Rows a side log owns, in the shape the UI needs to name them.
+
+        fuel_log/luku_log/water_log/subscription_log reference
+        transactions by import_id and each owns a delete cascade of its
+        own (deleting the fuel entry removes its TX, not the other way
+        round). tx_links exists so a generic delete asks first — the
+        split-group editor always did, the ✕ button next to it did not,
+        and deleting a fuel-linked row left the log pointing at nothing.
+        """
+        protected = tx_links.linked_tx_ids()
+        blocked = []
+        for import_id in import_ids:
+            if import_id not in protected:
+                continue
+            row = tx_engine.load_transaction_by_id(import_id) or {}
+            blocked.append({
+                "import_id": import_id,
+                "category": row.get("category", ""),
+                "amount": row.get("amount", ""),
+                "currency": row.get("currency", ""),
+            })
+        return blocked
+
+    def _refuse_side_log_rows(self, blocked: list) -> None:
+        """Send the 409 both delete endpoints share."""
+        ids = [b["import_id"] for b in blocked]
+        self._respond_json(409, {
+            "error": f"linked to a fuel/utility/subscription log: {ids}",
+            "blocked": blocked,
+        })
+
     def handle_tx_delete(self):
         """Delete a transaction by import_id. Creates backup before modifying."""
         body = self._read_json_body()
@@ -4348,6 +4881,11 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         if not import_id:
             self._respond_json(400, {"error": "import_id is required"})
+            return
+
+        blocked = self._side_log_blocked([import_id])
+        if blocked:
+            self._refuse_side_log_rows(blocked)
             return
 
         # Backup
@@ -4428,6 +4966,13 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             self._respond_json(400, {"error": "import_ids (list) is required"})
             return
 
+        # All-or-nothing: refusing the whole batch beats a partial delete
+        # that leaves the user working out which half went through.
+        blocked = self._side_log_blocked(import_ids)
+        if blocked:
+            self._refuse_side_log_rows(blocked)
+            return
+
         # Backup
         try:
             backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
@@ -4494,6 +5039,56 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
             "modified": modified,
             "git_committed": git_ok,
         })
+
+    def handle_tx_batch_set_raw_note(self):
+        """Fill raw_note on many TXs at once, one value per row.
+
+        Body: {updates: [{import_id, raw_note}, ...]}. The generic
+        batch-update endpoint sets ONE value across all rows; a statement
+        backfill needs a different descriptor per row, hence its own
+        entry point. One backup and one commit for the whole batch
+        instead of a commit per row.
+        """
+        body = self._read_json_body()
+        updates = body.get("updates", [])
+        field = str(body.get("field") or "raw_note").strip()
+        if field not in ("raw_note", "receipt_url"):
+            self._respond_json(400, {"error": "field must be raw_note or receipt_url"})
+            return
+        if not updates or not isinstance(updates, list):
+            self._respond_json(400, {"error": "updates (list) is required"})
+            return
+        if len(updates) > 5000:
+            self._respond_json(400, {"error": "too many updates (max 5000)"})
+            return
+
+        mapping: dict[str, str] = {}
+        for item in updates:
+            if not isinstance(item, dict):
+                continue
+            import_id = str(item.get("import_id") or "").strip()
+            value = str(item.get(field) or item.get("value") or "").strip()
+            if import_id and value:
+                mapping[import_id] = value
+        if not mapping:
+            self._respond_json(400, {"error": "no usable updates"})
+            return
+
+        try:
+            backup.backup_file("transactions", tx_engine.DATA_DIR / "transactions.csv")
+        except Exception as e:
+            self._respond_json(500, {"error": f"Backup failed: {e}"})
+            return
+
+        modified = tx_engine.batch_set_field(field, mapping)
+        if modified == 0:
+            self._respond_json(200, {"success": True, "modified": 0,
+                                     "git_committed": False})
+            return
+        git_ok = tx_engine.git_commit(
+            f"TX batch set {field}: {modified} transactions")
+        self._respond_json(200, {"success": True, "modified": modified,
+                                 "git_committed": git_ok})
 
     def handle_tx_batch_update(self):
         """Set payee or account on multiple TXs in one shot.
@@ -4617,7 +5212,8 @@ class FinanceOSHandler(http.server.SimpleHTTPRequestHandler):
 
         if result.get("linked", 0) > 0:
             git_ok = tx_engine.git_commit(
-                f"TX batch link subscription: {result['linked']} → {subscription_id}"
+                f"TX batch link subscription: {result['linked']} → {subscription_id}",
+                files=["data/subscription_log.csv", "data/subscriptions.csv"],
             )
         else:
             git_ok = True  # Nothing changed, nothing to commit.

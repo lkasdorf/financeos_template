@@ -37,6 +37,10 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+import alert_acks
+import cash_count
+import receipt_scan
+import recon_rules
 import setup_core
 import tx_engine
 
@@ -98,6 +102,10 @@ def main() -> int:
         "tags.csv": setup_core.TAGS_HEADER,
         "transactions.csv": tx_engine.TX_COLUMNS,
         "scheduled.csv": tx_engine.SCHEDULED_FIELDS,
+        "cash_count_log.csv": cash_count.CASH_COUNT_LOG_COLUMNS,
+        "recon_dismissed.csv": recon_rules.RECON_DISMISSED_COLUMNS,
+        "receipt_scan_log.csv": receipt_scan.SCAN_LOG_COLUMNS,
+        "alert_acks.csv": alert_acks.ALERT_ACK_COLUMNS,
     }
     for name, expected in live_checks.items():
         live = _live_header(REPO_ROOT / "data" / name)

@@ -341,7 +341,7 @@ function _periodCutoff(period) {
   if (period === 'last_3m') {
     const d = new Date();
     d.setDate(d.getDate() - 90);
-    return { from: d.toISOString().slice(0, 10), to: null };
+    return { from: localIsoDate(d), to: null };
   }
   const yearMatch = /^year:(\d{4})$/.exec(period);
   if (yearMatch) {
@@ -631,7 +631,7 @@ function renderPropertySelector() {
   // Period chip strip (mirrors the Vehicles "Last 3M / This Year / All"
   // tabs). Filtering itself happens client-side in renderDrilldown when
   // the active period changes — see _filterByPeriod().
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
   for (const p of propertiesList) {
     const pill = document.createElement('button');
     pill.type = 'button';
@@ -1284,7 +1284,13 @@ function renderSeasonalityHeatmap(season) {
     root.innerHTML = `<div style="padding:20px;color:var(--muted);">${escapeHtml(t('page.properties.chart.heatmap.empty', {}, 'No data yet.'))}</div>`;
     return;
   }
-  const monthLabels = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez'];
+  // F-M10 (CODE_REVIEW_2026-06-12): these were hard-coded German short
+  // names sitting in an English-by-default dashboard — "Mär/Okt/Dez" in
+  // every locale including EN. The keys already existed for monthLabel().
+  const monthLabels = Array.from({ length: 12 }, (_, i) =>
+    t(`common.months.short.${i + 1}`, {},
+      ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][i]));
   const cur = _propsCurrencySymbol();
 
   // Compute max for each metric so the colour scale is per-metric
@@ -2071,7 +2077,7 @@ function openPropertyModal(existing = null) {
 // • both set, end in the future -> "until YYYY-MM" (planned move-out)
 // Used in the drilldown header h3 and in the property-selector pills.
 function _renderLifecycleBadge(startDate, endDate) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
   const start = (startDate || '').trim();
   const end = (endDate || '').trim();
   if (!start && !end) return '';

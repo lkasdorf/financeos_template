@@ -62,7 +62,7 @@ function filterFuelEntries() {
   } else if (vehiclesPeriod === 'year') {
     cutoff.setFullYear(cutoff.getFullYear() - 1);
   }
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const cutoffStr = localIsoDate(cutoff);
   return entries.filter(e => (e.date || '') >= cutoffStr);
 }
 
@@ -74,7 +74,7 @@ function filterFuelEntries() {
 // `end_date` (added in v1.4.0 polish) marks vehicles that have been sold
 // or replaced. Empty end_date = "still own it", no badge needed.
 function _renderVehicleLifecycleBadge(startDate, endDate) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
   const start = (startDate || '').trim();
   const end = (endDate || '').trim();
   if (!end && !start) return '';
@@ -191,7 +191,7 @@ async function renderVehiclesPage() {
 // the original page behavior — and is the default state.
 function renderVehicleSelector(activeVehicles) {
   if (!activeVehicles || activeVehicles.length < 2) return '';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
   const pills = [
     { id: '', label: t('page.vehicles.selector.all', {}, 'All vehicles'), badge: '', archived: false },
     ...activeVehicles.map(v => ({
@@ -1055,7 +1055,7 @@ function openFuelModal(existing = null) {
 
   // Prefill values: edit uses the existing row, add uses sensible defaults
   // (today + last-known odometer + vehicle default_payee/account).
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
   const lastEntry = [...fuelLog].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
   const defaultOdo = lastEntry ? parseFloat(lastEntry.odometer_km) || 0 : 0;
 
@@ -1269,7 +1269,7 @@ function openVehicleModal(existingVehicle) {
   const currencyOptions = knownCurrencies() // DP-M7
     .map(c => `<option value="${c}"${v && v.currency === c ? ' selected' : ''}>${c}</option>`).join('');
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = localTodayIso();
 
   // DP-M6: close any stale overlay via its own handle so its Escape
   // listener is detached with it (a bare .remove() would strand it).

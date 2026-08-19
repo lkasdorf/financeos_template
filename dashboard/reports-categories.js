@@ -101,12 +101,12 @@ function renderCategoryBreakdownReport() {
               <div class="ic-count">${t('reports.cb.subcategories_count', { n: subSorted.length }, `${subSorted.length} subcategories`)}</div>
             </div>
           </div>
-          <div class="income-grid mt-8">
+          <div class="income-grid ig-uniform mt-8">
             ${names.map((n, i) => `
-              <div class="income-cell">
+              <div class="income-cell${isFutureYm(`${year}-${String(i + 1).padStart(2, '0')}`) ? ' ic-future' : ''}">
                 <div class="ic-label">${n}</div>
                 <div class="ic-value ${monthTotals[i] === 0 ? 'zero' : ''}">${formatCurrency(monthTotals[i], currency)}<span class="ic-cur">${currency}</span></div>
-                <div class="ic-count">${t('reports.shared.tx_count', { n: monthCounts[i] }, `${monthCounts[i]} TX`)}</div>
+                ${isFutureYm(`${year}-${String(i + 1).padStart(2, '0')}`) ? '' : `<div class="ic-count">${t('reports.shared.tx_count', { n: monthCounts[i] }, `${monthCounts[i]} TX`)}</div>`}
               </div>
             `).join('')}
           </div>
@@ -208,7 +208,7 @@ function renderCategoryBreakdownReport() {
               <div class="ic-count">${t('reports.cb.top_category_count', { n: topSorted.length }, `${topSorted.length} top categories`)}</div>
             </div>
           </div>
-          <div class="income-grid mt-8">
+          <div class="income-grid ig-uniform mt-8">
             ${names.map((n, i) => `
               <div class="income-cell cb-month-cell" data-month="${i + 1}" style="cursor:pointer;${savedMonth === String(i + 1) ? 'outline:2px solid var(--accent);outline-offset:-2px;' : ''}">
                 <div class="ic-label">${n}</div>

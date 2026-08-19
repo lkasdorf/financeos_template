@@ -19,6 +19,9 @@ from __future__ import annotations
 
 from typing import Any
 
+import re
+from datetime import date as dt_date
+
 from .base import BankAdapter, BankRow, PayeeMatch, Suggestion
 
 
@@ -27,7 +30,7 @@ class CrdbTzAdapter(BankAdapter):
 
     name = "crdb_tz"
     display_name = "CRDB Bank (Tanzania)"
-    file_extensions = [".xls"]
+    file_extensions = [".xls", ".pdf"]
     data_subdir = "crdb_data"
     default_account = "crdb"
     default_currency = "TZS"
@@ -46,7 +49,92 @@ class CrdbTzAdapter(BankAdapter):
         ("pos purchase", ("", "", "none")),
     )
 
+    # ── PDF statements ───────────────────────────────────────────────
+    # CRDB stopped supplying XLS after October 2024; everything from
+    # 2024-11 through 2025 exists only as PDF. The layout is a real table
+    # (Trans Date | Details | Channel | Debit | Credit | Running Balance)
+    # rather than free text, so extraction is reliable — but the header
+    # repeats on every page and Details wraps across lines.
+    # Two layouts are in circulation and both must parse:
+    #   Trans Date   | Details | Channel    | Debit | Credit | Running Balance
+    #   Posting Date | Details | Value Date | Debit | Credit | Book Balance
+    # Debit and credit sit at the same index in both, so the columns are
+    # taken positionally and no header is required — which matters
+    # because in the second layout the header appears on the first page
+    # only and every continuation page starts straight in on data.
+    _PDF_DEBIT_COL = 3
+    _PDF_CREDIT_COL = 4
+
+    @staticmethod
+    def _parse_pdf_date(value: str) -> str:
+        """'29/08/2025' or '01.09.2025
+00:00:00' → ISO. Else empty."""
+        head = (value or "").strip().splitlines()[0].strip() if value else ""
+        head = head.split(" ")[0]
+        parts = re.split(r"[./-]", head)
+        if len(parts) != 3:
+            return ""
+        day, month, year = parts
+        if not (day.isdigit() and month.isdigit() and year.isdigit()):
+            return ""
+        if len(year) != 4:
+            return ""
+        try:
+            return dt_date(int(year), int(month), int(day)).isoformat()
+        except ValueError:
+            return ""
+
+    def _rows_from_pdf_tables(self, tables: list) -> list[BankRow]:
+        """Turn extracted pdfplumber tables into BankRows.
+
+        Kept separate from the pdfplumber call so the mapping is testable
+        without shipping a statement fixture — the statements are
+        gitignored, they carry the account number.
+
+        A row qualifies when it has the full six columns and its first
+        cell parses as a date. That rejects the metadata tables (two
+        columns) and every header row (its first cell is text) without
+        needing to know which layout is in hand.
+        """
+        out: list[BankRow] = []
+        for table in tables or []:
+            for raw in table or []:
+                if len(raw) < 6:
+                    continue
+                cells = [str(c or "").strip() for c in raw[:6]]
+                iso = self._parse_pdf_date(cells[0])
+                if not iso:
+                    continue
+                debit = _parse_amount(cells[self._PDF_DEBIT_COL])
+                credit = _parse_amount(cells[self._PDF_CREDIT_COL])
+                amount = debit if debit else credit
+                if not amount:
+                    continue  # accrual / informational line
+                # Layout wrapping would break every substring rule.
+                details = " ".join(cells[1].split())
+                out.append(BankRow(
+                    date=iso,
+                    details=details,
+                    amount=amount,
+                    type="expense" if debit else "income",
+                    debit=debit,
+                    credit=credit,
+                ))
+        return out
+
+    def _parse_pdf(self, filepath: str) -> list[BankRow]:
+        """Extract every transaction table from a CRDB PDF statement."""
+        import pdfplumber
+
+        tables: list = []
+        with pdfplumber.open(filepath) as pdf:
+            for page in pdf.pages:
+                tables.extend(page.extract_tables() or [])
+        return self._rows_from_pdf_tables(tables)
+
     def parse(self, filepath: str) -> list[BankRow]:
+        if str(filepath).lower().endswith(".pdf"):
+            return self._parse_pdf(filepath)
         # xlrd is the only optional dep; importing lazily keeps the
         # module load-light for installs that don't use this adapter.
         import sys
@@ -143,11 +231,80 @@ class CrdbTzAdapter(BankAdapter):
 
         return PayeeMatch(payee="", category="", confidence="none")
 
+    def _reverse_aggregate(self, leftovers, existing_tx, existing_index,
+                           consumed_rows, target_account):
+        """Match N bank rows against ONE ledger row. Returns what is left.
+
+        The forward direction (one bank row, N ledger rows of a receipt
+        split) has always been handled. The mirror shape was not, and it
+        is just as common: CRDB posts an international ATM cascade as
+        charges + levy + VAT while the ledger carries a single fee row,
+        and a transfer fee arrives as amount + VAT against one booking.
+
+        Combinations are tried per day, smallest first, and only against
+        ledger rows nothing else has claimed. A combination that would
+        re-use a claimed row is rejected rather than allowed to
+        double-count — the same discipline as Pass 1.
+        """
+        from itertools import combinations
+
+        if not leftovers:
+            return leftovers
+
+        by_day: dict[str, list[int]] = {}
+        for i, (row, _) in enumerate(leftovers):
+            by_day.setdefault(row.date, []).append(i)
+
+        claimed_leftovers: set[int] = set()
+        for day, indices in by_day.items():
+            available = [i for i in indices if i not in claimed_leftovers]
+            # Two to four rows covers every cascade CRDB actually emits;
+            # beyond that coincidental sums start to outnumber real ones.
+            for size in (2, 3, 4):
+                if len(available) < size:
+                    break
+                for combo in combinations(available, size):
+                    if any(i in claimed_leftovers for i in combo):
+                        continue
+                    total = sum(leftovers[i][0].amount for i in combo)
+                    position = self._unclaimed_ledger_row(
+                        day, total, existing_index, consumed_rows)
+                    if position is None:
+                        continue
+                    consumed_rows.add(position)
+                    claimed_leftovers.update(combo)
+                    self.match_pairs.append({
+                        "bank_date": day,
+                        "bank_amount": round(total, 2),
+                        "bank_details": leftovers[combo[0]][0].details,
+                        "ledger_positions": [position],
+                    })
+                available = [i for i in indices if i not in claimed_leftovers]
+
+        return [item for i, item in enumerate(leftovers)
+                if i not in claimed_leftovers]
+
+    @staticmethod
+    def _unclaimed_ledger_row(day, total, existing_index, consumed_rows):
+        """First ledger row for (day, total) that nobody has claimed yet.
+
+        Rounding differs slightly between the bank's per-line VAT and the
+        single figure booked by hand (27,921.68 against 27,921.00), so the
+        lookup tries the rounded key and its two neighbours.
+        """
+        rounded = round(total)
+        for candidate in (rounded, rounded - 1, rounded + 1):
+            for position in existing_index.get((day, candidate), ()):
+                if position not in consumed_rows:
+                    return position
+        return None
+
     def reconcile(
         self,
         filepath: str,
         existing_tx: list[dict[str, Any]],
         account: str | None = None,
+        rows: list[BankRow] | None = None,
     ) -> list[Suggestion]:
         """Match bank rows against existing FOS transactions, CRDB-tuned.
 
@@ -178,7 +335,11 @@ class CrdbTzAdapter(BankAdapter):
         from tx_engine import load_payees
 
         target_account = account or self.default_account
-        rows = self.parse(filepath)
+        # ``rows`` lets a caller pre-filter the statement — the import
+        # pipeline cancels reversed transaction pairs before matching,
+        # because otherwise consumption order decides which of several
+        # identical rows counts as booked.
+        rows = self.parse(filepath) if rows is None else list(rows)
 
         # Build alias→canonical map for payee normalisation. Falls
         # back to the raw payee (lower-cased) if not in the register.
@@ -197,15 +358,29 @@ class CrdbTzAdapter(BankAdapter):
             norm = (payee_raw or "").strip().lower()
             return alias_to_canon.get(norm, norm)
 
-        # Direct match index: (date, rounded_int_amount) with ±2-day shifts.
-        existing_keys: set[tuple[str, int]] = set()
+        # Direct match index: (date, rounded_int_amount) with ±3-day shifts,
+        # mapping to the POSITIONS of the ledger rows behind each key. A
+        # plain set let one ledger row satisfy any number of bank rows —
+        # on 2026-08-16 a single 600,000 booking absorbed four separate
+        # 600,000 bank rows. Positions are consumed so each ledger row
+        # can only ever answer for itself once, and since one row is
+        # registered under all five of its shifted dates, consumption has
+        # to track the row rather than the key.
+        existing_index: dict[tuple[str, int], list[int]] = {}
+        consumed_rows: set[int] = set()
         # Aggregation index: (date, canonical_payee) → list of FOS rows
         # for that day. Pass 2 only uses buckets that are clearly a
         # single split (shared receipt_group, multiple rows summing to
         # one bank line) — see ambiguity guard below.
         by_date_payee: dict[tuple[str, str], list[dict]] = {}
+        # Payee-independent split index: (date, receipt_group). Pass 2
+        # keys on the payee, but `E-COM Purchase` descriptors resolve to
+        # no payee at all, so a perfectly good receipt-split never got
+        # aggregated. A receipt_group IS a designed split by definition —
+        # recognising the payee adds nothing to that.
+        by_date_group: dict[tuple[str, str], list[dict]] = {}
 
-        for t in existing_tx:
+        for position, t in enumerate(existing_tx):
             if target_account and t.get("account") != target_account:
                 continue
             try:
@@ -216,20 +391,28 @@ class CrdbTzAdapter(BankAdapter):
             if not iso:
                 continue
             amt_int = round(amt)
-            existing_keys.add((iso, amt_int))
+            existing_index.setdefault((iso, amt_int), []).append(position)
             try:
                 d = dt_date.fromisoformat(iso)
-                for delta in (-2, -1, 1, 2):
+                for delta in (-3, -2, -1, 1, 2, 3):
                     shifted = (d + timedelta(days=delta)).isoformat()
-                    existing_keys.add((shifted, amt_int))
+                    existing_index.setdefault((shifted, amt_int), []).append(position)
             except ValueError:
                 pass
+            group = (t.get("receipt_group") or "").strip()
+            if group:
+                by_date_group.setdefault((iso, group), []).append({
+                    "amount": amt,
+                    "receipt_group": group,
+                    "position": position,
+                })
             canon = canon_of(t.get("payee", ""))
             if canon:
                 key = (iso, canon)
                 by_date_payee.setdefault(key, []).append({
                     "amount": amt,
                     "receipt_group": (t.get("receipt_group") or "").strip(),
+                    "position": position,
                 })
 
         # M-B8 (Sprint 22) — Pass-2 aggregation now requires the FOS
@@ -269,14 +452,32 @@ class CrdbTzAdapter(BankAdapter):
         # prevents two bank rows claiming the same split set.
         consumed_aggs: set[tuple[str, str]] = set()
         suggestions: list[Suggestion] = []
+        # Pairing log for callers that need the matches, not just the
+        # misses — the import pipeline backfills the bank descriptor
+        # into rows that were booked by hand without one.
+        self.match_pairs: list[dict[str, Any]] = []
+        leftovers: list[tuple[BankRow, PayeeMatch]] = []
 
         for row in rows:
             amt_int = round(row.amount)
-            # Pass 1: direct cent-rounded lookup with ±2-day shifts.
-            if (row.date, amt_int) in existing_keys:
+            # Pass 1: direct cent-rounded lookup with ±3-day shifts,
+            # claiming the first ledger row not already spoken for.
+            claimed = None
+            for position in existing_index.get((row.date, amt_int), ()):
+                if position not in consumed_rows:
+                    claimed = position
+                    break
+            if claimed is not None:
+                consumed_rows.add(claimed)
+                self.match_pairs.append({
+                    "bank_date": row.date,
+                    "bank_amount": row.amount,
+                    "bank_details": row.details,
+                    "ledger_positions": [claimed],
+                })
                 continue
 
-            # Pass 2: same-payee aggregation in ±2-day window.
+            # Pass 2: same-payee aggregation in ±3-day window.
             match = self.match_payee(row.details)
             matched_via_agg = False
             if match.payee:
@@ -285,7 +486,7 @@ class CrdbTzAdapter(BankAdapter):
                     d = dt_date.fromisoformat(row.date)
                     # Closest-day-first so a same-day split wins over
                     # a 2-day-shifted neighbour with identical sum.
-                    for delta in (0, -1, 1, -2, 2):
+                    for delta in (0, -1, 1, -2, 2, -3, 3):
                         target_date = (d + timedelta(days=delta)).isoformat()
                         bucket_key = (target_date, canon)
                         if bucket_key in consumed_aggs:
@@ -298,16 +499,66 @@ class CrdbTzAdapter(BankAdapter):
                         qualified, bucket_sum = _bucket_is_safe(bucket)
                         if not qualified:
                             continue
+                        if any(b["position"] in consumed_rows for b in bucket):
+                            continue
                         if abs(bucket_sum - row.amount) < 1.0:
                             consumed_aggs.add(bucket_key)
+                            # Mark the ledger rows themselves, not just the
+                            # bucket key: Pass 2b and Pass 3 index the same
+                            # rows under different keys, so a key-only claim
+                            # would let a second bank row take them again.
+                            for b in bucket:
+                                consumed_rows.add(b["position"])
                             matched_via_agg = True
+                            self.match_pairs.append({
+                                "bank_date": row.date,
+                                "bank_amount": row.amount,
+                                "bank_details": row.details,
+                                "ledger_positions": [b["position"] for b in bucket],
+                            })
+                            break
+                except ValueError:
+                    pass
+
+            # Pass 2b: same idea keyed on receipt_group, for bank rows
+            # whose descriptor carries no recognisable payee.
+            if not matched_via_agg:
+                try:
+                    d = dt_date.fromisoformat(row.date)
+                    for delta in (0, -1, 1, -2, 2, -3, 3):
+                        target_date = (d + timedelta(days=delta)).isoformat()
+                        for (bucket_date, group), bucket in by_date_group.items():
+                            if bucket_date != target_date:
+                                continue
+                            gkey = (bucket_date, group)
+                            if gkey in consumed_aggs:
+                                continue
+                            if any(b["position"] in consumed_rows for b in bucket):
+                                continue
+                            if abs(sum(b["amount"] for b in bucket) - row.amount) < 1.0:
+                                consumed_aggs.add(gkey)
+                                for b in bucket:
+                                    consumed_rows.add(b["position"])
+                                matched_via_agg = True
+                                self.match_pairs.append({
+                                    "bank_date": row.date,
+                                    "bank_amount": row.amount,
+                                    "bank_details": row.details,
+                                    "ledger_positions": [b["position"] for b in bucket],
+                                })
+                                break
+                        if matched_via_agg:
                             break
                 except ValueError:
                     pass
             if matched_via_agg:
                 continue
 
-            # Still unmatched → render as suggestion.
+            # Still unmatched → hold for the reverse-aggregation pass.
+            leftovers.append((row, match))
+        leftovers = self._reverse_aggregate(
+            leftovers, existing_tx, existing_index, consumed_rows, target_account)
+        for row, match in leftovers:
             suggestions.append(
                 Suggestion(
                     date=row.date,

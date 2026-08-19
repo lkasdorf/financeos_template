@@ -1,0 +1,19 @@
+{
+  "_comment": "Rules are matched in order against the raw statement text; the first match wins, so put specific rules above generic ones. `contains` is a case-insensitive substring of the bank's own description. Add your own via this file.",
+  "accounts": {
+    "example-account": {
+      "rules": [
+        {
+          "id": "example-rent",
+          "contains": "MONTHLY RENT",
+          "action": "book",
+          "then": {
+            "type": "expense",
+            "payee": "Landlord",
+            "category": "Home:Rent"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -13,7 +13,7 @@ function exportReportTables() {
   });
   const report = getAllReports().find(r => r.id === activeReportId);
   const title = report ? report.title.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 30) : 'report';
-  XLSX.writeFile(wb, `${title}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `${title}_${localTodayIso()}.xlsx`);
 }
 
 // Export the current report as PDF. Shows an options modal first (orientation,

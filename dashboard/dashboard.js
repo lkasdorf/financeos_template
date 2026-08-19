@@ -17,6 +17,7 @@ function render(scope) {
       <div id="dash-budgets">${renderBudgetTracker()}</div>
       <div id="dash-ds">${renderDebtSummary()}</div>
       <div id="dash-sched">${renderScheduledPreview()}</div>
+      <div id="dash-renewals">${renderRenewalsWidget()}</div>
       <div id="dash-acc">${renderAccounts()}</div>
       <div id="dash-month">${renderMonthSection()}</div>
       <div id="dash-charts">${renderChartsSection()}</div>
@@ -83,7 +84,7 @@ async function loadMonthForecast() {
       for (const s of items) {
         if (s.active !== true && s.active !== 'true') continue;
         if (!s.next_run || !s.next_run.startsWith(ym)) continue;
-        if (s.next_run <= now.toISOString().slice(0, 10)) continue; // already due/booked
+        if (s.next_run <= localIsoDate(now)) continue; // already due/booked
         const amt = toDisplay(parseFloat(s.amount) || 0, s.currency || 'TZS');
         const isIncome = (s.category || '').startsWith('Income:');
         const acc = state.accounts.find(a => a.alias === s.account);
@@ -147,7 +148,7 @@ async function loadMonthForecast() {
   container.innerHTML = `
     <section class="section">
       <div class="section-title">${t('dashboard.forecast.title', {}, 'Month Forecast')} <span class="hint">${monthLabel(ym)} · ${t('dashboard.forecast.days_left', { n: daysLeft }, `${daysLeft} days left`)} · ${cur}</span></div>
-      <div class="income-grid" style="grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));">
+      <div class="income-grid">
         <div class="income-cell">
           <div class="ic-label">${t('dashboard.forecast.income_actual', {}, 'Income (actual)')}</div>
           <div class="ic-value">${formatCurrency(incomeActual, cur)}</div>
@@ -202,8 +203,8 @@ async function loadScheduledPreview() {
   const active = (items || []).filter(s => s.active === true || s.active === 'true');
   if (active.length === 0) return;
 
-  const today = new Date().toISOString().slice(0, 10);
-  const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const today = localTodayIso();
+  const nextWeek = localIsoDaysFromNow(7);
 
   const overdue = active.filter(s => s.next_run && s.next_run <= today);
   const upcoming = active.filter(s => s.next_run && s.next_run > today && s.next_run <= nextWeek);
@@ -249,6 +250,78 @@ async function loadScheduledPreview() {
 
   const cta = document.getElementById('dash-sched-run-due');
   if (cta) cta.addEventListener('click', () => openSchedRunDueModal());
+}
+
+// ── Upcoming subscription renewals widget ───────────────────────────────
+
+function renderRenewalsWidget() {
+  // Placeholder; content loads async after boot (same pattern as
+  // renderScheduledPreview above).
+  return `<div id="dash-renewals-inner"></div>`;
+}
+
+// Active subscriptions due within 30 days, plus anything overdue.
+// SCHED-linked subs get an "auto" badge instead of being hidden so the
+// widget stays a complete calendar of what will hit the accounts —
+// the scheduled widget above already shows the booking side.
+async function loadSubscriptionRenewals() {
+  const container = document.getElementById('dash-renewals-inner');
+  if (!container) return;
+  if (typeof isFeatureEnabled === 'function' && !isFeatureEnabled('subscriptions')) return;
+
+  let subs = [];
+  let schedItems = [];
+  const subsData = await fetchSubscriptionsList();
+  if (!subsData) return;
+  subs = subsData.subscriptions || [];
+  try {
+    const data = await fetchScheduledList();
+    schedItems = Array.isArray(data) ? data : (data && data.scheduled) || [];
+  } catch (e) { /* badge-only data — keep going without it */ }
+
+  const schedLinked = new Set(
+    schedItems
+      .filter(s => (s.active === true || s.active === 'true') && s.subscription_id)
+      .map(s => s.subscription_id),
+  );
+
+  const today = localTodayIso();
+  const horizon = localIsoDaysFromNow(30);
+  const due = subs
+    .filter(s => (s.active || '').toLowerCase() === 'true'
+      && s.next_renewal && s.next_renewal <= horizon)
+    .sort((a, b) => (a.next_renewal || '').localeCompare(b.next_renewal || ''));
+  if (!due.length) return;
+
+  const renderItem = (s) => {
+    const isOverdue = s.next_renewal < today;
+    const color = isOverdue ? 'var(--negative)' : 'var(--muted-soft)';
+    const dateLabel = isOverdue
+      ? t('dashboard.upcoming.overdue_since', { date: fmtDate(s.next_renewal) }, `overdue since ${fmtDate(s.next_renewal)}`)
+      : fmtDate(s.next_renewal);
+    const badge = schedLinked.has(s.subscription_id)
+      ? ` <span class="sched-sub-badge">${escapeHtml(t('dashboard.renewals.auto', {}, 'auto'))}</span>` : '';
+    return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border-soft);">
+      <div style="flex:1;">
+        <div class="fs-13"><a href="#subscriptions/${encodeURIComponent(s.subscription_id)}" style="color:inherit;text-decoration:none;">${escapeHtml(s.name || s.subscription_id)}</a>${badge}</div>
+        <div class="hint-sm">${escapeHtml([s.group, s.account].filter(Boolean).join(' · '))}</div>
+      </div>
+      <div class="amt" style="color:${color};font-size:13px;font-variant-numeric:tabular-nums;">${formatCurrency(parseFloat(s.amount) || 0, s.currency || 'TZS')}<span class="hint-sm" style="margin-left:4px;">${escapeHtml(s.currency || 'TZS')}</span></div>
+      <div class="hint-sm" style="color:${color};min-width:90px;text-align:right;">${dateLabel}</div>
+    </div>`;
+  };
+
+  container.innerHTML = `
+    <section class="section">
+      <div class="section-title" style="display:flex;align-items:center;gap:8px;">
+        ${escapeHtml(t('dashboard.renewals.title', {}, 'Upcoming Renewals'))}
+        <a href="#subscriptions" class="hint-sm" style="margin-left:auto;text-decoration:none;">${escapeHtml(t('dashboard.renewals.view_all', {}, 'All subscriptions →'))}</a>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;box-shadow:var(--shadow);">
+        ${due.map(renderItem).join('')}
+      </div>
+    </section>
+  `;
 }
 
 // ── Run Due Scheduled — modal with full TX preview + per-row checkboxes ──
@@ -355,6 +428,22 @@ async function openSchedRunDueModal() {
   });
 }
 
+// One header row for both tables — they were duplicated verbatim, which
+// is how the settled table kept its English headers when the open one
+// was touched (F-M10).
+function _debtTableHead() {
+  const cols = [
+    ['page.debts.col.person', 'Person', ''],
+    ['page.debts.col.direction', 'Direction', ''],
+    ['page.debts.col.original', 'Original', 'amt'],
+    ['page.debts.col.outstanding', 'Outstanding', 'amt'],
+    ['page.debts.col.since', 'Since', ''],
+    ['page.debts.col.note', 'Note', ''],
+  ];
+  return cols.map(([key, fb, cls]) =>
+    `<th${cls ? ` class="${cls}"` : ''}>${escapeHtml(t(key, {}, fb))}</th>`).join('') + '<th></th>';
+}
+
 async function renderDebtsPage() {
   const content = document.getElementById('debts-content');
   if (!content) return;
@@ -389,7 +478,9 @@ async function renderDebtsPage() {
   const renderRow = (tp, isSettled) => {
     const isOwed = tp.type === 'owed_to_me';
     const color = isOwed ? 'var(--positive)' : 'var(--negative)';
-    const label = isOwed ? 'owes you' : 'you owe';
+    const label = isOwed
+      ? t('page.debts.dir.owes_you', {}, 'owes you')
+      : t('page.debts.dir.you_owe', {}, 'you owe');
     const showAmt = convertTo(tp.amount, tp.currency, cur);
     const showOrig = convertTo(tp.original_amount, tp.currency, cur);
     const nativeHint = tp.currency !== cur ? `<span style="color:var(--muted);font-size:9px;margin-left:4px;">(${formatCurrency(tp.amount, tp.currency)} ${tp.currency})</span>` : '';
@@ -398,14 +489,16 @@ async function renderDebtsPage() {
       ? `<div style="margin-top:4px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;width:80px;"><div style="height:100%;width:${progress}%;background:${color};border-radius:2px;"></div></div>`
       : '';
     const actions = isSettled ? '' : `
-      <button class="tx-edit-btn c-acc" data-action="showPayDebtModal" data-arg1="${tp.id}" title="Record payment">Pay</button>
-      <button class="tx-edit-btn" data-action="showDebtHistory" data-arg1="${tp.id}" title="Payment history">History</button>
-      <button class="tx-edit-btn" data-action="showDebtModal" data-arg1="${tp.id}" title="Edit">Edit</button>
-      <button class="tx-edit-btn c-neg" data-action="deleteDebt" data-arg1="${tp.id}" title="Delete">Delete</button>
+      <button class="tx-edit-btn c-acc" data-action="showPayDebtModal" data-arg1="${escapeHtml(tp.id)}" title="${escapeHtml(t('page.debts.action.pay_title', {}, 'Record payment'))}">${escapeHtml(t('page.debts.action.pay', {}, 'Pay'))}</button>
+      <button class="tx-edit-btn" data-action="showDebtHistory" data-arg1="${escapeHtml(tp.id)}" title="${escapeHtml(t('page.debts.action.history_title', {}, 'Payment history'))}">${escapeHtml(t('page.debts.action.history', {}, 'History'))}</button>
+      <button class="tx-edit-btn" data-action="showDebtModal" data-arg1="${escapeHtml(tp.id)}" title="${escapeHtml(t('common.actions.edit', {}, 'Edit'))}">${escapeHtml(t('common.actions.edit', {}, 'Edit'))}</button>
+      <button class="tx-edit-btn c-neg" data-action="deleteDebt" data-arg1="${escapeHtml(tp.id)}" title="${escapeHtml(t('common.actions.delete', {}, 'Delete'))}">${escapeHtml(t('common.actions.delete', {}, 'Delete'))}</button>
     `;
     const nativeOrigHint = tp.currency !== cur ? `<div class="label-xs">${formatCurrency(tp.original_amount, tp.currency)} ${tp.currency}</div>` : '';
     const nativeOutHint = tp.currency !== cur ? `<div class="label-xs">${formatCurrency(tp.amount, tp.currency)} ${tp.currency}</div>` : '';
-    const settledLabel = isSettled ? `<div class="label-xs">settled ${tp.date_settled ? fmtDate(tp.date_settled) : ''}</div>` : '';
+    const settledLabel = isSettled
+      ? `<div class="label-xs">${escapeHtml(t('page.debts.settled_on', { date: tp.date_settled ? fmtDate(tp.date_settled) : '' }, `settled ${tp.date_settled ? fmtDate(tp.date_settled) : ''}`))}</div>`
+      : '';
     return `<tr${isSettled ? ' class="op-50"' : ''}>
       <td><strong>${escapeHtml(tp.person_name)}</strong></td>
       <td style="color:${color};font-size:11px;">${label}</td>
@@ -427,21 +520,21 @@ async function renderDebtsPage() {
 
   let html = `
     <div class="flex-row gap-md mb-20">
-      <button class="btn-save" data-action="showDebtModal" style="padding:8px 16px;font-size:11px;">+ Add Debt</button>
+      <button class="btn-save" data-action="showDebtModal" style="padding:8px 16px;font-size:11px;">${escapeHtml(t('page.debts.add', {}, '+ Add Debt'))}</button>
     </div>
     <div class="income-grid mb-20">
       <div class="income-cell">
-        <div class="ic-label">Owed to You</div>
+        <div class="ic-label">${escapeHtml(t('page.debts.kpi.owed_to_you', {}, 'Owed to You'))}</div>
         <div class="ic-value c-pos">${formatCurrency(totalOwed, cur)}<span class="ic-cur">${cur}</span></div>
-        <div class="ic-count">${open.filter(tp => tp.type === 'owed_to_me').length} open</div>
+        <div class="ic-count">${escapeHtml(t('page.debts.kpi.n_open', { n: open.filter(tp => tp.type === 'owed_to_me').length }, `${open.filter(tp => tp.type === 'owed_to_me').length} open`))}</div>
       </div>
       <div class="income-cell">
-        <div class="ic-label">You Owe</div>
+        <div class="ic-label">${escapeHtml(t('page.debts.kpi.you_owe', {}, 'You Owe'))}</div>
         <div class="ic-value c-neg">${formatCurrency(totalOwe, cur)}<span class="ic-cur">${cur}</span></div>
-        <div class="ic-count">${open.filter(tp => tp.type === 'owed_by_me').length} open</div>
+        <div class="ic-count">${escapeHtml(t('page.debts.kpi.n_open', { n: open.filter(tp => tp.type === 'owed_by_me').length }, `${open.filter(tp => tp.type === 'owed_by_me').length} open`))}</div>
       </div>
       <div class="income-cell">
-        <div class="ic-label">Net</div>
+        <div class="ic-label">${escapeHtml(t('page.debts.kpi.net', {}, 'Net'))}</div>
         <div class="ic-value" style="color:${totalOwed - totalOwe >= 0 ? 'var(--positive)' : 'var(--negative)'}">${totalOwed - totalOwe >= 0 ? '+' : '-'}${formatCurrency(Math.abs(totalOwed - totalOwe), cur)}<span class="ic-cur">${cur}</span></div>
       </div>
     </div>
@@ -450,8 +543,8 @@ async function renderDebtsPage() {
   if (open.length > 0) {
     html += `
       <div class="section mb-24">
-        <div class="section-title">Open</div>
-        <table class="tx-table"><thead><tr><th>Person</th><th>Direction</th><th class="amt">Original</th><th class="amt">Outstanding</th><th>Since</th><th>Note</th><th></th></tr></thead>
+        <div class="section-title">${escapeHtml(t('page.debts.section.open', {}, 'Open'))}</div>
+        <table class="tx-table"><thead><tr>${_debtTableHead()}</tr></thead>
         <tbody>${open.map(tp => renderRow(tp, false)).join('')}</tbody></table>
       </div>
     `;
@@ -460,14 +553,16 @@ async function renderDebtsPage() {
   if (settled.length > 0) {
     html += `
       <div class="section">
-        <div class="section-title c-mut">Settled</div>
-        <table class="tx-table"><thead><tr><th>Person</th><th>Direction</th><th class="amt">Original</th><th class="amt">Outstanding</th><th>Since</th><th>Note</th><th></th></tr></thead>
+        <div class="section-title c-mut">${escapeHtml(t('page.debts.section.settled', {}, 'Settled'))}</div>
+        <table class="tx-table"><thead><tr>${_debtTableHead()}</tr></thead>
         <tbody>${settled.map(tp => renderRow(tp, true)).join('')}</tbody></table>
       </div>
     `;
   }
 
-  document.getElementById('debts-meta').textContent = `${open.length} open, ${settled.length} settled`;
+  document.getElementById('debts-meta').textContent = t('page.debts.meta',
+    { open: open.length, settled: settled.length },
+    `${open.length} open, ${settled.length} settled`);
   content.innerHTML = html;
 }
 
@@ -572,9 +667,11 @@ function updateChartTheme() {
     cashflowChart.options.scales.x.ticks.color = cssVar('--chart-text');
     cashflowChart.options.scales.y.ticks.color = cssVar('--chart-text');
     const [cfInc, cfExp, cfNet] = cashflowChart.data.datasets;
-    if (cfInc) { cfInc.borderColor = cssVar('--positive'); cfInc.backgroundColor = chartTint(cssVar('--positive'), 0.08); }
-    if (cfExp) { cfExp.borderColor = cssVar('--negative'); cfExp.backgroundColor = chartTint(cssVar('--negative'), 0.08); }
-    if (cfNet) { cfNet.borderColor = cssVar('--accent'); }
+    /* Keep in sync with initCharts(): plain lines for income/expenses,
+       subtle accent fill only under net. */
+    if (cfInc) { cfInc.borderColor = cssVar('--positive'); cfInc.backgroundColor = 'transparent'; }
+    if (cfExp) { cfExp.borderColor = cssVar('--negative'); cfExp.backgroundColor = 'transparent'; }
+    if (cfNet) { cfNet.borderColor = cssVar('--accent'); cfNet.backgroundColor = chartTint(cssVar('--accent'), 0.08); }
     cashflowChart.update('none');
   }
 }
@@ -626,9 +723,11 @@ function initCharts() {
       data: {
         labels: cashflowData.map(d => monthLabel(d.month)),
         datasets: [
-          { label: t('dashboard.charts.cashflow_income', {}, 'Income'), data: cashflowData.map(d => d.income), borderColor: cssVar('--positive'), backgroundColor: chartTint(cssVar('--positive'), 0.08), fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2 },
-          { label: t('dashboard.charts.cashflow_expenses', {}, 'Expenses'), data: cashflowData.map(d => d.expense), borderColor: cssVar('--negative'), backgroundColor: chartTint(cssVar('--negative'), 0.08), fill: true, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2 },
-          { label: t('dashboard.charts.cashflow_net', {}, 'Net'), data: cashflowData.map(d => d.net), borderColor: cssVar('--accent'), backgroundColor: 'transparent', fill: false, tension: 0.3, pointRadius: 2, pointHoverRadius: 5, borderWidth: 1.5, borderDash: [5, 3] },
+          /* Income/Expenses render as plain lines; only Net carries a subtle
+             fill — three stacked area tints read as noise (design pass C1). */
+          { label: t('dashboard.charts.cashflow_income', {}, 'Income'), data: cashflowData.map(d => d.income), borderColor: cssVar('--positive'), backgroundColor: 'transparent', fill: false, tension: 0.3, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8, borderWidth: 2 },
+          { label: t('dashboard.charts.cashflow_expenses', {}, 'Expenses'), data: cashflowData.map(d => d.expense), borderColor: cssVar('--negative'), backgroundColor: 'transparent', fill: false, tension: 0.3, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8, borderWidth: 2 },
+          { label: t('dashboard.charts.cashflow_net', {}, 'Net'), data: cashflowData.map(d => d.net), borderColor: cssVar('--accent'), backgroundColor: chartTint(cssVar('--accent'), 0.08), fill: true, tension: 0.3, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8, borderWidth: 2 },
         ],
       },
       options: {

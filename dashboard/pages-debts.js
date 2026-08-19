@@ -140,6 +140,10 @@ async function saveDebt(editId) {
     const result = await res.json();
     if (result.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(result.error)}</div>`; return; }
     closeModal();
+    // Adding a debt writes an origination TX server-side (unless skip_tx) —
+    // refresh tx/balances/txIndex so account pages show it without a full
+    // page reload (same pattern as the Add TX flow).
+    await refreshData();
     renderDebtsPage();
   } catch (e) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(e.message)}</div>`; }
 }
@@ -160,16 +164,18 @@ async function topUpExistingDebt(debtId, amount, note) {
     const result = await res.json();
     if (result.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(result.error)}</div>`; return; }
     closeModal();
+    // Top-ups write a TX server-side (unless skip_tx) — refresh global TX state.
+    await refreshData();
     renderDebtsPage();
   } catch (e) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(e.message)}</div>`; }
 }
 
 async function deleteDebt(debtId) {
   if (!(await uiConfirm(t('pages.debt.confirm.delete', { id: debtId }, `Delete debt "${debtId}"?`), { type: 'destructive' }))) return;
-  try {
-    await fetch('/api/debts/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: debtId }) });
-    renderDebtsPage();
-  } catch (e) { console.warn('[debts:silent-catch]', e); }
+  // F-M5: a refused delete used to log to the console and re-render the
+  // unchanged list — indistinguishable from a delete that worked.
+  if (!await apiMutate('/api/debts/delete', { id: debtId })) return;
+  renderDebtsPage();
 }
 
 async function showPayDebtModal(debtId) {
@@ -300,6 +306,9 @@ async function submitPayment(debtId) {
     const result = await res.json();
     if (result.error) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(result.error)}</div>`; return; }
     closeModal();
+    // Payments write an income/expense TX server-side — refresh global TX
+    // state so the target account page shows it without a full reload.
+    await refreshData();
     renderDebtsPage();
   } catch (e) { statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(e.message)}</div>`; }
 }

@@ -135,8 +135,50 @@ function renderTransactionsPage() {
   const duplicateLabel = t('tx.actions.duplicate', {}, 'Duplicate');
   const deleteLabel = t('tx.actions.delete', {}, 'Delete');
   const transferLabel = t('dashboard.recent.transfer_category', {}, 'Transfer');
-  const rows = slice.map(tx => {
+
+  // Receipt-split markers. The counter is derived from the full set so a
+  // group shows "2/3" even when the page or an active filter only holds
+  // part of it. The connecting bar, by contrast, is drawn from adjacency
+  // in the rendered slice: sorting by amount tears groups apart, and
+  // re-ordering rows to keep them together would silently override the
+  // sort the user asked for.
+  // The index is assigned in booking order (the order state.tx holds), not
+  // in render order — otherwise "1/3" would mean "whichever line the
+  // current sort happened to show first", which is not a fact about the
+  // receipt.
+  // Pass-through counter-entries inherit the receipt_group of the expense
+  // they mirror, but they are the backend's twin of the whole group, not a
+  // slice of the receipt — counting them would report a 2-line split as
+  // "1/3". Same exclusion the group editor and _sync_group_counter use.
+  const groupCounts = {};
+  const groupIndex = {};
+  state.tx.forEach(row => {
+    const g = (row.receipt_group || '').trim();
+    if (!g || (row.counter_entry_id || '').trim()) return;
+    groupCounts[g] = (groupCounts[g] || 0) + 1;
+    groupIndex[row.import_id] = groupCounts[g];
+  });
+
+  const rows = slice.map((tx, rowIdx) => {
     const isChecked = txPage.selected.has(tx.import_id);
+    const grp = (tx.counter_entry_id || '').trim()
+      ? '' : (tx.receipt_group || '').trim();
+    const grpTotal = grp ? (groupCounts[grp] || 0) : 0;
+    let grpIdx = 0;
+    let grpClass = '';
+    if (grp && grpTotal > 1) {
+      grpIdx = groupIndex[tx.import_id] || 0;
+      const prevSame = rowIdx > 0
+        && (slice[rowIdx - 1].receipt_group || '').trim() === grp;
+      const nextSame = rowIdx < slice.length - 1
+        && (slice[rowIdx + 1].receipt_group || '').trim() === grp;
+      if (prevSame && nextSame) grpClass = 'grp-mid';
+      else if (nextSame) grpClass = 'grp-first';
+      else if (prevSame) grpClass = 'grp-last';
+    }
+    const grpBadge = grpTotal > 1
+      ? `<span class="split-badge grp-badge" title="${escapeHtml(t('tx.list.group_title', { i: grpIdx, n: grpTotal }, `Part ${grpIdx} of ${grpTotal} of one receipt`))}">${escapeHtml(t('tx.list.group_badge', { i: grpIdx, n: grpTotal }, `${grpIdx}/${grpTotal}`))}</span>`
+      : '';
     const tags = (tx.tags || '').split(';').filter(Boolean).map(x => `<span class="tag-chip">${escapeHtml(x)}</span>`).join('');
     let payeeLabel;
     if (tx.type === 'transfer') {
@@ -161,13 +203,13 @@ function renderTransactionsPage() {
     // the same <tr> reshuffles into a grid on phones via `display: grid`
     // + `grid-template-areas`. Don't rename without updating the CSS.
     return `
-      <tr class="${isChecked ? 'row-selected' : ''}">
+      <tr class="${isChecked ? 'row-selected' : ''} ${grpClass}">
         <td class="td-chk"><input type="checkbox" class="tx-select" data-id="${escapeHtml(tx.import_id)}" ${isChecked ? 'checked' : ''}></td>
         <td class="td-date">${fmtDate(tx.date)}</td>
         <td class="td-account">${escapeHtml(tx.account)}</td>
         <td class="td-type fs-10 c-mut2">${tx.type}</td>
         <td class="td-payee">${payeeLabel}${receiptIcon}${note}</td>
-        <td class="td-cat cat">${catOrType}</td>
+        <td class="td-cat cat">${catOrType}${grpBadge}</td>
         <td class="td-tags">${tags}</td>
         <td class="td-amount amt ${typeClass}">${formatCurrency(tx.amount, tx.currency)}</td>
         <td class="td-ccy hint-sm">${tx.currency}</td>
@@ -184,7 +226,7 @@ function renderTransactionsPage() {
   const uncategorizedCount = state.tx.filter(t => !t.type && !t.category).length;
 
   contentEl.innerHTML = `
-    <div class="report-toolbar" style="flex-wrap:wrap;gap:6px 12px;margin-bottom:12px;">
+    <div class="report-toolbar txp-toolbar">
       <label>${t('tx.filter.type', {}, 'Type')}</label>
       <select id="txp-type">
         <option value="">${t('tx.filter.all', {}, 'All')}</option>
@@ -206,36 +248,38 @@ function renderTransactionsPage() {
         }).join('')}
       </select>
       ${uncategorizedCount > 0 ? `
-      <label style="display:flex;gap:4px;align-items:center;cursor:pointer;margin-left:8px;">
+      <label class="chk-row">
         <input type="checkbox" id="txp-uncat" ${txPage.filterUncategorized ? 'checked' : ''}>
         <span class="fs-12">${t('txp.uncategorized_only', { n: uncategorizedCount }, `Uncategorized only (${uncategorizedCount})`)}</span>
       </label>
       ` : ''}
+      <span class="toolbar-spacer"></span>
+      ${hasActiveFilters ? `<button id="txp-save-preset" title="${t('txp.save_preset_title', {}, 'Save current filters as preset')}">${t('txp.save_preset', {}, 'Save Preset')}</button>` : ''}
+      <select id="txp-presets" class="input-compact">
+        <option value="">${t('txp.presets_default', {}, 'Presets')}</option>
+        ${loadFilterPresets().map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('')}
+      </select>
+      ${loadFilterPresets().length > 0 ? `<button id="txp-delete-preset" title="${t('txp.delete_preset_title', {}, 'Delete selected preset')}" aria-label="${t('txp.delete_preset_title', {}, 'Delete selected preset')}">×</button>` : ''}
     </div>
-    <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:12px;">
-      <span class="fs-12 c-mut2" style="margin-right:4px;">${t('tx.filter.tags', {}, 'Tags')}</span>
-      ${allTags.map(tag => `<button class="txp-tag-chip ${txPage.filterTags.includes(tag) ? 'active' : ''}" data-tag="${escapeHtml(tag)}" style="padding:3px 10px;font-size:10px;border-radius:12px;">${escapeHtml(tag)}</button>`).join('')}
-    </div>
-    <div class="report-toolbar" style="flex-wrap:wrap;gap:6px 12px;margin-bottom:16px;">
+    <div class="report-toolbar txp-toolbar">
       <label>${t('tx.filter.from', {}, 'From')}</label>
       <input type="date" id="txp-date-from" value="${txPage.filterDateFrom}" class="input-compact">
       <label>${t('tx.filter.to', {}, 'To')}</label>
       <input type="date" id="txp-date-to" value="${txPage.filterDateTo}" class="input-compact">
       <label>${t('tx.filter.payee', {}, 'Payee')}</label>
-      <input type="text" id="txp-payee" list="txp-payee-list" value="${escapeHtml(txPage.filterPayee)}" placeholder="${t('search.placeholder', {}, 'Search...')}" autocomplete="off" style="width:200px;padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <input type="text" id="txp-payee" list="txp-payee-list" value="${escapeHtml(txPage.filterPayee)}" placeholder="${t('search.placeholder', {}, 'Search...')}" autocomplete="off" class="txp-payee">
       <datalist id="txp-payee-list">${allPayees.map(p => `<option value="${escapeHtml(p)}">`).join('')}</datalist>
       <label>${t('tx.filter.amount', {}, 'Amount')}</label>
-      <input type="text" inputmode="numeric" id="txp-amt-min" value="${escapeHtml(txPage.filterAmountMin)}" placeholder="${t('tx.filter.amount_min', {}, 'min')}" style="width:110px;padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
+      <input type="text" inputmode="numeric" id="txp-amt-min" value="${escapeHtml(txPage.filterAmountMin)}" placeholder="${t('tx.filter.amount_min', {}, 'min')}" class="txp-amt">
       <span class="c-mut">–</span>
-      <input type="text" inputmode="numeric" id="txp-amt-max" value="${escapeHtml(txPage.filterAmountMax)}" placeholder="${t('tx.filter.amount_max', {}, 'max')}" style="width:110px;padding:5px 10px;font-size:12px;border:1px solid var(--border);border-radius:var(--radius-xs);background:var(--surface);color:var(--text);">
-      ${hasActiveFilters ? `<button id="txp-reset" style="padding:5px 12px;font-size:11px;">${t('txp.reset', {}, 'Reset')}</button>` : ''}
-      ${hasActiveFilters ? `<button id="txp-save-preset" style="padding:5px 12px;font-size:11px;" title="${t('txp.save_preset_title', {}, 'Save current filters as preset')}">${t('txp.save_preset', {}, 'Save Preset')}</button>` : ''}
-      <select id="txp-presets" class="input-compact">
-        <option value="">${t('txp.presets_default', {}, 'Presets')}</option>
-        ${loadFilterPresets().map((p, i) => `<option value="${i}">${escapeHtml(p.name)}</option>`).join('')}
-      </select>
-      ${loadFilterPresets().length > 0 ? `<button id="txp-delete-preset" style="padding:4px 8px;font-size:10px;color:var(--muted);" title="${t('txp.delete_preset_title', {}, 'Delete selected preset')}" aria-label="${t('txp.delete_preset_title', {}, 'Delete selected preset')}">×</button>` : ''}
-      <button id="txp-export" style="margin-left:auto;padding:6px 14px;">${t('txp.export_xlsx', {}, 'Export XLSX')}</button>
+      <input type="text" inputmode="numeric" id="txp-amt-max" value="${escapeHtml(txPage.filterAmountMax)}" placeholder="${t('tx.filter.amount_max', {}, 'max')}" class="txp-amt">
+      ${hasActiveFilters ? `<button id="txp-reset">${t('txp.reset', {}, 'Reset')}</button>` : ''}
+      <span class="toolbar-spacer"></span>
+      <button id="txp-export">${t('txp.export_xlsx', {}, 'Export XLSX')}</button>
+    </div>
+    <div class="txp-tag-row">
+      <span class="fs-12 c-mut2">${t('tx.filter.tags', {}, 'Tags')}</span>
+      ${allTags.map(tag => `<button class="txp-tag-chip ${txPage.filterTags.includes(tag) ? 'active' : ''}" data-tag="${escapeHtml(tag)}">${escapeHtml(tag)}</button>`).join('')}
     </div>
     ${hasActiveFilters ? `
     <div class="income-grid mb-16" style="grid-template-columns:repeat(3,1fr);">
@@ -571,7 +615,17 @@ async function bulkDeleteSelected() {
       body: JSON.stringify({ import_ids: ids }),
     });
     const data = await res.json();
-    if (data.error) { uiAlert(t('pages.txbulk.err.delete_failed', { err: data.error }, `Bulk delete failed: ${data.error}`)); return; }
+    if (data.error) {
+      // 409 = at least one selected row hangs on a side log; the batch is
+      // refused whole, so name the offenders instead of the raw id list.
+      const err = res.status === 409
+        ? t('tx.delete.protected',
+            { lines: describeBlockedLines(data.blocked) || data.error },
+            data.error)
+        : data.error;
+      uiAlert(t('pages.txbulk.err.delete_failed', { err }, `Bulk delete failed: ${err}`));
+      return;
+    }
     txPage.selected.clear();
     refreshData();
   } catch (e) {
@@ -926,7 +980,7 @@ function exportTransactions() {
     'Transfer To': t.transfer_to_account || '',
   }));
   const filters = [txPage.filterType, txPage.filterAccount].filter(Boolean).join('_') || 'all';
-  exportXlsx(data, `transactions_${filters}_${new Date().toISOString().slice(0,10)}`, 'Transactions');
+  exportXlsx(data, `transactions_${filters}_${localTodayIso()}`, 'Transactions');
 }
 
 // ─── v1.6.0 receipts read-only preview modal ──────────────────────────

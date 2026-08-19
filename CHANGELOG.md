@@ -18,6 +18,128 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 
 ### Security
 
+## [1.9.0-rc.1] — 2026-08-19
+
+Feature release. Four new subsystems — bank-statement import, receipt-split
+editing, receipt matching and cash counts — plus a subscriptions module that
+now keeps its own renewal dates straight. Behind them, two rounds of review
+remediation on the write path, the request surface and the offline app.
+
+### Added
+
+- **Bank-statement import (`scripts/recon_import.py`).** Reads a statement
+  through the same adapter the reconciliation report uses and sorts every row
+  into three buckets: `auto` (a rule matches, or the row is structurally
+  unambiguous), `ask` (everything else, presented as one table rather than row
+  by row) and `skip` (already booked, dismissed, or cancelled by the bank).
+  Conservative by default — a category that is merely *inferred* from a payee
+  always asks; the way to `auto` is a rule you wrote. Rules live in
+  `config/recon_rules.json`, ordered, first match wins.
+  Four guards refuse to book silently and each of them caught a real duplicate
+  on the first live run: a near-match on amount within ±7 days, a group the
+  ledger holds as one summed row, an ATM cascade whose fee differs from the
+  stored preset, and a credit that reverses a debit of the same reference.
+- **Every booked row can carry the bank's own text.** `raw_note` holds the full
+  descriptor, `note` stays yours and is never overwritten. Merging is keyed on
+  the bank reference, so the same reference in a re-worded form *replaces* the
+  old text (banks rewrite card payments between authorisation and settlement)
+  while a different reference is appended.
+- **Receipt-split editing.** The Edit dialog can now open a whole receipt
+  instead of one line: add a line, remove one, change the split, or turn a
+  single transaction into a split after the fact. The group is diffed rather
+  than deleted and re-booked, so import ids and every side-log link survive.
+  Split members are marked as such in the transaction list.
+- **Receipt matching (`scripts/receipt_scan.py`).** Points at a folder of
+  scanned receipts and attaches each to the transaction it belongs to —
+  amount and date, with a tolerance for tips. Idempotent: a second run over the
+  same folder attaches nothing twice.
+- **Cash counts.** Count what is physically in the drawer and book the
+  difference as one correcting entry, with a log of past counts.
+- **Alert acknowledgements.** Observations without a natural end — a
+  subscription price that drifted, an unusual electricity rate — can be
+  acknowledged. The ack is fingerprinted to the specific observation, so the
+  *next* price jump surfaces again instead of being silenced forever.
+
+### Changed
+
+- **Subscriptions keep their own renewal dates.** A charge linked to a
+  subscription rolls `next_renewal` forward by the billing cycle, and a daily
+  job catches up anything more than a week overdue. Links are now set on every
+  booking path — the add form, the statement import and the reconciliation tab
+  — instead of only the first. The matcher is deliberately strict for the
+  unattended paths: active, same payee, same account, amount within the drift
+  tolerance, exactly one candidate, nothing already logged this period. A wrong
+  link is worse than no link.
+- **The payment-gap scan is honest about long cycles.** The tolerance is one
+  cycle plus half a cycle, capped at 45 days — a yearly subscription used to
+  need to be half a year late before anything was said. A gap over the
+  tolerance but under two cycles is now reported as a *late* charge, not a
+  missing one.
+- **Dates come from the browser's own clock.** `toISOString()` returns the UTC
+  day, so east of Greenwich every hour between local midnight and the offset
+  reported yesterday — including the date pre-filled in the add form. 38 call
+  sites across 16 files now use the host's calendar day.
+- **The built-in scheduler runs on host time** and supports weekly jobs; its
+  defaults match the reference deployment again.
+- **Backups keep a daily floor.** In addition to the newest 30 copies per file,
+  the newest copy of each of the last seven days survives — a write-heavy day
+  could previously evict every snapshot from before the mistake you are trying
+  to undo.
+
+### Fixed
+
+- **Deleting a transaction a side log owns is refused.** Fuel, utility and
+  subscription logs reference transactions by id and own their own cascades;
+  the split editor always refused to strand them, the delete button did not.
+  Both single and bulk delete now refuse, and the message names the line.
+- **The offline app comes back up.** The service worker looked for its assets
+  under the exact request URL while the page requests them with a cache-busting
+  query, so the shell fetched from a network that was not there. And any failed
+  asset request was answered with `index.html`, which the browser then parsed as
+  JavaScript — a blank screen with a syntax error instead of an honest failure.
+- **Queued entries are not booked twice.** Fuel, electricity and water entries
+  from the offline queue carry a client id, so a reply lost on a bad connection
+  no longer books the whole cascade a second time.
+- **A settings toggle that fails says so.** Toggles and deletes across the
+  settings tabs ignored the server's answer and re-rendered as if the change had
+  landed; a validation error, a write failure or a read-only host all looked
+  like success.
+- **A failed refresh is visible** instead of leaving stale numbers on screen
+  that look current, and a refresh no longer throws you off the settings tab you
+  were working in.
+- **Account fields are escaped** wherever they are rendered — alias, currency,
+  type, owner, status and transfer target reach the page from your own CSV and
+  from an MMEX import, and went into the markup raw.
+- **The API answers a bad request with 400, not 500.** Unparseable JSON, a body
+  that is not an object, a non-numeric `Content-Length`, `NaN` as an amount, a
+  date that is not a date, a negative amount on an edit — each used to surface
+  as a server error or, worse, as a stored value.
+- **`HEAD` passes the same gates as `GET`**, the authentication challenge no
+  longer advertises a wildcard CORS origin, conditional requests match weak
+  ETags, and the import staging file is written with restrictive permissions.
+- **Money paths are atomic where they promised to be.** A batch of transactions
+  is written all-or-nothing, settings writes take their mandated backup, a debt
+  settles on the rounded remainder, and the debt cascade writes the transaction
+  first under a single lock — a failure mid-cascade can no longer leave a
+  recorded payment with no money behind it.
+- **The FX cron no longer drops what it could not fetch.** A currency the source
+  did not return keeps its last known rate instead of vanishing from the file,
+  and a missing rate is written as a gap the backfill can still fill — it used
+  to be written as a literal zero that blocked the gap-filler forever.
+- **Leap day.** The year-to-date comparison chart crashed on 29 February.
+
+### Security
+
+- `/api/health` answers unauthenticated callers with a minimal payload and, when
+  credentials *are* offered, checks them through the same per-IP throttle as
+  every other endpoint. It was the one endpoint exempt from authentication that
+  would still verify a password, at full speed, as often as asked.
+- The receipts export validates its date parameters, which reach a response
+  header — a CR/LF in one of them could write a header of the caller's choosing.
+- The export pipeline's false-positive list is now keyed on (file, term) rather
+  than file alone; whitelisting a file for one legitimate term used to disable
+  the leak check for that whole file.
+
 ## [1.8.0-rc.1] — 2026-07-09
 
 Correctness- and quality-focused release: a full multi-agent code review of the

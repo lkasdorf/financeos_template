@@ -84,6 +84,36 @@ def get_default(path: str, fallback: Any = None) -> Any:
     return _dot_lookup(get_defaults(), path, fallback)
 
 
+# ── Cash Count (spec 2026-07-19) ────────────────────────────────────────────
+
+# Which accounts appear in the count modal and which categories receive the
+# discrepancy bookings. Overridable via the `cash_count` block in defaults.json
+# (Settings → Cash Count).
+CASH_COUNT_DEFAULT = {
+    "accounts": ["cash", "home", "safe", "eur"],
+    "expense_category": "Other Expenses:Cash Discrepancy",
+    "income_category": "Income:Cash Discrepancy",
+}
+
+
+def get_cash_count_config() -> dict:
+    """Merged cash_count block: built-in defaults overlaid with defaults.json.
+
+    A present accounts list wins even when empty (deselecting every account
+    is a valid choice); category strings only override when non-empty so a
+    hand-edited blank never becomes a booking category.
+    """
+    cfg = get_default("cash_count", {}) or {}
+    merged = dict(CASH_COUNT_DEFAULT)
+    if isinstance(cfg.get("accounts"), list):
+        merged["accounts"] = cfg["accounts"]
+    for key in ("expense_category", "income_category"):
+        v = cfg.get(key)
+        if isinstance(v, str) and v.strip():
+            merged[key] = v
+    return merged
+
+
 @lru_cache(maxsize=1)
 def get_smart_defaults() -> dict:
     """Return the smart-defaults (UX) map. Empty dict if file is missing or invalid."""
@@ -305,6 +335,75 @@ def save_auto_tags_config(data: dict) -> None:
     # Invalidate the cached defaults so the next get_default() call
     # picks up the new rules immediately.
     get_defaults.cache_clear()
+
+
+def validate_cash_count_config(data: dict) -> list[str]:
+    """Shape validation for the cash_count block (semantic checks — do the
+    aliases/categories exist — live in the endpoint handler, which has the
+    CSVs loaded)."""
+    if not isinstance(data, dict):
+        return ["cash_count config must be a dict"]
+    errors: list[str] = []
+    accounts = data.get("accounts")
+    if not isinstance(accounts, list) or not all(
+            isinstance(a, str) and a.strip() for a in accounts):
+        errors.append("accounts must be a list of non-empty account aliases")
+    for key in ("expense_category", "income_category"):
+        v = data.get(key)
+        if not isinstance(v, str) or not v.strip():
+            errors.append(f"{key} must be a non-empty string")
+    return errors
+
+
+def _persist_defaults_key(key: str, value) -> None:
+    """Atomically merge one top-level key into defaults.json and clear the
+    cache — the shared tail of the save_*_config functions."""
+    existing: dict = {}
+    if _DEFAULTS_PATH.exists():
+        try:
+            with _DEFAULTS_PATH.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+    existing[key] = value
+
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(_DEFAULTS_PATH.parent),
+        prefix=f".{_DEFAULTS_PATH.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, _DEFAULTS_PATH)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    get_defaults.cache_clear()
+
+
+def save_cash_count_config(data: dict) -> None:
+    """Validate + atomically write the cash_count block into defaults.json."""
+    errors = validate_cash_count_config(data)
+    if errors:
+        raise ValueError("cash_count config has " + str(len(errors))
+                         + " error(s): " + "; ".join(errors))
+    sanitized = {
+        "accounts": [a.strip() for a in data.get("accounts", [])],
+        "expense_category": data["expense_category"].strip(),
+        "income_category": data["income_category"].strip(),
+    }
+    _persist_defaults_key("cash_count", sanitized)
 
 
 def save_reports_config(data: dict) -> None:

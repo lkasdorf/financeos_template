@@ -161,7 +161,7 @@ function netWorthMonthly(months) {
 
   for (let i = months - 1; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i + 1, 0); // last day of month
-    const cutoff = d.toISOString().slice(0, 10);
+    const cutoff = localIsoDate(d);
     const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 
     // Compute balances up to cutoff
@@ -338,8 +338,11 @@ function renderAccounts() {
 
   return `
     <section class="section">
-      <div class="section-title">${t('dashboard.accounts.title', {}, 'Accounts')}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+      <div class="section-title flex-row gap-sm">
+        <span>${t('dashboard.accounts.title', {}, 'Accounts')}</span>
+        <button class="btn-primary btn-title-right" data-action="openCashCountModal">${t('dashboard.accounts.count_btn', {}, 'Cash Count')}</button>
+      </div>
+      <div class="accounts-columns">
         <div>${leftCol}</div>
         <div>${rightParts}</div>
       </div>
@@ -351,6 +354,19 @@ function renderMonthSection() {
   const ym = state.currentMonth;
   const cur = displayCurrency !== 'TZS' ? displayCurrency : state.primaryCurrency;
   const sum = sumByMonth(state.tx, ym, cur);
+  // "This Week" card: expenses Monday→today, same currency semantics as the
+  // month cards. Only rendered while the current month is displayed —
+  // browsing a past month with a live week figure next to it would mislead.
+  const week = currentWeekRange();
+  const weekCard = ym === week.to.slice(0, 7) ? (() => {
+    const wsum = sumByDateRange(state.tx, week.from, week.to, cur);
+    return `
+        <div class="summary-card">
+          <div class="label">${t('dashboard.month.card_week_expenses', {}, 'Expenses This Week')}</div>
+          <div class="value negative">${formatCurrency(wsum.expense, cur)}<span class="cur">${cur}</span></div>
+          <div class="meta">${fmtDate(week.from)} – ${fmtDate(week.to)}</div>
+        </div>`;
+  })() : '';
   return `
     <section class="section">
       <div class="section-title">${t('dashboard.month.title', {}, 'Monthly Summary')} <span class="hint">${cur} · ${t('dashboard.month.hint_body', {}, 'incl. reimbursements, excl. transfers')}${displayCurrency !== 'TZS' ? ' · ' + t('dashboard.fx_converted', {}, 'FX-converted') : ''}</span></div>
@@ -377,7 +393,7 @@ function renderMonthSection() {
           <div class="label">${t('dashboard.month.card_transactions', {}, 'Transactions')}</div>
           <div class="value">${sum.count}</div>
           <div class="meta">${t('dashboard.month.in_month', { month: monthLabel(ym) }, `in ${monthLabel(ym)}`)}</div>
-        </div>
+        </div>${weekCard}
       </div>
     </section>
   `;

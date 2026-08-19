@@ -22,9 +22,11 @@ Called by:
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Local config loader (sibling module). Path append keeps direct script execution working.
@@ -37,6 +39,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
 BACKUP_DIR = DATA_DIR / "backups"
 MAX_BACKUPS_PER_FILE = get_default("backup.max_per_file", 30)  # Oldest backups beyond this limit are auto-deleted
+# O-L4 (CODE_REVIEW_2026-06-12): a count-only ring is a time bomb on a busy
+# day — 30 copies written within an hour push out every snapshot from the
+# days before, which are exactly the ones worth restoring after a mistake
+# that went unnoticed overnight. On top of the count, the newest copy of
+# each of the last N days survives.
+DAILY_FLOOR_DAYS = get_default("backup.daily_floor_days", 7)
 
 # ── Backup Targets ──────────────────────────────────────────────────────────
 # Maps a short stem name to the source CSV path. The stem is used both
@@ -54,9 +62,13 @@ BACKUP_TARGETS = {
     "fuel_log": DATA_DIR / "fuel_log.csv",
     "vehicles": DATA_DIR / "vehicles.csv",
     "fuel_recon_dismissed": DATA_DIR / "fuel_recon_dismissed.csv",
+    "recon_dismissed": DATA_DIR / "recon_dismissed.csv",
+    "receipt_scan_log": DATA_DIR / "receipt_scan_log.csv",
+    "alert_acks": DATA_DIR / "alert_acks.csv",
     "properties": DATA_DIR / "properties.csv",
     "luku_log": DATA_DIR / "luku_log.csv",
     "water_log": DATA_DIR / "water_log.csv",
+    "cash_count_log": DATA_DIR / "cash_count_log.csv",
     "subscriptions": DATA_DIR / "subscriptions.csv",
     "subscription_log": DATA_DIR / "subscription_log.csv",
     "debt_payments": DATA_DIR / "debt_payments.csv",
@@ -64,6 +76,15 @@ BACKUP_TARGETS = {
     "fx_rates_history": DATA_DIR / "fx_rates_history.csv",
     "metal_price_history": DATA_DIR / "metal_price_history.csv",
     "metal_spot_fallback": DATA_DIR / "metal_spot_fallback.csv",
+    # B-M6 (CODE_REVIEW_2026-06-12) — the Settings domain files. They are
+    # rewritten wholesale by the save_* helpers in tx_engine and were
+    # never registered here, so nothing in the ring could restore them.
+    "payees": DATA_DIR / "payees.json",
+    "budgets": DATA_DIR / "budgets.json",
+    "savings_goals": DATA_DIR / "savings_goals.json",
+    "tags": DATA_DIR / "tags.csv",
+    "quick_expenses": DATA_DIR / "quick_expenses.csv",
+    "atm_fees": DATA_DIR / "atm_fees.csv",
 }
 
 
@@ -102,9 +123,30 @@ def backup_file(stem: str, source: Path) -> Path | None:
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = BACKUP_DIR / f"{stem}_{timestamp}.csv"
+    # Keep the source's own suffix: a payees.json copy named
+    # payees_<ts>.csv is JSON wearing a CSV name, and restoring it by
+    # hand goes wrong. Defaults to .csv for suffix-less sources.
+    suffix = source.suffix or ".csv"
+    backup_path = BACKUP_DIR / f"{stem}_{timestamp}{suffix}"
+    # B-L3 (CODE_REVIEW_2026-06-12): the timestamp is second-precision, and
+    # a split booking writes several times inside one second — the later
+    # copy silently replaced the earlier one, which is the copy you would
+    # have wanted. Disambiguate with a counter the prune regex knows.
+    if backup_path.exists():
+        n = 2
+        while True:
+            candidate = BACKUP_DIR / f"{stem}_{timestamp}-{n}{suffix}"
+            if not candidate.exists():
+                backup_path = candidate
+                break
+            n += 1
     # copy2 preserves metadata (timestamps, permissions)
     shutil.copy2(source, backup_path)
+    # B-L3: ...including the source's mtime, which is what prune sorts on.
+    # A settings file untouched for months produced a "new" backup that
+    # looked older than everything else and got pruned first. The copy is
+    # stamped with when it was taken.
+    os.utime(backup_path, None)
 
     size = human_size(backup_path.stat().st_size)
     print(f"[ok]   Backup erstellt: {backup_path.name} ({size})")
@@ -130,18 +172,33 @@ def prune_old_backups(stem: str) -> None:
     # L-PD2 (Sprint 23) — the glob `{stem}_*.csv` overmatches when one
     # stem is a prefix of another (e.g. `fuel_log_*` swallowed
     # `fuel_log_recon_dismissed_*`). The timestamp-anchored regex below
-    # accepts only the actual backup suffix shape `YYYYMMDD_HHMMSS.csv`,
-    # so prefix-sharing stems stay isolated.
-    import re as _re_local
-    suffix_re = _re_local.compile(rf"^{_re_local.escape(stem)}_\d{{8}}_\d{{6}}\.csv$")
-    backups = sorted(
-        (p for p in BACKUP_DIR.glob(f"{stem}_*.csv") if suffix_re.match(p.name)),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for old in backups[MAX_BACKUPS_PER_FILE:]:
-        old.unlink()
-        print(f"[prune] Geloescht: {old.name}")
+    # accepts only the actual backup suffix shape `YYYYMMDD_HHMMSS.<ext>`,
+    # so prefix-sharing stems stay isolated. The extension is open —
+    # JSON settings files keep their own suffix in the ring.
+    suffix_re = re.compile(
+        rf"^{re.escape(stem)}_(\d{{8}})_\d{{6}}(?:-\d+)?\.[A-Za-z0-9]+$")
+    matched = [(p, m.group(1)) for p, m in
+               ((p, suffix_re.match(p.name)) for p in BACKUP_DIR.glob(f"{stem}_*"))
+               if m]
+    backups = sorted(matched, key=lambda pair: pair[0].stat().st_mtime, reverse=True)
+
+    keep = {p for p, _ in backups[:MAX_BACKUPS_PER_FILE]}
+    # O-L4: plus the newest copy of each of the last DAILY_FLOOR_DAYS days.
+    # The day comes from the filename, not the mtime — a restored or copied
+    # backup keeps its own name and should still count for its own day.
+    cutoff = (datetime.now() - timedelta(days=DAILY_FLOOR_DAYS)).strftime("%Y%m%d")
+    seen_days: set[str] = set()
+    for path, day in backups:
+        if day < cutoff or day in seen_days:
+            continue
+        seen_days.add(day)
+        keep.add(path)
+
+    for path, _ in backups:
+        if path in keep:
+            continue
+        path.unlink()
+        print(f"[prune] Geloescht: {path.name}")
 
 
 def list_backups() -> None:
@@ -159,9 +216,12 @@ def list_backups() -> None:
     # the backups of `fuel_log_recon_dismissed` too.
     import re as _re_local
     for stem in BACKUP_TARGETS:
-        suffix_re = _re_local.compile(rf"^{_re_local.escape(stem)}_\d{{8}}_\d{{6}}\.csv$")
+        # Extension open, same as prune_old_backups — JSON settings
+        # backups must be listed, not silently hidden.
+        suffix_re = _re_local.compile(
+            rf"^{_re_local.escape(stem)}_\d{{8}}_\d{{6}}\.[A-Za-z0-9]+$")
         backups = sorted(
-            (p for p in BACKUP_DIR.glob(f"{stem}_*.csv") if suffix_re.match(p.name)),
+            (p for p in BACKUP_DIR.glob(f"{stem}_*") if suffix_re.match(p.name)),
             reverse=True,
         )
         print(f"\n{stem} ({len(backups)}):")

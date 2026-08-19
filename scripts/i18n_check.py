@@ -187,16 +187,33 @@ def load_locale(path: Path) -> dict[str, str]:
     return {str(k): v for k, v in data.items()}
 
 
-def collect() -> dict:
+def discover_locales(locale_dir: Path = LOCALE_DIR) -> list[str]:
+    """Return every non-EN locale name found in the locale directory.
+
+    F-M9 (CODE_REVIEW_2026-06-12): the checker used to hard-code en+de,
+    so es.json and fr.json could drift without CI noticing. Locales are
+    discovered from disk instead — a fifth language is covered the moment
+    its JSON lands.
+    """
+    return sorted(p.stem for p in locale_dir.glob("*.json") if p.stem != "en")
+
+
+def collect(dashboard_dir: Path = DASHBOARD_DIR,
+            locale_dir: Path = LOCALE_DIR) -> dict:
     static_uses: dict[str, list[str]] = {}   # key -> ["file:line", ...]
     dynamic_uses: dict[str, list[str]] = {}  # prefix -> ["file:line", ...]
     indirect_literals: set[str] = set()      # any i18n-shaped literal anywhere in JS
 
     for pattern in ("**/*.js", "**/*.html"):
-        for fp in sorted(DASHBOARD_DIR.glob(pattern)):
-            if any(part in EXCLUDED_DIRS for part in fp.relative_to(DASHBOARD_DIR).parts):
+        for fp in sorted(dashboard_dir.glob(pattern)):
+            if any(part in EXCLUDED_DIRS for part in fp.relative_to(dashboard_dir).parts):
                 continue
-            rel = fp.relative_to(ROOT).as_posix()
+            try:
+                rel = fp.relative_to(ROOT).as_posix()
+            except ValueError:
+                # Scanning a tree outside the repo (tests) — label it
+                # relative to the dashboard dir instead of crashing.
+                rel = fp.relative_to(dashboard_dir).as_posix()
             if fp.suffix == ".js":
                 statics, dynamics = scan_js(fp)
                 for key, line in statics:
@@ -212,11 +229,11 @@ def collect() -> dict:
                 for key, line in scan_html(fp):
                     static_uses.setdefault(key, []).append(f"{rel}:{line}")
 
-    en = load_locale(EN_PATH)
-    de = load_locale(DE_PATH)
+    en = load_locale(locale_dir / "en.json")
+    locale_names = discover_locales(locale_dir)
+    others = {name: load_locale(locale_dir / f"{name}.json") for name in locale_names}
 
     en_keys = set(en.keys())
-    de_keys = set(de.keys())
     code_keys = set(static_uses.keys())
     for p in SERVER_EMITTED_PREFIXES:
         dynamic_uses.setdefault(p, []).append("scripts/utilities.py (server-emitted)")
@@ -229,8 +246,6 @@ def collect() -> dict:
         return False
 
     missing_in_en = sorted(code_keys - en_keys)
-    missing_in_de = sorted(en_keys - de_keys)
-    de_orphans_vs_en = sorted(de_keys - en_keys)
     unreferenced = sorted(
         k for k in en_keys
         if k not in code_keys
@@ -238,42 +253,63 @@ def collect() -> dict:
         and not matches_dynamic(k)
     )
 
-    # L-PD3 (Sprint 23) — flag placeholder-count mismatches between EN and
-    # DE for the same key. Catches e.g. EN "{n} accounts" vs DE "Konten"
-    # where the DE side dropped the {n} substitution, which would render
-    # as a literal "Konten" with the count silently lost.
+    # L-PD3 (Sprint 23) — flag placeholder-count mismatches against EN for
+    # the same key. Catches e.g. EN "{n} accounts" vs DE "Konten" where the
+    # translation dropped the {n} substitution, which would render as a
+    # literal "Konten" with the count silently lost. Since F-M9 this runs
+    # for every locale, not just DE.
     import re as _re_local
     # Match both single-brace {name} and double-brace {{name}} forms;
     # t() in dashboard/i18n.js supports both.
     placeholder_re = _re_local.compile(r"\{\{?(\w+)\}?\}")
-    placeholder_mismatches: list[dict] = []
-    for key in sorted(en_keys & de_keys):
-        en_val = en.get(key, "")
-        de_val = de.get(key, "")
-        if not isinstance(en_val, str) or not isinstance(de_val, str):
-            continue
-        en_ph = set(placeholder_re.findall(en_val))
-        de_ph = set(placeholder_re.findall(de_val))
-        if en_ph != de_ph:
-            placeholder_mismatches.append({
-                "key": key,
-                "missing_in_de": sorted(en_ph - de_ph),
-                "extra_in_de": sorted(de_ph - en_ph),
-            })
+
+    locales: dict[str, dict] = {}
+    for name, mapping in others.items():
+        keys = set(mapping.keys())
+        mismatches: list[dict] = []
+        for key in sorted(en_keys & keys):
+            en_val = en.get(key, "")
+            loc_val = mapping.get(key, "")
+            if not isinstance(en_val, str) or not isinstance(loc_val, str):
+                continue
+            en_ph = set(placeholder_re.findall(en_val))
+            loc_ph = set(placeholder_re.findall(loc_val))
+            if en_ph != loc_ph:
+                mismatches.append({
+                    "key": key,
+                    "missing_in_locale": sorted(en_ph - loc_ph),
+                    "extra_in_locale": sorted(loc_ph - en_ph),
+                })
+        locales[name] = {
+            "count": len(keys),
+            "missing": sorted(en_keys - keys),
+            "orphans": sorted(keys - en_keys),
+            "placeholder_mismatches": mismatches,
+        }
 
     return {
         "static_uses": static_uses,
         "dynamic_uses": dynamic_uses,
         "en_count": len(en_keys),
-        "de_count": len(de_keys),
         "code_static_count": len(code_keys),
         "dynamic_prefix_count": len(prefixes),
         "missing_in_en": missing_in_en,
-        "missing_in_de": missing_in_de,
-        "de_orphans_vs_en": de_orphans_vs_en,
         "unreferenced": unreferenced,
-        "placeholder_mismatches": placeholder_mismatches,
+        "locales": locales,
     }
+
+
+def hard_error_count(result: dict) -> int:
+    """Errors that must fail the gate (CI runs this script blocking).
+
+    Hard: a key used in code but absent from en.json, a key EN has and a
+    translation does not, and a placeholder set that differs from EN's.
+    Soft (reported, non-blocking): orphans in either direction.
+    """
+    count = len(result["missing_in_en"])
+    for stats in result["locales"].values():
+        count += len(stats["missing"]) + len(stats["placeholder_mismatches"])
+    return count
 
 
 def format_refs(refs: list[str], limit: int = 3) -> str:
@@ -285,8 +321,9 @@ def format_refs(refs: list[str], limit: int = 3) -> str:
 def print_report(result: dict) -> None:
     print("FinanceOS i18n check")
     print("=" * 60)
-    print(f"  en.json keys:            {result['en_count']}")
-    print(f"  de.json keys:            {result['de_count']}")
+    print(f"  {'en.json keys:':<25}{result['en_count']}")
+    for name, stats in result["locales"].items():
+        print(f"  {name + '.json keys:':<25}{stats['count']}")
     print(f"  Static t()/data-i18n:    {result['code_static_count']}")
     print(f"  Dynamic prefixes:        {result['dynamic_prefix_count']}")
     print()
@@ -304,20 +341,24 @@ def print_report(result: dict) -> None:
                 print(f"      {format_refs(refs)}")
         print()
 
-    if result["missing_in_de"]:
-        hard_errors += len(result["missing_in_de"])
-        print(f"[ERROR] missing-in-DE  ({len(result['missing_in_de'])})")
-        print("  Keys in en.json but absent from de.json (locale parity broken):")
-        for key in result["missing_in_de"]:
-            print(f"    {key}")
-        print()
+    orphan_warnings = False
+    for name, stats in result["locales"].items():
+        if stats["missing"]:
+            hard_errors += len(stats["missing"])
+            print(f"[ERROR] missing-in-{name.upper()}  ({len(stats['missing'])})")
+            print(f"  Keys in en.json but absent from {name}.json (locale parity broken):")
+            for key in stats["missing"]:
+                print(f"    {key}")
+            print()
 
-    if result["de_orphans_vs_en"]:
-        print(f"[WARN]  de-orphan-vs-en  ({len(result['de_orphans_vs_en'])})")
-        print("  Keys in de.json that have no counterpart in en.json:")
-        for key in result["de_orphans_vs_en"]:
-            print(f"    {key}")
-        print()
+    for name, stats in result["locales"].items():
+        if stats["orphans"]:
+            orphan_warnings = True
+            print(f"[WARN]  {name}-orphan-vs-en  ({len(stats['orphans'])})")
+            print(f"  Keys in {name}.json that have no counterpart in en.json:")
+            for key in stats["orphans"]:
+                print(f"    {key}")
+            print()
 
     if result["unreferenced"]:
         print(f"[WARN]  orphan  ({len(result['unreferenced'])})")
@@ -327,25 +368,27 @@ def print_report(result: dict) -> None:
         print()
 
     # L-PD3 (Sprint 23) — placeholder-count mismatch is a HARD error.
-    # A DE string that dropped {n} or {{currency}} silently renders the
+    # A translation that dropped {n} or {{currency}} silently renders the
     # literal text instead of the substitution, which the user only
     # spots if they happen to switch locales and look at that screen.
-    mismatches = result.get("placeholder_mismatches", [])
-    if mismatches:
+    for name, stats in result["locales"].items():
+        mismatches = stats["placeholder_mismatches"]
+        if not mismatches:
+            continue
         hard_errors += len(mismatches)
-        print(f"[ERROR] placeholder-mismatch  ({len(mismatches)})")
-        print("  Same key, different placeholder set in EN vs DE:")
+        print(f"[ERROR] placeholder-mismatch-{name.upper()}  ({len(mismatches)})")
+        print(f"  Same key, different placeholder set in EN vs {name.upper()}:")
         for m in mismatches:
             bits = []
-            if m["missing_in_de"]:
-                bits.append("missing-in-de=" + ",".join(m["missing_in_de"]))
-            if m["extra_in_de"]:
-                bits.append("extra-in-de=" + ",".join(m["extra_in_de"]))
+            if m["missing_in_locale"]:
+                bits.append(f"missing-in-{name}=" + ",".join(m["missing_in_locale"]))
+            if m["extra_in_locale"]:
+                bits.append(f"extra-in-{name}=" + ",".join(m["extra_in_locale"]))
             print(f"    {m['key']}  ({'; '.join(bits)})")
         print()
 
-    if hard_errors == 0 and not result["de_orphans_vs_en"] and not result["unreferenced"]:
-        print("All i18n keys accounted for. EN/DE parity intact.")
+    if hard_errors == 0 and not orphan_warnings and not result["unreferenced"]:
+        print("All i18n keys accounted for. Locale parity intact.")
     elif hard_errors == 0:
         print("No hard errors. Warnings above do not fail the check.")
     else:
@@ -363,18 +406,15 @@ def main() -> int:
     if args.json:
         payload = {
             "en_count": result["en_count"],
-            "de_count": result["de_count"],
             "missing_in_en": result["missing_in_en"],
-            "missing_in_de": result["missing_in_de"],
-            "de_orphans_vs_en": result["de_orphans_vs_en"],
             "unreferenced": result["unreferenced"],
-            "placeholder_mismatches": result["placeholder_mismatches"],
+            "locales": result["locales"],
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print_report(result)
 
-    return 1 if (result["missing_in_en"] or result["missing_in_de"] or result["placeholder_mismatches"]) else 0
+    return 1 if hard_error_count(result) else 0
 
 
 if __name__ == "__main__":

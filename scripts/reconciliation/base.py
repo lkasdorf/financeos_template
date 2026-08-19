@@ -159,6 +159,7 @@ class BankAdapter(ABC):
         filepath: str,
         existing_tx: list[dict[str, Any]],
         account: str | None = None,
+        rows: list[BankRow] | None = None,
     ) -> list[Suggestion]:
         """Return unmatched bank rows as :class:`Suggestion` objects.
 
@@ -170,7 +171,7 @@ class BankAdapter(ABC):
         from datetime import date as dt_date, timedelta
 
         target_account = account or self.default_account
-        rows = self.parse(filepath)
+        rows = self.parse(filepath) if rows is None else list(rows)
 
         existing_keys: set[tuple[str, float]] = set()
         for t in existing_tx:

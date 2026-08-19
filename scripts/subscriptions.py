@@ -13,20 +13,27 @@ attaches charges to a subscription manually (or auto, in Phase 2).
 from __future__ import annotations
 
 import argparse
+import calendar
 import csv
 import re
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+import alert_acks  # noqa: E402
 import tx_engine  # noqa: E402
 from backup import backup_file  # noqa: E402
 
 DATA_DIR = REPO_ROOT / "data"
 SUBSCRIPTIONS_CSV = DATA_DIR / "subscriptions.csv"
 SUBSCRIPTION_LOG_CSV = DATA_DIR / "subscription_log.csv"
+
+# A charge counts as drifted once it moves this far from the previous
+# one; also the tolerance for matching a charge to a subscription.
+DEFAULT_DRIFT_THRESHOLD_PCT = 5.0
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
@@ -299,77 +306,97 @@ def batch_link_tx_to_subscription(
     if not subscription_id or not tx_import_ids:
         return {"linked": 0, "skipped": [], "missing": list(tx_import_ids or [])}
 
-    # Index existing log rows by tx_import_id — lets us detect both
-    # same-sub idempotency and cross-sub conflicts in O(1) per TX.
-    existing_log = load_subscription_log()
-    log_by_tx: dict[str, dict] = {}
-    for r in existing_log:
-        tid = (r.get("tx_import_id") or "").strip()
-        if tid:
-            log_by_tx[tid] = r
-
-    # Load all transactions once so we can resolve every requested
-    # import_id without re-reading the file per row.
-    tx_path = tx_engine.DATA_DIR / "transactions.csv"
-    tx_by_id: dict[str, dict] = {}
-    if tx_path.exists():
-        with open(tx_path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                tx_by_id[row["import_id"]] = row
-
-    linked = 0
-    skipped: list[dict] = []
-    missing: list[str] = []
-    new_rows: list[dict] = []
-    for tid in tx_import_ids:
-        tx = tx_by_id.get(tid)
-        if tx is None:
-            missing.append(tid)
-            continue
-        existing = log_by_tx.get(tid)
-        if existing is not None:
-            existing_sub = (existing.get("subscription_id") or "").strip()
-            if existing_sub == subscription_id:
-                skipped.append({
-                    "import_id": tid, "reason": "already_linked",
-                    "existing_subscription_id": existing_sub,
-                })
-            else:
-                skipped.append({
-                    "import_id": tid, "reason": "linked_to_other",
-                    "existing_subscription_id": existing_sub,
-                })
-            continue
-        new_rows.append({
-            "log_id": "",  # filled below
-            "date": (tx.get("date") or "").strip(),
-            "subscription_id": subscription_id,
-            "amount": (tx.get("amount") or "").strip(),
-            "currency": (tx.get("currency") or "").strip(),
-            "account": (tx.get("account") or "").strip(),
-            "tx_import_id": tid,
-            "note": "",
-        })
-
-    # Single rewrite at the end (one backup) instead of N appends.
-    # next_log_id() reads the file each call, so we manually advance
-    # the counter for the batch — otherwise every row in `new_rows`
-    # would compete for the same id before the first save flushed.
-    if new_rows:
-        rows = existing_log[:]
-        # Match next_log_id's `slog-NNN` convention. Pre-compute max so
-        # the batch shares one save_subscription_log() backup write.
-        max_num = 0
+    # Three writers touch subscriptions.csv / subscription_log.csv:
+    # serve.py's TX-confirm mirror, cron_sched's SCHED mirror, and this
+    # batch link. All three must serialize their read-modify-write cycles
+    # under the same lock or a concurrent booking can clobber this batch's
+    # rewrite (or vice versa) — last full-file rewrite wins. tx_write_lock
+    # is reentrant, so nested acquisitions inside save_subscription_log /
+    # save_subscriptions (if any) are safe.
+    with tx_engine.tx_write_lock():
+        # Index existing log rows by tx_import_id — lets us detect both
+        # same-sub idempotency and cross-sub conflicts in O(1) per TX.
+        existing_log = load_subscription_log()
+        log_by_tx: dict[str, dict] = {}
         for r in existing_log:
-            m = re.match(r"^slog-(\d+)$", (r.get("log_id") or "").strip())
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-        for r in new_rows:
-            max_num += 1
-            r["log_id"] = f"slog-{max_num:03d}"
-            rows.append(r)
-            linked += 1
-        save_subscription_log(rows)
+            tid = (r.get("tx_import_id") or "").strip()
+            if tid:
+                log_by_tx[tid] = r
+
+        # Load all transactions once so we can resolve every requested
+        # import_id without re-reading the file per row.
+        tx_path = tx_engine.DATA_DIR / "transactions.csv"
+        tx_by_id: dict[str, dict] = {}
+        if tx_path.exists():
+            with open(tx_path, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    tx_by_id[row["import_id"]] = row
+
+        linked = 0
+        skipped: list[dict] = []
+        missing: list[str] = []
+        new_rows: list[dict] = []
+        for tid in tx_import_ids:
+            tx = tx_by_id.get(tid)
+            if tx is None:
+                missing.append(tid)
+                continue
+            existing = log_by_tx.get(tid)
+            if existing is not None:
+                existing_sub = (existing.get("subscription_id") or "").strip()
+                if existing_sub == subscription_id:
+                    skipped.append({
+                        "import_id": tid, "reason": "already_linked",
+                        "existing_subscription_id": existing_sub,
+                    })
+                else:
+                    skipped.append({
+                        "import_id": tid, "reason": "linked_to_other",
+                        "existing_subscription_id": existing_sub,
+                    })
+                continue
+            new_rows.append({
+                "log_id": "",  # filled below
+                "date": (tx.get("date") or "").strip(),
+                "subscription_id": subscription_id,
+                "amount": (tx.get("amount") or "").strip(),
+                "currency": (tx.get("currency") or "").strip(),
+                "account": (tx.get("account") or "").strip(),
+                "tx_import_id": tid,
+                "note": "",
+            })
+
+        # Single rewrite at the end (one backup) instead of N appends.
+        # next_log_id() reads the file each call, so we manually advance
+        # the counter for the batch — otherwise every row in `new_rows`
+        # would compete for the same id before the first save flushed.
+        if new_rows:
+            rows = existing_log[:]
+            # Match next_log_id's `slog-NNN` convention. Pre-compute max so
+            # the batch shares one save_subscription_log() backup write.
+            max_num = 0
+            for r in existing_log:
+                m = re.match(r"^slog-(\d+)$", (r.get("log_id") or "").strip())
+                if m:
+                    max_num = max(max_num, int(m.group(1)))
+            for r in new_rows:
+                max_num += 1
+                r["log_id"] = f"slog-{max_num:03d}"
+                rows.append(r)
+                linked += 1
+            save_subscription_log(rows)
+
+            # Renewal roll: the newest linked charge implies the next renewal.
+            # Monotonic by design (rolled_renewal_after_charge), so linking a
+            # batch of historical charges never moves the date backwards.
+            # Failures must not undo the link itself.
+            newest = max((r.get("date") or "" for r in new_rows), default="")
+            if newest:
+                try:
+                    roll_renewal_for_charge(subscription_id, newest)
+                except Exception as exc:
+                    print(f"[subscriptions] renewal roll failed for "
+                          f"{subscription_id}: {exc}", file=sys.stderr)
 
     return {"linked": linked, "skipped": skipped, "missing": missing}
 
@@ -455,6 +482,335 @@ def list_log_for_subscription(subscription_id: str) -> list[dict]:
     return rows
 
 
+def list_log_all() -> list[dict]:
+    """Return every subscription_log row, newest first.
+
+    Powers the Subscriptions page's cost-over-time chart — one fetch
+    beats N per-subscription calls, and the file stays small (one row
+    per linked charge). Tie-break on log_id keeps same-day rows stable.
+    """
+    rows = load_subscription_log()
+    rows.sort(key=lambda r: (r.get("date", ""), r.get("log_id", "")), reverse=True)
+    return rows
+
+
+# ── Renewal rolling ─────────────────────────────────────────────────────────
+
+# Days an overdue next_renewal stays visible before the daily cron
+# advances it. Without the grace window the cron would hide every
+# overdue state the morning after it appears — the user needs a few
+# days to notice and link the charge (or investigate a missed one).
+RENEWAL_GRACE_DAYS = 7
+
+# Mirrors cron_sched.advance_next_run's runaway guard: a corrupt row
+# can never make the catch-up loop spin forever.
+_ROLL_ITERATION_CAP = 120
+
+
+def add_months(d: date, months: int) -> date:
+    """Return ``d`` shifted forward by ``months`` calendar months.
+
+    The day-of-month is clamped to the target month's length, so
+    Jan 31 + 1 month lands on Feb 28 (29 in leap years) instead of
+    raising — same semantics the scheduled-TX frequency parser uses.
+    """
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(d.day, last_day))
+
+
+def _parse_iso(value: str) -> date | None:
+    """Lenient ISO-date parse: None on any malformed/empty input."""
+    try:
+        return date.fromisoformat((value or "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _billing_months(sub: dict) -> int:
+    """billing_months as a safe positive int (malformed rows count as monthly)."""
+    try:
+        return max(1, int((sub.get("billing_months") or "1").strip() or 1))
+    except (ValueError, AttributeError):
+        return 1
+
+
+def rolled_renewal_after_charge(sub: dict, charge_date: str) -> str | None:
+    """Return the next_renewal a charge implies, or None when no roll applies.
+
+    The candidate is charge date + billing_months. The roll is strictly
+    monotonic: linking an OLD charge (history backfill) whose implied
+    renewal is on or before the current next_renewal returns None, so
+    imports never move the date backwards. An empty or unparseable
+    current next_renewal counts as "no date yet" and always rolls.
+    """
+    paid = _parse_iso(charge_date)
+    if paid is None:
+        return None
+    candidate = add_months(paid, _billing_months(sub))
+    current = _parse_iso(sub.get("next_renewal", ""))
+    if current is not None and candidate <= current:
+        return None
+    return candidate.isoformat()
+
+
+def roll_renewal_for_charge(subscription_id: str, charge_date: str) -> str | None:
+    """Persist the charge-implied next_renewal for one subscription.
+
+    Loads the master, applies rolled_renewal_after_charge and saves only
+    when the date actually moves. Returns the new ISO date or None.
+    Callers treat failures as non-fatal — the charge itself is already
+    booked; the daily cron fallback catches the date up later.
+    """
+    subs = load_subscriptions()
+    sub = subs.get((subscription_id or "").strip())
+    if not sub:
+        return None
+    new_date = rolled_renewal_after_charge(sub, charge_date)
+    if not new_date:
+        return None
+    sub["next_renewal"] = new_date
+    save_subscriptions(subs)
+    return new_date
+
+
+def roll_overdue_renewals(today: date | None = None,
+                          grace_days: int = RENEWAL_GRACE_DAYS,
+                          dry_run: bool = False) -> list[dict]:
+    """Cron fallback: advance next_renewal for active subs more than
+    ``grace_days`` overdue, in billing_months steps until >= today.
+
+    Returns a change list of {subscription_id, old, new}; empty when
+    nothing rolled. ``dry_run`` computes the same list without writing —
+    used by cron_sched --dry.
+    """
+    today = today or date.today()
+    subs = load_subscriptions()
+    changed: list[dict] = []
+    for sid, sub in subs.items():
+        if (sub.get("active") or "").strip().lower() != "true":
+            continue
+        due = _parse_iso(sub.get("next_renewal", ""))
+        if due is None or (today - due).days <= grace_days:
+            continue
+        months = _billing_months(sub)
+        nxt = due
+        for _ in range(_ROLL_ITERATION_CAP):
+            nxt = add_months(nxt, months)
+            if nxt >= today:
+                break
+        changed.append({"subscription_id": sid,
+                        "old": due.isoformat(), "new": nxt.isoformat()})
+        sub["next_renewal"] = nxt.isoformat()
+    if changed and not dry_run:
+        save_subscriptions(subs)
+    return changed
+
+
+# Amount tolerance for matching a statement row against a subscription.
+# Reuses the drift threshold: a price move small enough to be "the same
+# subscription, slightly repriced" is exactly what the drift alert
+# tolerates before it speaks up.
+MATCH_AMOUNT_TOLERANCE_PCT = DEFAULT_DRIFT_THRESHOLD_PCT
+
+# Slack on the period guard below. The bank posts a recurring charge
+# within a few days of its nominal date, so the previous period's log
+# entry must not be mistaken for one inside the current period.
+MATCH_PERIOD_GRACE_DAYS = 7
+
+
+def _expected_charge(sub: dict, account: str) -> float:
+    """What this subscription should cost on ``account``, or 0.
+
+    Most subscriptions are priced in USD/EUR but settle on a TZS
+    account, so the master amount is not comparable to the statement
+    figure. The most recent logged charge on the same account is — it is
+    already in the account's currency and carries the bank's FX markup.
+    The master price is only used as a fallback when the subscription is
+    billed in the account's own currency; otherwise there is nothing
+    meaningful to compare and the caller must not match.
+    """
+    last = _last_logged_amount(sub.get("subscription_id", ""), account)
+    if last > 0:
+        return last
+    sub_currency = (sub.get("currency") or "").strip().upper()
+    account_currency = ""
+    try:
+        account_currency = (tx_engine.load_accounts()
+                            .get(account, {})
+                            .get("currency", "") or "").strip().upper()
+    except Exception:
+        return 0.0
+    if not sub_currency or sub_currency != account_currency:
+        return 0.0
+    return _safe_float(sub.get("amount", ""))
+
+
+def _last_logged_amount(subscription_id: str, account: str) -> float:
+    """Amount of the newest logged charge for this sub on this account."""
+    sid = (subscription_id or "").strip()
+    if not sid:
+        return 0.0
+    rows = [
+        r for r in load_subscription_log()
+        if (r.get("subscription_id") or "").strip() == sid
+        and (r.get("account") or "").strip() == account
+    ]
+    if not rows:
+        return 0.0
+    # Newest first; tie-break on log_id so same-day posts stay ordered.
+    rows.sort(key=lambda r: (r.get("date", ""), r.get("log_id", "")), reverse=True)
+    return _safe_float(rows[0].get("amount", ""))
+
+
+def resolve_links_for_lines(lines: list[dict]) -> int:
+    """Fill in subscription_id on booking lines that lack one.
+
+    For callers that assemble lines themselves and post them straight to
+    /api/tx/confirm — today the dashboard's Reconciliation tab — where no
+    subscription picker was ever shown. Keeping this server-side means
+    the matching rules exist once, in Python, instead of a second
+    approximation in JS.
+
+    Only plain expense lines are considered: income and transfers cannot
+    settle a subscription, and auto-generated counter-entries mirror an
+    expense that is linked already. An explicit subscription_id is never
+    overwritten — the user's choice outranks the matcher.
+
+    Lines are resolved one at a time and a subscription is handed out at
+    most once per batch: the period guard reads subscription_log, which
+    this batch has not written yet, so two same-period charges in one
+    request would otherwise both claim the same subscription.
+
+    Returns the number of lines that gained a link. Never raises — a
+    failure here must leave the booking itself untouched.
+    """
+    linked = 0
+    claimed: set[str] = set()
+    for line in lines:
+        if line.get("subscription_id") or line.get("is_auto_generated"):
+            continue
+        if line.get("type") != "expense" or not line.get("payee"):
+            continue
+        try:
+            sid = match_for_charge(
+                line.get("payee", ""), line.get("account", ""),
+                float(line.get("amount", 0) or 0), line.get("date", ""))
+        except Exception:
+            continue
+        if not sid or sid in claimed:
+            continue
+        line["subscription_id"] = sid
+        claimed.add(sid)
+        linked += 1
+    return linked
+
+
+def subscription_candidates(payee: str, account: str) -> list[str]:
+    """Active subscription ids sharing this payee and account, any amount.
+
+    Looser than match_for_charge on purpose: it answers "could this row
+    belong to a subscription?" rather than "does it, beyond doubt?". The
+    reconciliation import uses it to flag rows it is sending to the ask
+    bucket, so a recurring charge is never booked without the question
+    of its subscription link at least being raised.
+    """
+    key = (payee or "").strip().lower()
+    acct = (account or "").strip()
+    if not key or not acct:
+        return []
+    return [
+        (sub.get("subscription_id") or "").strip()
+        for sub in load_subscriptions().values()
+        if (sub.get("active") or "").strip().lower() == "true"
+        and (sub.get("payee") or "").strip().lower() == key
+        and (sub.get("account") or "").strip() == acct
+        and (sub.get("subscription_id") or "").strip()
+    ]
+
+
+def match_for_charge(payee: str, account: str, amount: float,
+                     charge_date: str) -> str:
+    """Return the subscription_id a charge belongs to, or "".
+
+    Used by the reconciliation import so a booked statement row carries
+    its subscription link from the start — without it subscription_log
+    stays empty and next_renewal never rolls off the real charge.
+
+    This runs unattended, so it is deliberately strict; a wrong link is
+    worse than no link. All of the following must hold:
+
+    * the subscription is active
+    * payee matches case-insensitively (both sides trimmed, both set)
+    * account matches exactly (an unset column is not a wildcard)
+    * the amount is within MATCH_AMOUNT_TOLERANCE_PCT of the expected
+      charge (see _expected_charge — the last real charge, or the master
+      price when the subscription is billed in the account's currency)
+    * exactly one subscription qualifies — ambiguity asks a human
+    * no charge is already logged inside the current billing period,
+      which would make this a duplicate or an extra purchase
+
+    Returns "" whenever any check fails or the inputs are unparseable.
+    """
+    key = (payee or "").strip().lower()
+    acct = (account or "").strip()
+    if not key or not acct:
+        return ""
+    try:
+        charged = float(amount)
+    except (TypeError, ValueError):
+        return ""
+
+    candidates = []
+    for sub in load_subscriptions().values():
+        if (sub.get("active") or "").strip().lower() != "true":
+            continue
+        if (sub.get("payee") or "").strip().lower() != key:
+            continue
+        if (sub.get("account") or "").strip() != acct:
+            continue
+        expected = _expected_charge(sub, acct)
+        if expected <= 0:
+            continue
+        if abs(charged - expected) / expected * 100 > MATCH_AMOUNT_TOLERANCE_PCT:
+            continue
+        candidates.append(sub)
+
+    if len(candidates) != 1:
+        return ""
+    sub = candidates[0]
+    sid = (sub.get("subscription_id") or "").strip()
+    if not sid or _has_logged_charge_in_period(sid, sub, charge_date):
+        return ""
+    return sid
+
+
+def _has_logged_charge_in_period(subscription_id: str, sub: dict,
+                                 charge_date: str) -> bool:
+    """True when this subscription already logged a charge this period.
+
+    The period is the billing cycle ending at ``charge_date``, shortened
+    by MATCH_PERIOD_GRACE_DAYS at the start so the *previous* cycle's
+    entry stays outside it even when the bank posts a few days early or
+    late. An unparseable date is treated as "blocked" — the safe answer
+    when the guard cannot be evaluated.
+    """
+    charged_on = _parse_iso(charge_date)
+    if not charged_on:
+        return True
+    window_start = add_months(charged_on, -_billing_months(sub))
+    window_start += timedelta(days=MATCH_PERIOD_GRACE_DAYS)
+    for row in load_subscription_log():
+        if (row.get("subscription_id") or "").strip() != subscription_id:
+            continue
+        logged_on = _parse_iso(row.get("date", ""))
+        if logged_on and window_start < logged_on <= charged_on:
+            return True
+    return False
+
+
 def list_active_for_picker() -> list[dict]:
     """Return active subscriptions trimmed to fields the TX-link picker needs.
 
@@ -505,7 +861,6 @@ def cmd_list(_args: argparse.Namespace) -> int:
 # ── Phase 3: Drift Detection ───────────────────────────────────────────────
 
 
-DEFAULT_DRIFT_THRESHOLD_PCT = 5.0
 
 
 def compute_drift_alerts(threshold_pct: float = DEFAULT_DRIFT_THRESHOLD_PCT) -> list[dict]:
@@ -563,6 +918,11 @@ def compute_drift_alerts(threshold_pct: float = DEFAULT_DRIFT_THRESHOLD_PCT) -> 
             "last_date": last.get("date", ""),
             "prev_date": prev.get("date", ""),
             "increase_pct": round(increase_pct, 1),
+            # Fingerprint of *this* jump — the charge that triggered it.
+            # The next price step carries a different date/amount, so an
+            # ack here cannot swallow it.
+            "ack_key": alert_acks.ack_key(
+                "sub_drift", sid, last.get("date", ""), f"{last_amt:.2f}"),
         })
 
     alerts.sort(key=lambda a: a.get("increase_pct", 0), reverse=True)

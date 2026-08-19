@@ -363,13 +363,61 @@ def check_request(handler) -> bool:
         return False
 
 
+def verify_optional_credentials(handler) -> bool:
+    """Check credentials without challenging — for auth-exempt endpoints.
+
+    A-M1 (CODE_REVIEW_2026-06-12): /api/health answers unauthenticated
+    callers (the PWA probe, Tailscale monitoring) but hands authenticated
+    ones a rich payload, and it did that by calling verify_credentials()
+    directly. That bypassed the per-IP lock and failure counter from M-S5,
+    so the one endpoint exempt from auth *and* CSRF was also the one that
+    would check a password at full bcrypt speed, as often as asked.
+
+    A request without an Authorization header is not an attempt: it costs
+    nothing and is not counted. A wrong one goes through the same lock,
+    counter and delay as a normal 401.
+    """
+    if not is_auth_required():
+        return True
+    header = handler.headers.get("Authorization", "")
+    if not header:
+        return False
+
+    client_ip = "unknown"
+    addr = getattr(handler, "client_address", None)
+    if addr:
+        client_ip = addr[0] or "unknown"
+
+    with _acquire_ip_lock(client_ip):
+        creds = _decode_basic(header)
+        if creds is not None and verify_credentials(*creds):
+            _record_success(client_ip)
+            return True
+        delay = _record_failure(client_ip)
+        if delay > 0:
+            time.sleep(delay)
+        return False
+
+
 def _send_challenge(handler) -> None:
     """Reply with ``401 Unauthorized`` + ``WWW-Authenticate`` header."""
     body = b'{"error":"authentication required"}'
     handler.send_response(401)
+    # A-M3 (CODE_REVIEW_2026-06-12): the challenge fires before do_POST
+    # drains the request body, so unread bytes would prefix the next
+    # request on a keep-alive socket. Closing the connection is the only
+    # safe teardown (send_header also flips handler.close_connection).
+    handler.send_header("Connection", "close")
     handler.send_header("WWW-Authenticate", f'Basic realm="{_REALM}"')
     handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Access-Control-Allow-Origin", "*")
+    # A-L6 (CODE_REVIEW_2026-06-12): no wildcard here. Every other
+    # response echoes the Origin only when its host is allow-listed
+    # (serve._send_cors_origin); the 401 was the one place handing out
+    # "*", which let any page read the challenge and probe whether this
+    # server exists and wants credentials.
+    send_cors = getattr(handler, "_send_cors_origin", None)
+    if callable(send_cors):
+        send_cors()
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)

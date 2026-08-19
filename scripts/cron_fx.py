@@ -173,6 +173,13 @@ def write_fx_rates(rates: dict[str, float], today_str: str) -> bool:
     if FX_PATH.exists():
         old_content = FX_PATH.read_text(encoding="utf-8")
 
+    # O-M3 (CODE_REVIEW_2026-06-12): this is a full-file rewrite, so a
+    # currency the source did not return has to be carried over from the
+    # previous file explicitly. Skipping the row used to DELETE it — the
+    # dashboard's offline fallback then lost that currency entirely until
+    # the next successful fetch.
+    previous = {row.get("currency", ""): row for row in read_existing()}
+
     # TZS is the base currency; all other rates are expressed as TZS-per-unit
     tzs_rate = rates.get("TZS", 2650.0)
     if tzs_rate is None or tzs_rate == 0:
@@ -182,7 +189,10 @@ def write_fx_rates(rates: dict[str, float], today_str: str) -> bool:
     for cur in TRACKED:
         rate_per_usd = rates.get(cur)
         if rate_per_usd is None:
-            # Skip currencies the API didn't return (keep old value in file)
+            # Keep the last known row, stale `updated` date included — an
+            # honest "this is from yesterday" beats a missing currency.
+            if cur in previous:
+                rows.append(previous[cur])
             continue
 
         if rate_per_usd == 0:
@@ -218,14 +228,16 @@ def update_history(rates: dict[str, float]) -> bool:
     today_key = date.today().isoformat()
     tzs_rate = rates.get("TZS", 2650.0) or 2650.0
 
-    # Compute TZS-per-unit for each currency
+    # Compute TZS-per-unit for every currency the source actually priced.
+    # O-M3 (CODE_REVIEW_2026-06-12): a missing rate used to land as the
+    # literal "0". That cell is truthy for fx_backfill.merge(), which only
+    # fills cells that are empty — so one bad cron run made that day
+    # permanently unfillable. A gap is written as a gap.
     new_values = {}
     for cur in HISTORY_CURRENCIES:
         rate_per_usd = rates.get(cur)
         if rate_per_usd and rate_per_usd > 0:
             new_values[cur] = f"{tzs_rate / rate_per_usd:.2f}"
-        else:
-            new_values[cur] = "0"
 
     # Read existing rows
     rows = []
@@ -238,14 +250,15 @@ def update_history(rates: dict[str, float]) -> bool:
                 fieldnames = reader.fieldnames
             for row in reader:
                 if row["date"] == today_key:
-                    # Update existing entry with fresh rates
-                    for cur in HISTORY_CURRENCIES:
-                        row[cur] = new_values[cur]
+                    # Update existing entry with fresh rates, keeping any
+                    # value we have no replacement for.
+                    row.update(new_values)
                     found = True
                 rows.append(row)
 
     if not found:
         row = {"date": today_key}
+        row.update({cur: "" for cur in HISTORY_CURRENCIES})
         row.update(new_values)
         rows.append(row)
 

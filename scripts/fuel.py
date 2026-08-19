@@ -734,8 +734,15 @@ def add_fuel_entry(
         Dict with fuel_id, tx_import_id, and reimburse_import_id (or None).
 
     Raises:
-        ValueError: on validation errors (unknown vehicle/account, etc.).
+        ValueError: on validation errors (bad date, unknown vehicle/account).
     """
+    # B-M4 (CODE_REVIEW_2026-06-12): the date arrives as a raw string from
+    # the modal and the CLI, and the CLI regex lets "2026-99-99" through.
+    # Once such a row is in fuel_log.csv every later date parse over the
+    # log raises, so the guard sits before the first read.
+    if not tx_engine.is_iso_date(date):
+        raise ValueError(f"Invalid date: '{date}' (expected YYYY-MM-DD)")
+
     vehicles = load_vehicles()
     if vehicle_id not in vehicles:
         raise ValueError(f"Unknown vehicle: '{vehicle_id}'")

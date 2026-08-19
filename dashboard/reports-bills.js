@@ -165,12 +165,12 @@ function renderBillsMonthly(filtered, year, currency) {
           </div>
         `).join('')}
       </div>
-      <div class="income-grid mt-8">
+      <div class="income-grid ig-uniform mt-8">
         ${months.map(m => `
-          <div class="income-cell">
+          <div class="income-cell${isFutureYm(m.ym) ? ' ic-future' : ''}">
             <div class="ic-label">${m.label}</div>
             <div class="ic-value ${m.total === 0 ? 'zero' : ''}" style="color:${m.total > 0 ? 'var(--negative)' : 'var(--muted)'}">${formatCurrency(m.total, currency)}<span class="ic-cur">${currency}</span></div>
-            <div class="ic-count">${buckets.map(bc => m[bc.id] > 0 ? `${bc.label.slice(0,4)} ${formatCurrency(m[bc.id], currency)}` : '').filter(Boolean).join(' · ')}</div>
+            ${isFutureYm(m.ym) ? '' : `<div class="ic-count">${buckets.map(bc => m[bc.id] > 0 ? `${bc.label.slice(0,4)} ${formatCurrency(m[bc.id], currency)}` : '').filter(Boolean).join(' · ')}</div>`}
           </div>
         `).join('')}
       </div>

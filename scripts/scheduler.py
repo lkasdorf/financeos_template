@@ -21,11 +21,15 @@ Override:
     `config/scheduler.json` accepts `{enabled: "auto"|true|false, jobs: {<name>: {hour, minute, enabled}}}`.
     `enabled: true` forces it on regardless of auto-detect.
 
-Job set (mirrors host crontab on the Pi as of 2026-05-10):
-    cron_fx        daily 06:00 — FX snapshot
+Job set (mirrors the production crontab; re-checked 2026-08-19 — O-L3):
+    cron_sched     daily 06:00 — BOOKS due scheduled transactions, unattended
+    cron_fx        daily 07:00 — FX snapshot
     cron_metals    daily 08:00 — gold/silver spot price
-    cron_sched     daily 09:00 — notify on due scheduled TX
-    cron_integrity daily 02:00 — schema/balance integrity check
+    cron_integrity Mondays 06:30 — schema/balance integrity check
+
+Times are the host's own wall clock, not UTC: "08:00" in the config means
+08:00 where the machine stands. Set `timezone` in config/scheduler.json to
+pin a specific zone.
 
 `cron_commit` is NOT included on purpose — `tx_engine.git_commit()`
 already spawns it as a detached background subprocess after every data
@@ -48,10 +52,13 @@ CONFIG_PATH = REPO_ROOT / "config" / "scheduler.json"
 # Default schedule — pinned to the same wall-clock times as the historical
 # host crontab so behavior matches a Pi switching to docker doesn't shift.
 DEFAULT_JOBS = {
-    "cron_fx":        {"hour": 6, "minute": 0, "enabled": True},
+    "cron_sched":     {"hour": 6, "minute": 0, "enabled": True},
+    "cron_fx":        {"hour": 7, "minute": 0, "enabled": True},
     "cron_metals":    {"hour": 8, "minute": 0, "enabled": True},
-    "cron_sched":     {"hour": 9, "minute": 0, "enabled": True},
-    "cron_integrity": {"hour": 2, "minute": 0, "enabled": True},
+    # Weekly on purpose: the integrity sweep walks the whole ledger, and
+    # its findings are a Monday-morning review item, not a nightly alarm.
+    "cron_integrity": {"hour": 6, "minute": 30, "day_of_week": "mon",
+                       "enabled": True},
 }
 
 
@@ -166,22 +173,32 @@ def start_scheduler() -> object | None:
             )
             return None
 
-        sched = BackgroundScheduler(daemon=True, timezone="UTC")
+        # O-L3: the host's own clock by default. A hard-coded UTC shifted
+        # every job by the local offset — three hours in Dar es Salaam, so
+        # the "06:00" booking run fired at 09:00 and the day's numbers were
+        # wrong all morning.
+        timezone = cfg.get("timezone") or None
+        sched = BackgroundScheduler(daemon=True, timezone=timezone)
         added = []
         for name, spec in cfg["jobs"].items():
             if not spec.get("enabled", True):
                 continue
             hour = int(spec.get("hour", 0))
             minute = int(spec.get("minute", 0))
+            trigger_args = {"hour": hour, "minute": minute}
+            day_of_week = spec.get("day_of_week")
+            if day_of_week:
+                trigger_args["day_of_week"] = day_of_week
             sched.add_job(
                 _run_cron,
-                trigger=CronTrigger(hour=hour, minute=minute),
+                trigger=CronTrigger(**trigger_args),
                 args=[name],
                 id=name,
                 replace_existing=True,
                 misfire_grace_time=3600,
             )
-            added.append(f"{name}@{hour:02d}:{minute:02d}")
+            when = f"{name}@{hour:02d}:{minute:02d}"
+            added.append(f"{when} ({day_of_week})" if day_of_week else when)
 
         if not added:
             print("[scheduler] no jobs enabled — nothing to start.", file=sys.stderr)
@@ -190,7 +207,8 @@ def start_scheduler() -> object | None:
         sched.start()
         _scheduler_singleton = sched
         print(
-            f"[scheduler] built-in scheduler running (UTC) — jobs: {', '.join(added)}",
+            f"[scheduler] built-in scheduler running ({timezone or 'host local time'})"
+            f" — jobs: {', '.join(added)}",
             flush=True,
         )
         return sched

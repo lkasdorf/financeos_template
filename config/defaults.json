@@ -5,7 +5,8 @@
     "dashboard_path": "/dashboard/"
   },
   "backup": {
-    "max_per_file": 30
+    "max_per_file": 30,
+    "daily_floor_days": 7
   },
   "currency": {
     "primary": "USD",
@@ -14,6 +15,16 @@
     "metals_spot_upstream_url": "https://data-asg.goldprice.org/dbXRates/EUR"
   },
   "auto_tag": {},
+  "cash_count": {
+    "accounts": [
+      "cash",
+      "home",
+      "safe",
+      "eur"
+    ],
+    "expense_category": "Other Expenses:Cash Discrepancy",
+    "income_category": "Income:Cash Discrepancy"
+  },
   "pass_through": {
     "reimbursement_categories": {}
   },
@@ -23,5 +34,12 @@
   },
   "dev": {
     "peer_health_url": ""
+  },
+  "receipt_scan": {
+    "label_categories": {
+      "fuel": "Automobile:Petrol",
+      "luku": "Bills:Electricity",
+      "water": "Bills:Water"
+    }
   }
 }

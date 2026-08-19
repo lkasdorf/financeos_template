@@ -122,6 +122,11 @@ window.DEFAULTS = {
     metals_spot_api_url: '/api/metals/spot',
   },
   auto_tag: { by_account: {}, by_payee: {} },
+  cash_count: {
+    accounts: ['cash', 'home', 'safe', 'eur'],
+    expense_category: 'Other Expenses:Cash Discrepancy',
+    income_category: 'Income:Cash Discrepancy',
+  },
   pass_through: { reimbursement_categories: {} },
 };
 // Smart default currency for first-load — overwritten by config/smart_defaults.json
@@ -430,7 +435,7 @@ async function loadFxRates() {
         for (const [cur, ratePerUsd] of Object.entries(usdRates)) {
           fxRates[cur] = tzsPerUsd / ratePerUsd;
         }
-        fxDate = json.time_last_update_utc ? json.time_last_update_utc.slice(0, 16) : new Date().toISOString().slice(0, 10);
+        fxDate = json.time_last_update_utc ? json.time_last_update_utc.slice(0, 16) : localTodayIso();
         fxSource = 'live';
         return;
       }
@@ -471,7 +476,7 @@ async function loadMetalPrices() {
         const item = json.items[0];
         metalSpot.gold = item.xauPrice || 0;
         metalSpot.silver = item.xagPrice || 0;
-        metalSpotDate = new Date().toISOString().slice(0, 10);
+        metalSpotDate = localTodayIso();
         metalSpotSource = 'live';
         return;
       }
@@ -948,6 +953,58 @@ function sumByMonth(tx, yearMonth, currency) {
   return { income, expense, net: income - expense, count };
 }
 
+// Calendar day of a Date in the browser's own timezone, as YYYY-MM-DD.
+// toISOString() converts to UTC first, so east of Greenwich every hour
+// between local midnight and the UTC offset yields YESTERDAY: in Dar es
+// Salaam (GMT+3) a transaction booked at 01:00 got dated to the previous
+// day, and every "today"/"next 7 days" window shifted with it. The PWA
+// has done it this way since v1.6.0; the dashboard now agrees.
+function localIsoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Today in the browser's timezone. Use instead of
+// localTodayIso().
+function localTodayIso() {
+  return localIsoDate(new Date());
+}
+
+// `days` from now (negative = in the past), in the browser's timezone.
+// Built by date arithmetic rather than millisecond offsets so DST shifts
+// cannot land the result on the wrong calendar day.
+function localIsoDaysFromNow(days) {
+  const now = new Date();
+  return localIsoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() + days));
+}
+
+// Current calendar week (Monday-start, EU convention) as an inclusive ISO
+// date range. `to` is today, not Sunday — callers report actuals-so-far.
+function currentWeekRange() {
+  const now = new Date();
+  const dow = (now.getDay() + 6) % 7; // 0 = Monday … 6 = Sunday
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow);
+  return { from: localIsoDate(monday), to: localIsoDate(now) };
+}
+
+// Same semantics as sumByMonth, but over an inclusive [from, to] ISO date
+// range: in TZS mode only transactions in `currency` count; in FX mode every
+// transaction is converted into the display currency.
+function sumByDateRange(tx, from, to, currency) {
+  let income = 0, expense = 0, count = 0;
+  const convertMode = displayCurrency !== 'TZS';
+  for (const t of tx) {
+    if (!t.date) continue;
+    const d = t.date.slice(0, 10);
+    if (d < from || d > to) continue;
+    if (!convertMode && t.currency !== currency) continue;
+    const amt = convertMode ? toDisplay(t.amount, t.currency) : t.amount;
+    count++;
+    if (t.type === 'expense') expense += amt;
+    else if (t.type === 'income') income += amt;
+  }
+  return { income, expense, net: income - expense, count };
+}
+
 function topCategoriesForMonth(tx, yearMonth, currency, n = 8) {
   const totals = {};
   const convertMode = displayCurrency !== 'TZS';
@@ -991,7 +1048,7 @@ function accountDailyBalances(alias, days) {
   const today = new Date();
   const startDate = new Date(today);
   startDate.setDate(startDate.getDate() - days + 1);
-  const startStr = startDate.toISOString().slice(0, 10);
+  const startStr = localIsoDate(startDate);
 
   // Start from initial balance, apply all TX up to startDate
   let bal = acc.initial_balance;
@@ -1009,7 +1066,7 @@ function accountDailyBalances(alias, days) {
   for (let i = 0; i < days; i++) {
     const d = new Date(startDate);
     d.setDate(d.getDate() + i);
-    const ds = d.toISOString().slice(0, 10);
+    const ds = localIsoDate(d);
     for (const t of sorted) {
       if (t.date !== ds) continue;
       if (t.type === 'expense' && t.account === alias) bal -= t.amount;
@@ -1052,6 +1109,32 @@ function formatCurrency(value, currency) {
     maximumFractionDigits: decimals,
   });
   return value < 0 ? `-${formatted}` : formatted;
+}
+
+// Label the rows a side-log FK protects, for the 409 the delete and
+// split-group endpoints share. The client cannot look these rows up
+// itself: the edit modal has already dropped them from its line list,
+// and a bulk delete may span rows the current page never loaded — so
+// the server ships category, amount and currency per blocked row.
+function describeBlockedLines(blocked) {
+  if (!Array.isArray(blocked)) return '';
+  return blocked
+    .map(b => {
+      const label = b.category || b.import_id || '';
+      const amount = parseFloat(b.amount);
+      return isNaN(amount) ? label
+        : `${label} (${formatCurrency(amount, b.currency || 'TZS')})`;
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
+// True when the given "YYYY-MM" lies after the current month. Zero-padded
+// string comparison is safe here and avoids Date-parsing pitfalls.
+function isFutureYm(yearMonth) {
+  const now = new Date();
+  const nowYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  return yearMonth > nowYm;
 }
 
 function monthLabel(yearMonth) {
@@ -1295,6 +1378,19 @@ function applyTxFilterSort(txList, f, opts) {
   return filtered;
 }
 
+// Hash segments are user-editable: a stray percent sign ("#subscriptions/100%")
+// makes decodeURIComponent throw URIError, and the throw lands mid-navigateTo —
+// after every .page has had its `active` class stripped and before the target
+// renders, leaving a blank shell. An id that does not decode is passed through
+// verbatim; the lookup then simply finds nothing, which is the honest outcome.
+function decodeHashSegment(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function navigateTo(pageId) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.sidebar-nav > li > a[data-page]').forEach(a => a.classList.remove('active'));
@@ -1345,6 +1441,20 @@ function navigateTo(pageId) {
         activeReportId = exists ? reportId : null;
         destroyReportCharts();
         renderReportsPage();
+      }
+    }
+    if (pageId.startsWith('subscriptions/')) {
+      // Sub-route: per-subscription drilldown (#subscriptions/<sub-id>).
+      // Same shell-activation pattern as the reports/ sub-route above.
+      if (!isFeatureEnabled('subscriptions')) { location.hash = '#dashboard'; return; }
+      const subPage = document.getElementById('page-subscriptions');
+      if (subPage) subPage.classList.add('active');
+      const subLink = document.querySelector('.sidebar-nav > li > a[data-page="subscriptions"]');
+      if (subLink) subLink.classList.add('active');
+      const moreSubLink = document.querySelector('.nav-more-menu a[data-page="subscriptions"]');
+      if (moreSubLink && moreBtn) { moreBtn.classList.add('active'); moreSubLink.classList.add('active'); }
+      if (typeof renderSubscriptionDetail === 'function') {
+        renderSubscriptionDetail(decodeHashSegment(pageId.slice('subscriptions/'.length)));
       }
     }
     if (pageId === 'transactions' && state.tx.length) {
@@ -1410,7 +1520,15 @@ function navigateTo(pageId) {
       if (moreCrLink && moreBtn) { moreBtn.classList.add('active'); moreCrLink.classList.add('active'); }
       dispatchCustomReportsRoute(pageId);
     }
-    if (pageId === 'settings') { settingsTab = 'categories'; renderSettingsPage(); }
+    // F-M6 (CODE_REVIEW_2026-06-12): navigating TO settings starts on
+    // Categories, but refreshData() re-navigates to the active page after
+    // every TX mutation — and that reset threw the user off whatever tab
+    // they were working in. `keepSettingsTab` is set by that re-render
+    // only; a real click on Settings still lands on Categories.
+    if (pageId === 'settings') {
+      if (!navigateTo._keepSettingsTab) settingsTab = 'categories';
+      renderSettingsPage();
+    }
     if (pageId === 'faq' || pageId.startsWith('faq/')) {
       const faqPage = document.getElementById('page-faq');
       if (faqPage) faqPage.classList.add('active');
@@ -2252,13 +2370,16 @@ async function boot() {
       ? t('common.stats.data_range', { from: range.min, to: range.max }, `Data from ${range.min} to ${range.max}`)
       : t('common.stats.no_data', {}, 'no data');
     document.getElementById('tx-count').textContent = t('common.stats.tx_count', { n: tx.length }, `${tx.length} transactions`);
-    document.getElementById('footer-updated').textContent = t('common.stats.updated', { ts: new Date().toLocaleString(getLocaleTag()) }, `Updated: ${new Date().toLocaleString(getLocaleTag())}`);
+    const stampEl = document.getElementById('footer-updated');
+    stampEl.textContent = t('common.stats.updated', { ts: new Date().toLocaleString(getLocaleTag()) }, `Updated: ${new Date().toLocaleString(getLocaleTag())}`);
+    stampEl.classList.remove('c-neg');
 
     render();
     populateAccountsSidebar();
     computeAlerts();
     loadScheduledPreview();
     loadMonthForecast();
+    loadSubscriptionRenewals();
     loadHealthStatus();
 
     // Hash-based routing on start
@@ -2295,6 +2416,60 @@ function fetchScheduledList() {
     .catch(() => null)
     .finally(() => { _schedListInFlight = null; });
   return _schedListInFlight;
+}
+
+// Same story for the subscription master: the renewals widget, the alerts
+// page and the Subscriptions page each posted /api/subscriptions/list on
+// their own — three identical round-trips per boot. Single-flight only, no
+// result cache: the first caller after resolution refetches, so a save is
+// visible on the next render without any invalidation bookkeeping.
+// One place that decides what "the server said no" looks like for a
+// settings mutation. F-M5 (CODE_REVIEW_2026-06-12): the toggle handlers
+// awaited fetch() and re-rendered regardless, and the delete handlers
+// wrapped the call in a catch that only wrote to the console — so a 400
+// (validation), a 500 (write failed) or a 503 (this host is the fenced
+// standby, which is exactly when a user is most likely to be clicking)
+// all looked like success. The row snapped back on the next render with
+// no explanation.
+//
+// Returns true when the mutation landed. On failure it tells the user and
+// returns false, so callers read as: `if (!await apiMutate(...)) return;`
+async function apiMutate(path, payload) {
+  let res, data = {};
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    data = await res.json().catch(() => ({}));
+  } catch (err) {
+    await uiAlert(t('common.api.unreachable', { msg: String(err && err.message || err) },
+      `Could not reach the server: ${err && err.message || err}`));
+    return false;
+  }
+  if (!res.ok || data.error || (Array.isArray(data.errors) && data.errors.length)) {
+    const detail = data.error
+      || (Array.isArray(data.errors) ? data.errors.join('; ') : '')
+      || `HTTP ${res.status}`;
+    await uiAlert(t('common.api.failed', { msg: detail }, `Request failed: ${detail}`));
+    return false;
+  }
+  return true;
+}
+
+let _subsListInFlight = null;
+function fetchSubscriptionsList() {
+  if (_subsListInFlight) return _subsListInFlight;
+  _subsListInFlight = fetch('/api/subscriptions/list', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+    .then(r => (r.ok ? r.json() : null))
+    .catch(() => null)
+    .finally(() => { _subsListInFlight = null; });
+  return _subsListInFlight;
 }
 
 async function refreshData() {
@@ -2334,7 +2509,10 @@ async function refreshData() {
       ? t('common.stats.data_range', { from: range.min, to: range.max }, `Data from ${range.min} to ${range.max}`)
       : t('common.stats.no_data', {}, 'no data');
     document.getElementById('tx-count').textContent = t('common.stats.tx_count', { n: tx.length }, `${tx.length} transactions`);
-    document.getElementById('footer-updated').textContent = t('common.stats.updated', { ts: new Date().toLocaleString(getLocaleTag()) }, `Updated: ${new Date().toLocaleString(getLocaleTag())}`);
+    const stampEl = document.getElementById('footer-updated');
+    stampEl.textContent = t('common.stats.updated', { ts: new Date().toLocaleString(getLocaleTag()) }, `Updated: ${new Date().toLocaleString(getLocaleTag())}`);
+    // F-M4: a recovered refresh clears the stale-data warning again.
+    stampEl.classList.remove('c-neg');
 
     updateFxInfo();
     render();
@@ -2342,6 +2520,8 @@ async function refreshData() {
     computeAlerts();
     loadScheduledPreview();
     loadMonthForecast();
+    if (typeof window.invalidateSubscriptionsCache === 'function') window.invalidateSubscriptionsCache();
+    loadSubscriptionRenewals();
     loadHealthStatus();
 
     // Re-render the currently active page
@@ -2356,11 +2536,29 @@ async function refreshData() {
       if (pageId === 'account') {
         if (accountPage.alias) navigateTo('account:' + accountPage.alias);
       } else if (pageId !== 'dashboard') {
-        navigateTo(pageId);
+        // F-M6: this is a re-render of the page the user is already on,
+        // not a navigation — the Settings tab has to survive it.
+        navigateTo._keepSettingsTab = true;
+        try {
+          navigateTo(pageId);
+        } finally {
+          navigateTo._keepSettingsTab = false;
+        }
       }
     }
   } catch (err) {
+    // F-M4 (CODE_REVIEW_2026-06-12): a swallowed failure leaves the user
+    // reading stale numbers that look current — the worst outcome for a
+    // page whose whole job is showing what is true right now. The footer
+    // timestamp is where "how fresh is this" already lives, so the
+    // warning goes there.
     console.error('Refresh failed:', err);
+    const stamp = document.getElementById('footer-updated');
+    if (stamp) {
+      stamp.textContent = t('common.stats.refresh_failed', {},
+        'Refresh failed — showing the last data that loaded.');
+      stamp.classList.add('c-neg');
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
   }

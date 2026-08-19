@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import tx_engine
+import subscriptions
 from backup import backup_file, BACKUP_TARGETS
 
 # ── Frequency Parsing ───────────────────────────────────────────────────────
@@ -385,6 +386,7 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     all_tx_lines: list[dict] = []
     summaries: list[str] = []
     sub_log_written: list[str] = []
+    renewal_rolled = False
 
     # H-19 (Sprint 10): hold tx_write_lock across the full cascade
     # (append_transactions → save_scheduled → subscription_log append)
@@ -480,6 +482,14 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
                         "note": "",
                     })
                     sub_log_written.append(log_id)
+                    try:
+                        if subscriptions.roll_renewal_for_charge(
+                                sid, line.get("date", "")):
+                            renewal_rolled = True
+                    except Exception as exc:
+                        # Same trade-off as the log mirror above: never
+                        # roll back the booked TX over a roll failure.
+                        warnings.append(f"renewal roll failed for {sid}: {exc}")
                 except Exception as exc:
                     # Same trade-off as serve.handle_tx_confirm: log-link failures
                     # do NOT roll back the TX. User can re-link via Edit-TX modal.
@@ -501,6 +511,8 @@ def run_due(today: date | None = None, *, selected_ids: list[str] | None = None,
     commit_files = ["data/transactions.csv", "data/scheduled.csv"]
     if sub_log_written:
         commit_files.append("data/subscription_log.csv")
+    if renewal_rolled:
+        commit_files.append("data/subscriptions.csv")
     commit_ok = tx_engine.git_commit(commit_msg, files=commit_files)
 
     return {
@@ -530,6 +542,11 @@ def main() -> int:
     print(f"[{ts}] cron_sched: checking for due scheduled transactions...")
 
     if dry_run:
+        rolled = subscriptions.roll_overdue_renewals(today, dry_run=True)
+        if rolled:
+            print(f"  [DRY RUN] Would roll {len(rolled)} overdue subscription renewal(s):")
+            for c in rolled:
+                print(f"    {c['subscription_id']}: {c['old']} → {c['new']}")
         preview = build_preview(today)
         for w in preview["warnings"]:
             print(f"  [warn] {w}")
@@ -558,6 +575,25 @@ def main() -> int:
         if host_role.demote_if_peer_primary(log_prefix="cron_sched"):
             print("  self-pacified to standby — not booking (O-H3)")
             return 0
+
+    # Subscriptions renewal-roll fallback: advance next_renewal dates
+    # that are past the grace window. Runs before run_due so the
+    # booked-count early-returns below cannot skip it. Under the (re-
+    # entrant) tx_write_lock because cron and the dashboard process can
+    # both rewrite subscriptions.csv.
+    try:
+        with tx_engine.tx_write_lock():
+            rolled = subscriptions.roll_overdue_renewals(today)
+        if rolled:
+            names = ", ".join(c["subscription_id"] for c in rolled[:5])
+            print(f"  Rolled {len(rolled)} overdue subscription renewal(s): {names}")
+            os.environ["GIT_COMMIT_SYNC"] = "1"
+            if not tx_engine.git_commit(
+                    f"Subscriptions: renewal roll ({len(rolled)})",
+                    files=["data/subscriptions.csv"]):
+                print("  [warn] renewal-roll commit failed", file=sys.stderr)
+    except Exception as exc:
+        print(f"  [warn] renewal roll failed: {exc}", file=sys.stderr)
 
     summary = run_due(today, source="cron")
     for w in summary["warnings"]:

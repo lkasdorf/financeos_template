@@ -254,7 +254,11 @@ async function bookReconSuggestions() {
       const res = await fetch('/api/tx/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lines, raw_input: '(CRDB import)' }),
+        // resolve_subscription_links: these lines are assembled here,
+        // not by the Add-TX form, so no subscription picker was ever
+        // shown. The backend links recurring charges to their
+        // subscription instead of booking them orphaned.
+        body: JSON.stringify({ lines, raw_input: '(CRDB import)', resolve_subscription_links: true }),
       });
       const data = await res.json();
       if (data.error) { statusEl.textContent = t('pages.recon.err.generic_prefix', { err: data.error }, `Error: ${data.error}`); return; }

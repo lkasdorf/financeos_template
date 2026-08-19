@@ -2,7 +2,7 @@
 
 async function computeAlerts() {
   const alerts = [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localTodayIso();
 
   // 0. cron_integrity report (M-PD5, Sprint 20) — surface the issues
   //    file the nightly check writes into the dashboard's Alerts page.
@@ -82,6 +82,43 @@ async function computeAlerts() {
     }
   } catch (e) { /* API not available */ }
 
+  // 1b. Subscription renewals. Upcoming pings are limited to long
+  //     cycles (quarterly and up) — a monthly nag for every sub would
+  //     drown the page, and the dashboard widget already covers the
+  //     short-cycle view. Overdue applies to EVERY cycle: it means a
+  //     charge was expected and no TX got linked (or the service
+  //     actually lapsed) — worth a look either way.
+  try {
+    if (typeof isFeatureEnabled !== 'function' || isFeatureEnabled('subscriptions')) {
+      const subsData = await fetchSubscriptionsList();
+      if (subsData) {
+        const subs = subsData.subscriptions || [];
+        const in7 = localIsoDaysFromNow(7);
+        subs.forEach(s => {
+          if ((s.active || '').toLowerCase() !== 'true' || !s.next_renewal) return;
+          const months = parseInt(s.billing_months, 10) || 1;
+          if (s.next_renewal < today) {
+            alerts.push({
+              type: 'subscription',
+              severity: 'warning',
+              title: 'Subscription renewal overdue: ' + (s.name || s.subscription_id),
+              detail: `Was due ${s.next_renewal} — ${formatCurrency(s.amount, s.currency)} ${s.currency}. Link the charge or check the service.`,
+              link: '#subscriptions/' + encodeURIComponent(s.subscription_id),
+            });
+          } else if (months >= 3 && s.next_renewal <= in7) {
+            alerts.push({
+              type: 'subscription',
+              severity: 'info',
+              title: 'Subscription renews soon: ' + (s.name || s.subscription_id),
+              detail: `${s.next_renewal} — ${formatCurrency(s.amount, s.currency)} ${s.currency} (${months}-month cycle)`,
+              link: '#subscriptions/' + encodeURIComponent(s.subscription_id),
+            });
+          }
+        });
+      }
+    }
+  } catch (e) { /* API not available */ }
+
   // 2. Negative Balances
   if (state.accounts && state.balances) {
     state.accounts.forEach(acc => {
@@ -104,7 +141,7 @@ async function computeAlerts() {
   if (state.thirdParty) {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const cutoff = thirtyDaysAgo.toISOString().slice(0, 10);
+    const cutoff = localIsoDate(thirtyDaysAgo);
     state.thirdParty.forEach(d => {
       const settled = d.settled === true || d.settled === 'true' || d.settled === 'TRUE';
       if (!settled && d.date_created && d.date_created <= cutoff) {
@@ -284,8 +321,13 @@ async function computeAlerts() {
               prevDate: a.prev_date,
               lastDate: a.last_date,
             }, `${formatCurrency(a.prev_amount, ccy)} ${ccy} on ${a.prev_date} → ${formatCurrency(a.last_amount, ccy)} ${ccy} on ${a.last_date}. Open Subscriptions to review.`),
-            navigate: '#subscriptions',
+            link: '#subscriptions',
             subscription_id: a.subscription_id,
+            // Must be carried over explicitly — this branch builds a
+            // display object instead of pushing the server payload, so
+            // anything not listed here is dropped (and the ack button
+            // silently never renders).
+            ack_key: a.ack_key,
           });
         }
       }
@@ -345,6 +387,30 @@ function updateAlertsBadge() {
   }
 }
 
+async function ackAlert(ackKey, alertType, btn) {
+  // Persist first, hide second. Hiding optimistically would look like a
+  // success and the alert would silently return on the next reload —
+  // exactly the behaviour the ack is meant to end.
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/alerts/ack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ack_key: ackKey, alert_type: alertType }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    btn.disabled = false;
+    alert(t('pages.alerts.ack_failed', {}, 'Could not save the acknowledgement — the alert stays.'));
+    return;
+  }
+  if (Array.isArray(state.alerts)) {
+    state.alerts = state.alerts.filter(a => a.ack_key !== ackKey);
+  }
+  renderAlertsPage();
+  if (typeof updateAlertsBadge === 'function') updateAlertsBadge();
+}
+
 function renderAlertsPage() {
   const contentEl = document.getElementById('alerts-content');
   const alerts = state.alerts || [];
@@ -370,8 +436,15 @@ function renderAlertsPage() {
     const borderColor = items[0].severity === 'warning' ? 'var(--warn)' : 'var(--accent)';
     let h = `<div class="section"><h3>${label}</h3>`;
     items.forEach(a => {
-      const dismissBtn = a.dismissable
-        ? `<button type="button" class="alert-dismiss" data-dismiss-key="${escapeHtml(a.dismissable)}" aria-label="${escapeHtml(t('pages.alerts.dismiss', {}, 'Dismiss'))}" style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0 6px;line-height:1;align-self:flex-start;margin-left:8px;">×</button>`
+      // Two kinds of closable alert share one button: the per-install
+      // banners (localStorage flag) and the acknowledgeable observations
+      // (server-side fingerprint store, survives device + reload).
+      const ackLabel = escapeHtml(t('pages.alerts.ack', {}, 'Acknowledge'));
+      const btnAttrs = a.ack_key
+        ? `data-ack-key="${escapeHtml(a.ack_key)}" data-alert-type="${escapeHtml(a.type || '')}" aria-label="${ackLabel}" title="${ackLabel}"`
+        : `data-dismiss-key="${escapeHtml(a.dismissable || '')}" aria-label="${escapeHtml(t('pages.alerts.dismiss', {}, 'Dismiss'))}"`;
+      const dismissBtn = (a.ack_key || a.dismissable)
+        ? `<button type="button" class="alert-dismiss" ${btnAttrs} style="background:transparent;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0 6px;line-height:1;align-self:flex-start;margin-left:8px;">×</button>`
         : '';
       h += `
         <div class="alert-card" data-link="${escapeHtml(a.link || '')}" role="link" tabindex="0" aria-label="${escapeHtml(a.title)}" style="display:flex;gap:0;margin-bottom:8px;border-radius:var(--radius);overflow:hidden;background:var(--surface);cursor:pointer;border:1px solid var(--border);transition:border-color 0.15s;">
@@ -405,6 +478,12 @@ function renderAlertsPage() {
       const dismiss = e.target.closest('.alert-dismiss');
       if (dismiss) {
         e.stopPropagation();
+        // Acknowledgeable alerts persist server-side — the card only
+        // goes away once the POST confirmed.
+        if (dismiss.dataset.ackKey) {
+          ackAlert(dismiss.dataset.ackKey, dismiss.dataset.alertType || '', dismiss);
+          return;
+        }
         const key = dismiss.dataset.dismissKey;
         if (key) localStorage.setItem(`financeos.${key}`, '1');
         // Re-render: drop the dismissed alert from state and refresh.

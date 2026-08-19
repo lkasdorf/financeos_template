@@ -595,7 +595,7 @@ function renderFxHistoryReport() {
     if (rangeVal === '3m' || rangeVal === '6m' || rangeVal === '12m') {
       const nDays = rangeVal === '3m' ? 90 : rangeVal === '6m' ? 180 : 365;
       const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - nDays);
-      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      const cutoffStr = localIsoDate(cutoff);
       data = data.filter(r => r.date >= cutoffStr);
     } else if (rangeVal !== 'all') {
       data = data.filter(r => r.date.startsWith(rangeVal));

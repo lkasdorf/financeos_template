@@ -58,6 +58,7 @@ def _money(value) -> Decimal:
 
 # Local sibling modules — tx_engine carries the shared TX writer + locking.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import alert_acks  # noqa: E402
 import linked_log  # noqa: E402
 import tx_engine  # noqa: E402
 from backup import BACKUP_TARGETS, backup_file  # noqa: E402
@@ -570,8 +571,14 @@ def add_luku_entry(
         Dict with luku_id, tx_import_id, reimburse_import_id (or None).
 
     Raises:
-        ValueError: on validation errors (unknown property/account, etc.).
+        ValueError: on validation errors (bad date, unknown property/account).
     """
+    # B-M4 (CODE_REVIEW_2026-06-12): an unparseable date in luku_log.csv
+    # breaks compute_property_alerts permanently — the entry is booked, so
+    # the crash repeats on every run until someone edits the CSV by hand.
+    if not tx_engine.is_iso_date(date):
+        raise ValueError(f"Invalid date: '{date}' (expected YYYY-MM-DD)")
+
     properties = load_properties()
     if property_id not in properties:
         raise ValueError(f"Unknown property: '{property_id}'")
@@ -673,9 +680,12 @@ def add_water_entry(
     """Create a water bill entry and the linked transaction(s).
 
     Mirrors add_luku_entry — see docstring there for the order of
-    operations. Returns:
+    operations, including the B-M4 date guard. Returns:
         Dict with water_id, tx_import_id, reimburse_import_id (or None).
     """
+    if not tx_engine.is_iso_date(date):
+        raise ValueError(f"Invalid date: '{date}' (expected YYYY-MM-DD)")
+
     properties = load_properties()
     if property_id not in properties:
         raise ValueError(f"Unknown property: '{property_id}'")
@@ -1100,9 +1110,19 @@ def ytd_cumulative(
     while cur <= today_d:
         cs += cur_strom_day.get(cur.isoformat(), _ZERO)
         cw += cur_water_day.get(cur.isoformat(), _ZERO)
-        prev_iso = _d(cur_year - 1, cur.month, cur.day).isoformat()
-        ps += prev_strom_day.get(prev_iso, _ZERO)
-        pw += prev_water_day.get(prev_iso, _ZERO)
+        # B-M8 (CODE_REVIEW_2026-06-12): 29 February has no counterpart in
+        # a non-leap previous year — constructing that date raised and took
+        # the whole Properties page down for the day (next hit: 2028). The
+        # leap day contributes nothing to the previous-year line instead of
+        # being clamped onto 28 February: clamping would count that day's
+        # spend twice and lift the comparison line for the rest of the year.
+        try:
+            prev_iso = _d(cur_year - 1, cur.month, cur.day).isoformat()
+        except ValueError:
+            prev_iso = ""
+        if prev_iso:
+            ps += prev_strom_day.get(prev_iso, _ZERO)
+            pw += prev_water_day.get(prev_iso, _ZERO)
         days.append(cur.isoformat())
         # Convert to float only at the JSON-output boundary.
         cur_strom_cum.append(float(cs))
@@ -1468,12 +1488,16 @@ def compute_property_alerts(today: str | None = None) -> list[dict]:
                 sorted_p[mid] if len(sorted_p) % 2 == 1
                 else (sorted_p[mid - 1] + sorted_p[mid]) / 2
             )
-            latest_priced = next(
-                (float(r["price_per_unit"]) for r in sorted(
+            # Keep the row, not just the number: its date is half of the
+            # ack fingerprint, so a later token at a new tariff alerts
+            # again instead of inheriting the earlier acknowledgement.
+            latest_row = next(
+                (r for r in sorted(
                     luku, key=lambda x: x["date"], reverse=True,
                 ) if r.get("price_per_unit")),
                 None,
             )
+            latest_priced = float(latest_row["price_per_unit"]) if latest_row else None
             if latest_priced and median > 0:
                 deviation = abs(latest_priced - median) / median
                 if deviation > 0.05:
@@ -1488,6 +1512,9 @@ def compute_property_alerts(today: str | None = None) -> list[dict]:
                             f"Δ {deviation * 100:.1f}%)"
                         ),
                         "link": "#properties",
+                        "ack_key": alert_acks.ack_key(
+                            "luku_price", pid, latest_row.get("date", ""),
+                            f"{latest_priced:.2f}"),
                         "i18n_key": "alerts.luku.price_anomaly",
                         "i18n_params": {
                             "property": pname,

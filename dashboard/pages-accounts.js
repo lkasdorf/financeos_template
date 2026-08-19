@@ -95,7 +95,7 @@ function renderAccountsOverview() {
       const bal = state.balances[a.alias] || 0;
       const converted = a.currency === cur ? bal : convertTo(bal, a.currency, cur);
       const balClass = bal < 0 ? 'negative' : '';
-      const ownerBadge = a.owner !== 'self' ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">(${a.owner})</span>` : '';
+      const ownerBadge = a.owner !== 'self' ? `<span style="font-size:10px;color:var(--muted);margin-left:6px;">(${escapeHtml(a.owner)})</span>` : '';
       const extraCells = extraCols.map(c => {
         const v = a.currency === c ? bal : convertTo(bal, a.currency, c);
         const cls = v < 0 ? 'negative' : '';
@@ -103,9 +103,9 @@ function renderAccountsOverview() {
       }).join('');
       return `<tr class="ptr" data-action="gotoAccountDetail" data-arg1="${escapeHtml(a.alias)}">
         <td><strong>${escapeHtml(a.name)}</strong>${ownerBadge}<br><span class="label-sm">${escapeHtml(a.alias)}</span></td>
-        <td class="label-sm">${a.currency}</td>
-        <td class="label-sm">${a.type}</td>
-        <td class="amt ${balClass} fw-500">${formatCurrency(bal, a.currency)}<span class="acc-currency">${a.currency}</span></td>
+        <td class="label-sm">${escapeHtml(a.currency)}</td>
+        <td class="label-sm">${escapeHtml(a.type)}</td>
+        <td class="amt ${balClass} fw-500">${formatCurrency(bal, a.currency)}<span class="acc-currency">${escapeHtml(a.currency)}</span></td>
         ${a.currency !== cur ? `<td class="amt label-sm">${formatCurrency(converted, cur)} ${cur}</td>` : `<td></td>`}
         ${extraCells}
       </tr>`;
@@ -210,17 +210,17 @@ function renderAccountPage() {
     <div style="display:flex;align-items:center;margin-bottom:12px;">
       <button class="report-back m-0" data-action="gotoAccountsOverview">${t('accp.back', {}, '← Accounts')}</button>
       <div style="margin-left:auto;display:flex;gap:8px;">
-        <button data-action="exportAccountTx" data-arg1="${alias}" style="padding:6px 14px;font-size:12px;">${t('accp.export_xlsx', {}, 'Export XLSX')}</button>
-        <button class="btn-save" data-action="navigateToAddTxWithAccount" data-arg1="${alias}" style="padding:8px 14px;font-size:12px;">${t('accp.add_tx', {}, '+ Add TX')}</button>
+        <button data-action="exportAccountTx" data-arg1="${escapeHtml(alias)}" style="padding:6px 14px;font-size:12px;">${t('accp.export_xlsx', {}, 'Export XLSX')}</button>
+        <button class="btn-save" data-action="navigateToAddTxWithAccount" data-arg1="${escapeHtml(alias)}" style="padding:8px 14px;font-size:12px;">${t('accp.add_tx', {}, '+ Add TX')}</button>
       </div>
     </div>
-    <h2>${escapeHtml(acc.name)} <span class="accent">${alias}</span></h2>
+    <h2>${escapeHtml(acc.name)} <span class="accent">${escapeHtml(alias)}</span></h2>
     <div class="page-meta">
-      <span class="bal">${formatCurrency(bal, acc.currency)} ${acc.currency}</span>
+      <span class="bal">${formatCurrency(bal, acc.currency)} ${escapeHtml(acc.currency)}</span>
       <span>${metaBits.join(' · ')}</span>
     </div>
     <div class="accp-primary-cta">
-      <button class="primary-action-btn" data-action="navigateToAddTxWithAccount" data-arg1="${alias}">${t('accp.add_tx', {}, '+ Add TX')}</button>
+      <button class="primary-action-btn" data-action="navigateToAddTxWithAccount" data-arg1="${escapeHtml(alias)}">${t('accp.add_tx', {}, '+ Add TX')}</button>
     </div>
   `;
 
@@ -291,7 +291,7 @@ function renderAccountPage() {
         label = `← ${escapeHtml(tx.account)}`;
         typeClass = 'income';
       } else {
-        label = `→ ${tx.transfer_to_account || '?'}`;
+        label = `→ ${escapeHtml(tx.transfer_to_account || '?')}`;
         typeClass = 'transfer';
       }
     } else {
@@ -451,6 +451,6 @@ function exportAccountTx(alias) {
     Tags: t.tags || '',
     Note: t.note || '',
   }));
-  exportXlsx(data, `account_${alias}_${new Date().toISOString().slice(0,10)}`, alias);
+  exportXlsx(data, `account_${alias}_${localTodayIso()}`, alias);
 }
 

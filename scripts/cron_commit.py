@@ -101,6 +101,17 @@ else:
             pass
 
 
+class LockBusy(RuntimeError):
+    """The write lock could not be taken — this tick steps aside.
+
+    O-L6 (CODE_REVIEW_2026-06-12): flock blocks until it wins, but
+    Windows' msvcrt.locking gives up after ~10 seconds and raises. That
+    raise sat outside the try, so a dev-machine tick that collided with a
+    dashboard write died with a traceback instead of the "next tick will
+    get it" that a */5 cron actually wants.
+    """
+
+
 @contextmanager
 def tx_write_lock():
     """Hold an exclusive cross-process lock on the transactions lockfile.
@@ -110,10 +121,17 @@ def tx_write_lock():
     and TX writes block while cron is mid-rebase — eliminating the window
     where a destructive git op (rebase abort, hard reset) can wipe an
     uncommitted CSV append.
+
+    Raises:
+        LockBusy: the lock is held and this platform refuses to keep
+            waiting (Windows). The caller ends the run cleanly.
     """
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOCK_PATH, "a") as fh:
-        _lock_fh(fh)
+        try:
+            _lock_fh(fh)
+        except OSError as exc:
+            raise LockBusy(str(exc)) from exc
         try:
             yield
         finally:
@@ -338,8 +356,23 @@ def main() -> int:
     import host_role
     if host_role.is_standby():
         print("[cron_commit] host role is standby — fenced, mirror-pull only (O-H3/OF-M1)")
-        return _standby_mirror_pull()
+        try:
+            return _standby_mirror_pull()
+        except LockBusy as exc:
+            print(f"[cron_commit] write lock busy ({exc}) — skipping this tick")
+            return 0
 
+    try:
+        return _sync_run()
+    except LockBusy as exc:
+        # O-L6: a collision with a dashboard write is normal on a */5
+        # schedule. The next tick gets it.
+        print(f"[cron_commit] write lock busy ({exc}) — skipping this tick")
+        return 0
+
+
+def _sync_run() -> int:
+    """The primary-host half of main(), inside the write lock."""
     with tx_write_lock():
         if not recover_stuck_rebase():
             print("[cron_commit] cannot recover from stale rebase state, bailing", file=sys.stderr)

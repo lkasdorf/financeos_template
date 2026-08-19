@@ -14,6 +14,17 @@ let _editRcptNewFiles = [];   // new File objects, uploaded inside saveTxEdit
 let _editRcptToDelete = [];   // existing URLs marked for delete on save
 let _editRcptDetach = null;   // attachFilePickerAndPaste detach handle
 
+// Receipt-split group editing — same reset-on-open discipline. The total
+// is pinned when group mode is entered: re-slicing a receipt across
+// categories must not change what was paid, or the group stops matching
+// its bank line in the next reconciliation.
+let _editGroupTx = null;      // the TX the modal was opened on
+let _editGroupRows = [];      // sibling rows of its receipt group
+let _editGroupLines = [];     // editable {import_id?, amount, category, note}
+let _editGroupTotal = 0;      // pinned group sum
+let _editGroupCurrency = '';  // for formatting the remainder
+let _editGroupNewId = '';     // group id minted when splitting a single TX
+
 function openEditModal(tx) {
   // Ensure context is loaded for dropdowns. When the subscriptions
   // feature is on, fetch the existing link in parallel so the modal
@@ -27,13 +38,45 @@ function openEditModal(tx) {
         body: JSON.stringify({ tx_import_id: tx.import_id }),
       }).then(r => r.json()).then(d => d.subscription_id || '').catch(() => '')
     : Promise.resolve('');
+  // Members of this TX's receipt split, if any. Counter-entries carry the
+  // same receipt_group but belong to the backend, so they are filtered out
+  // — the group the user edits is the expense side only.
+  const grp = (tx.receipt_group || '').trim();
+  const groupRows = grp
+    ? (state.tx || []).filter(r => (r.receipt_group || '').trim() === grp
+                                   && !(r.counter_entry_id || '').trim())
+    : [];
+
   Promise.all([ctxP, linkP]).then(([ctx, currentSubId]) => {
-    renderEditModal(tx, ctx, currentSubId);
+    renderEditModal(tx, ctx, currentSubId, groupRows);
   });
 }
 
-function renderEditModal(tx, ctx, currentSubId = '') {
+function renderEditModal(tx, ctx, currentSubId = '', groupRows = []) {
   const isTransfer = tx.type === 'transfer';
+  // Group state is per-modal; reset it here so a previously opened split
+  // cannot bleed into the next transaction's modal.
+  _editGroupTx = tx;
+  _editGroupRows = groupRows;
+  _editGroupLines = [];
+  _editGroupTotal = 0;
+  _editGroupNewId = '';
+  _editGroupCurrency = tx.currency || '';
+
+  // A real split gets the mode toggle; a plain expense gets the offer to
+  // become one. Transfers and income never do — a split describes one
+  // purchase receipt across several categories.
+  const canSplit = tx.type === 'expense' && !(tx.receipt_group || '').trim();
+  const groupToggle = groupRows.length > 1 ? `
+      <div class="atx-row" id="edit-group-toggle">
+        <div class="flex-row gap-sm">
+          <button type="button" class="btn-sm btn-accent" id="edit-mode-line" data-action="toggleGroupMode" data-arg1="">${escapeHtml(t('editx.group.toggle_line', {}, 'This line'))}</button>
+          <button type="button" class="btn-sm" id="edit-mode-group" data-action="toggleGroupMode" data-arg1="${escapeHtml(tx.receipt_group || '')}">${escapeHtml(t('editx.group.toggle_group', { n: groupRows.length }, `Whole receipt (${groupRows.length} lines)`))}</button>
+        </div>
+      </div>` : (canSplit ? `
+      <div class="atx-row" id="edit-group-toggle">
+        <button type="button" class="btn-sm" id="edit-split-btn" data-action="splitSingleTx">${escapeHtml(t('editx.group.btn_split', {}, 'Split into categories'))}</button>
+      </div>` : '');
   const activeAccounts = ctx.accounts.filter(a => a.status === 'active');
 
   // Account options
@@ -75,6 +118,7 @@ function renderEditModal(tx, ctx, currentSubId = '') {
       if (_editRcptDetach) { _editRcptDetach(); _editRcptDetach = null; }
     },
     bodyHtml: `
+      ${groupToggle}
       <div class="atx-row">
         <div class="atx-field fx1">
           <label>${t('common.label.date', {}, 'Date')}</label>
@@ -114,6 +158,12 @@ function renderEditModal(tx, ctx, currentSubId = '') {
             ${catOptions}
           </select>
         </div>
+      </div>
+      <!-- Group mode: per-line amount/category move in here, the fields
+           above stay single because they describe the whole receipt. -->
+      <div id="edit-splits-area" hidden></div>
+      <div class="atx-row" id="edit-split-info-row" hidden>
+        <span id="edit-split-info" class="split-badge"></span>
       </div>
       <div id="edit-transfer-row" class="atx-row" style="display:${isTransfer ? 'flex' : 'none'}">
         <div class="atx-field fx1">
@@ -395,6 +445,239 @@ function _initEditReceiptPickers() {
   });
 }
 
+// ─── Group mode ───────────────────────────────────────────────────────────
+//
+// The same modal serves two jobs: editing one line, and re-slicing a whole
+// receipt. Rather than rendering a second modal, group mode hides the
+// per-line fields (amount, category) and shows the split rows. Everything
+// else — date, account, payee, tags, attachments — describes the receipt
+// and is therefore group-wide by construction, which is exactly the
+// invariant the recon adapter needs.
+
+function _editFieldWrapper(id) {
+  const el = document.getElementById(id);
+  return el ? el.closest('.atx-field') : null;
+}
+
+function toggleGroupMode(receiptGroup) {
+  const grp = (receiptGroup || '').trim();
+  const amountWrap = _editFieldWrapper('edit-amount');
+  const catWrap = _editFieldWrapper('edit-category');
+  const area = document.getElementById('edit-splits-area');
+  const infoRow = document.getElementById('edit-split-info-row');
+  const saveBtn = document.querySelector('.btn-save');
+  const lineBtn = document.getElementById('edit-mode-line');
+  const groupBtn = document.getElementById('edit-mode-group');
+
+  if (!grp) {
+    // Back to single-line editing.
+    _editGroupLines = [];
+    _editGroupNewId = '';
+    if (amountWrap) amountWrap.hidden = false;
+    if (catWrap) catWrap.hidden = false;
+    if (area) { area.hidden = true; area.innerHTML = ''; }
+    if (infoRow) infoRow.hidden = true;
+    if (saveBtn) {
+      saveBtn.dataset.action = 'saveTxEdit';
+      saveBtn.dataset.arg1 = _editGroupTx ? _editGroupTx.import_id : '';
+      saveBtn.disabled = false;
+    }
+    if (lineBtn) lineBtn.classList.add('btn-accent');
+    if (groupBtn) groupBtn.classList.remove('btn-accent');
+    return;
+  }
+
+  const rows = _editGroupRows.length
+    ? _editGroupRows
+    : (state.tx || []).filter(r => (r.receipt_group || '').trim() === grp
+                                   && !(r.counter_entry_id || '').trim());
+  _editGroupLines = rows.map(r => ({
+    import_id: r.import_id,
+    amount: r.amount,
+    category: r.category,
+    note: r.note || '',
+  }));
+  _editGroupTotal = rows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+  _editGroupCurrency = rows[0] ? rows[0].currency : _editGroupCurrency;
+
+  if (amountWrap) amountWrap.hidden = true;
+  if (catWrap) catWrap.hidden = true;
+  if (area) area.hidden = false;
+  if (infoRow) infoRow.hidden = false;
+  if (saveBtn) {
+    saveBtn.dataset.action = 'saveTxGroupEdit';
+    saveBtn.dataset.arg1 = grp;
+  }
+  if (lineBtn) lineBtn.classList.remove('btn-accent');
+  if (groupBtn) groupBtn.classList.add('btn-accent');
+  renderEditSplitLines();
+}
+
+function renderEditSplitLines() {
+  const catSel = document.getElementById('edit-category');
+  renderSplitRows({
+    containerId: 'edit-splits-area',
+    lines: _editGroupLines,
+    catOptionsHtml: catSel ? catSel.innerHTML : '',
+    onChange: updateEditRemainder,
+    addAction: 'addEditSplitLine',
+    removeAction: 'removeEditSplitLine',
+  });
+  updateEditRemainder();
+}
+
+function updateEditRemainder() {
+  const info = document.getElementById('edit-split-info');
+  if (!info) return;
+  const sum = _editGroupLines.reduce(
+    (s, l) => s + (parseAmountInput(l.amount) || 0), 0);
+  const rest = _editGroupTotal - sum;
+  const balanced = Math.abs(rest) < 0.01;
+  info.textContent = balanced
+    ? t('editx.group.balanced', { amount: formatCurrency(_editGroupTotal, _editGroupCurrency) },
+        `Balanced: ${_editGroupTotal}`)
+    : t('editx.group.remainder', { amount: formatCurrency(rest, _editGroupCurrency) },
+        `Remaining: ${rest}`);
+  info.classList.toggle('mismatch', !balanced);
+  info.classList.toggle('match', balanced);
+  // The server enforces the same rule; blocking here saves a round-trip
+  // and explains itself while the user is still typing.
+  const saveBtn = document.querySelector('.btn-save');
+  if (saveBtn && saveBtn.dataset.action === 'saveTxGroupEdit') {
+    saveBtn.disabled = !balanced;
+  }
+}
+
+function addEditSplitLine() {
+  // Pre-fill with what is still unallocated: the common case is "one more
+  // category on the same receipt", which then needs no typing and keeps
+  // the sum invariant true by construction.
+  const sum = _editGroupLines.reduce(
+    (s, l) => s + (parseAmountInput(l.amount) || 0), 0);
+  const rest = Math.max(_editGroupTotal - sum, 0);
+  _editGroupLines.push({ amount: rest ? String(rest) : '', category: '', note: '' });
+  renderEditSplitLines();
+}
+
+function removeEditSplitLine(idx) {
+  if (_editGroupLines.length <= 1) return;
+  const removed = _editGroupLines.splice(idx, 1)[0];
+  // Hand the freed amount to the first remaining line, otherwise every
+  // removal leaves the group unbalanced and the save button disabled.
+  if (removed && _editGroupLines.length) {
+    const freed = parseAmountInput(removed.amount) || 0;
+    const first = _editGroupLines[0];
+    first.amount = String((parseAmountInput(first.amount) || 0) + freed);
+  }
+  renderEditSplitLines();
+}
+
+function splitSingleTx() {
+  // Mint a group id in the same shape build_manual_lines uses server-side.
+  const rand = Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+  _editGroupNewId = `split-${rand}`;
+  const amountEl = document.getElementById('edit-amount');
+  const catEl = document.getElementById('edit-category');
+  _editGroupTotal = parseAmountInput(amountEl.value) || 0;
+  _editGroupCurrency = _editGroupTx ? _editGroupTx.currency : '';
+  _editGroupLines = [{
+    import_id: _editGroupTx ? _editGroupTx.import_id : '',
+    amount: amountEl.value,
+    category: catEl.value,
+    note: document.getElementById('edit-note').value || '',
+  }];
+
+  const amountWrap = _editFieldWrapper('edit-amount');
+  const catWrap = _editFieldWrapper('edit-category');
+  if (amountWrap) amountWrap.hidden = true;
+  if (catWrap) catWrap.hidden = true;
+  document.getElementById('edit-splits-area').hidden = false;
+  document.getElementById('edit-split-info-row').hidden = false;
+  const saveBtn = document.querySelector('.btn-save');
+  if (saveBtn) {
+    saveBtn.dataset.action = 'saveTxGroupEdit';
+    saveBtn.dataset.arg1 = '';
+  }
+  const splitBtn = document.getElementById('edit-split-btn');
+  if (splitBtn) splitBtn.hidden = true;
+  addEditSplitLine();
+}
+
+async function saveTxGroupEdit(receiptGroup) {
+  const statusEl = document.getElementById('edit-status');
+  statusEl.innerHTML = `<div class="atx-status warning"><span class="atx-spinner"></span>${escapeHtml(t('common.saving', {}, 'Saving...'))}</div>`;
+
+  // Attachments first: an upload failure must not leave the group half
+  // written, and the resulting URLs go onto every member.
+  try {
+    if (_editRcptNewFiles.length) {
+      const saved = await uploadReceipts(_editRcptNewFiles);
+      _editRcptUrls.push(...saved.map(s => s.url));
+      _editRcptNewFiles = [];
+      _renderEditReceiptGrid();
+    }
+  } catch (err) {
+    statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(String(err && err.message || err))}</div>`;
+    return;
+  }
+
+  const payload = {
+    receipt_group: receiptGroup || _editGroupNewId,
+    from_import_id: _editGroupNewId && _editGroupTx ? _editGroupTx.import_id : '',
+    header: {
+      date: document.getElementById('edit-date').value,
+      account: document.getElementById('edit-account').value,
+      payee: document.getElementById('edit-payee').value,
+      note: document.getElementById('edit-note').value,
+      tags: Array.from(document.querySelectorAll('#edit-tags input:checked')).map(c => c.value).join(';'),
+      receipt_url: _editRcptUrls.join(';'),
+    },
+    lines: _editGroupLines.map(l => {
+      const line = {
+        amount: parseAmountInputStr(l.amount),
+        category: l.category,
+        note: l.note || '',
+      };
+      if (l.import_id) line.import_id = l.import_id;
+      return line;
+    }),
+    client_id: `grp-${receiptGroup || _editGroupNewId}-${Date.now()}`,
+  };
+
+  let res, data;
+  try {
+    res = await fetch('/api/tx/group-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    data = await res.json().catch(() => ({}));
+  } catch (err) {
+    statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(String(err && err.message || err))}</div>`;
+    return;
+  }
+  if (!res.ok) {
+    // A 409 means one of the removed lines hangs on a fuel/utility/
+    // subscription log. Naming it matters: the user has already taken
+    // that row out of the form, so "a line is linked" alone leaves them
+    // guessing which one to put back. The server ships category+amount
+    // per blocked row for exactly this.
+    const labels = describeBlockedLines(data.blocked);
+    const msg = res.status === 409
+      ? t('editx.group.protected', { lines: labels || data.error || '' },
+          data.error || 'Line is linked elsewhere.')
+      : (data.error || `HTTP ${res.status}`);
+    statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(msg)}</div>`;
+    return;
+  }
+
+  closeModal();
+  // Every TX-mutating flow refreshes before re-rendering, otherwise the
+  // list redraws from the pre-edit snapshot.
+  await refreshData();
+  renderTransactionsPage();
+}
+
 async function saveTxEdit(importId) {
   const updated = {
     date: document.getElementById('edit-date').value,
@@ -523,10 +806,17 @@ async function deleteTx(importId) {
     const data = await res.json();
     if (data.error) {
       hideBusyOverlay();
+      // 409 = a side log owns this row. Say where it can be deleted
+      // instead, translated — data.error alone is English server text.
+      const msg = res.status === 409
+        ? t('tx.delete.protected',
+            { lines: describeBlockedLines(data.blocked) || data.error },
+            data.error)
+        : data.error;
       if (statusEl) {
-        statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(data.error)}</div>`;
+        statusEl.innerHTML = `<div class="atx-status error">${escapeHtml(msg)}</div>`;
       } else {
-        uiAlert(t('editx.err_delete', { msg: data.error }, `Delete failed: ${data.error}`));
+        uiAlert(t('editx.err_delete', { msg }, `Delete failed: ${msg}`));
       }
       return;
     }

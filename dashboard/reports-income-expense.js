@@ -106,7 +106,7 @@ function renderIncomeMonthly(year, currency) {
           <div class="ic-count">${t('reports.income.tile.reimb_subtitle', {}, 'Business pass-through')}</div>
         </div>
       </div>
-      <div class="income-grid mt-8">
+      <div class="income-grid ig-uniform mt-8">
         ${months.map(m => `
           <div class="income-cell">
             <div class="ic-label">${m.label}</div>
@@ -439,7 +439,7 @@ function renderDiningMonthly(diningTx, year) {
           <div class="ic-count">${escapeHtml(t('reports.dining.tile_tx_pct', { n: totBizCount, pct: totAll > 0 ? Math.round(totBiz / totAll * 100) : 0 }, `${totBizCount} TX · ${totAll > 0 ? Math.round(totBiz / totAll * 100) : 0}%`))}</div>
         </div>
       </div>
-      <div class="income-grid mt-8">
+      <div class="income-grid ig-uniform mt-8">
         ${months.map(m => {
           const visitsLabel = t('reports.dining.monthly_tile_count', { n: m.count }, `${m.count} visits`);
           const bizPctLabel = m.biz > 0
@@ -714,12 +714,12 @@ function renderIncExpMonthly(year, currency) {
           <div class="ic-count">${t('reports.incexp.net.detail', { verdict: netVerdict, pct: savingsPct }, `${netVerdict} · Savings rate ${savingsPct}%`)}</div>
         </div>
       </div>
-      <div class="income-grid mt-8">
+      <div class="income-grid ig-uniform mt-8">
         ${months.map(m => `
-          <div class="income-cell">
+          <div class="income-cell${isFutureYm(m.ym) ? ' ic-future' : ''}">
             <div class="ic-label">${m.label}</div>
             <div class="ic-value ${m.net === 0 ? 'zero' : ''}" style="color:${m.net > 0 ? 'var(--positive)' : m.net < 0 ? 'var(--negative)' : 'var(--muted)'}">${formatCurrency(m.net, currency)}<span class="ic-cur">${currency}</span></div>
-            <div class="ic-count">${t('reports.incexp.cell_detail', { income: formatCurrency(m.income, currency), expense: formatCurrency(m.expense, currency) }, `+${formatCurrency(m.income, currency)} / -${formatCurrency(m.expense, currency)}`)}</div>
+            ${isFutureYm(m.ym) ? '' : `<div class="ic-count">${t('reports.incexp.cell_detail', { income: formatCurrency(m.income, currency), expense: formatCurrency(m.expense, currency) }, `+${formatCurrency(m.income, currency)} / -${formatCurrency(m.expense, currency)}`)}</div>`}
           </div>
         `).join('')}
       </div>
